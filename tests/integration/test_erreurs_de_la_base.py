@@ -164,7 +164,9 @@ async def test_un_droit_refuse_est_journalise_en_avertissement_avec_son_objet(
     with caplog.at_level(logging.WARNING, logger="popote_api.erreurs_base"):
         async with client(fabrique) as c:
             await c.get(chemin)
-    avertissements = [r for r in caplog.records if r.levelno == logging.WARNING]
+    avertissements = [
+        r for r in caplog.records if r.levelno == logging.WARNING and r.name == "popote_api.erreurs_base"
+    ]
     assert len(avertissements) == 1
     assert f"objet={objet}" in avertissements[0].getMessage()
     assert f"rendu={rendu}" in avertissements[0].getMessage()
