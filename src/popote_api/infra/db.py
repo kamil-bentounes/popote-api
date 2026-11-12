@@ -1,6 +1,9 @@
 """Accès à Postgres : deux pools et deux contextes (spec § 5.1, § 8.2).
 
 - `Base.personne(id)` : pool `popote_api`, `set local role authenticated`, identité de la personne.
+- `Base.session(empreinte)` : le contexte « personne » d'une requête portée par une session. Lit la session
+  (`session_personne`, exécutable par `popote_api` seul) puis emprunte `authenticated`, dans la MÊME
+  transaction.
 - `Base.service()` : pool `popote_internal`, `set local role service_role`. Réservé aux routes internes,
   à l'invitation et aux purges (liste fermée).
 
@@ -49,7 +52,10 @@ DELAIS_INTERNE: LiteralString = (
     "set local statement_timeout = '30s'; set local lock_timeout = '10s'; "
     "set local idle_in_transaction_session_timeout = '15s'"
 )
-PREAMBULE_PERSONNE: LiteralString = f"set local role authenticated; {DELAIS_API}"
+ROLE_PERSONNE: LiteralString = "set local role authenticated"
+PREAMBULE_PERSONNE: LiteralString = f"{ROLE_PERSONNE}; {DELAIS_API}"
+# La personne de la session, ou null. Se lit sous le rôle de connexion : `authenticated` n'a pas le droit.
+LIT_LA_SESSION: LiteralString = "select public.session_personne(%s) as personne"
 PREAMBULE_SERVICE: LiteralString = f"set local role service_role; {DELAIS_INTERNE}"
 
 
@@ -87,6 +93,14 @@ type Pool = AsyncConnectionPool[AsyncConnection[Any]]
 
 class BaseError(Exception):
     """Racine des échecs d'accès à la base qui ne viennent pas de psycopg."""
+
+
+class SessionRefuseeError(Exception):
+    """Aucune session valide n'a cette empreinte (inconnue, échue, révoquée, personne bannie ou supprimée).
+
+    Ce n'est pas une panne de la base : la frontière HTTP en fait un `401`. Un seul type pour tous les refus,
+    la base ne les distingue pas non plus.
+    """
 
 
 class BaseIndisponibleError(BaseError):
@@ -168,6 +182,14 @@ class Base:
         revendications = revendications_personne(personne_id, self._emetteur)
         return _contexte(self._api, PREAMBULE_PERSONNE, revendications, BaseIndisponibleError())
 
+    def session(self, empreinte: bytes) -> AbstractAsyncContextManager[tuple[UUID, Curseur]]:
+        """Une transaction qui lit la session, puis agit comme sa personne ; `SessionRefuseeError` sinon.
+
+        Un seul emprunt au pool par requête : la lecture de la session (qui repousse son échéance) et tout le
+        travail de la requête partagent la transaction, que le contexte valide en sortie normale.
+        """
+        return _contexte_de_session(self._api, empreinte, self._emetteur)
+
     def service(self) -> AbstractAsyncContextManager[Curseur]:
         """Une transaction `service_role`. Seul le code de la liste fermée l'appelle."""
         revendications = {"role": "service_role"}
@@ -191,22 +213,49 @@ class Base:
 
 
 @asynccontextmanager
+async def _transaction(pool: Pool | None, absente: BaseError) -> AsyncIterator[Curseur]:
+    """Une connexion du pool, une transaction, un curseur : la transaction se valide en sortie normale."""
+    if pool is None:
+        raise absente
+    async with pool.connection() as connexion, connexion.transaction():
+        async with connexion.cursor(row_factory=dict_row) as curseur:
+            yield curseur
+
+
+async def _pose_les_revendications(curseur: Curseur, revendications: dict[str, str]) -> None:
+    await curseur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps(revendications),))
+
+
+@asynccontextmanager
 async def _contexte(
     pool: Pool | None,
     preambule: LiteralString,
     revendications: dict[str, str] | None,
     absente: BaseError,
 ) -> AsyncIterator[Curseur]:
-    if pool is None:
-        raise absente
-    async with pool.connection() as connexion, connexion.transaction():
-        async with connexion.cursor(row_factory=dict_row) as curseur:
-            await curseur.execute(preambule)
-            if revendications is not None:
-                await curseur.execute(
-                    "select set_config('request.jwt.claims', %s, true)", (json.dumps(revendications),)
-                )
-            yield curseur
+    async with _transaction(pool, absente) as curseur:
+        await curseur.execute(preambule)
+        if revendications is not None:
+            await _pose_les_revendications(curseur, revendications)
+        yield curseur
+
+
+@asynccontextmanager
+async def _contexte_de_session(
+    pool: Pool | None, empreinte: bytes, emetteur: str | None
+) -> AsyncIterator[tuple[UUID, Curseur]]:
+    async with _transaction(pool, BaseIndisponibleError()) as curseur:
+        # Les délais d'abord : la lecture de la session est elle aussi bornée. Elle se fait encore sous le
+        # rôle de connexion, le seul à pouvoir exécuter `session_personne` ; `authenticated` vient après.
+        await curseur.execute(DELAIS_API)
+        await curseur.execute(LIT_LA_SESSION, (empreinte,))
+        ligne = await curseur.fetchone()
+        if ligne is None or ligne["personne"] is None:
+            raise SessionRefuseeError
+        personne_id: UUID = ligne["personne"]
+        await curseur.execute(ROLE_PERSONNE)
+        await _pose_les_revendications(curseur, revendications_personne(personne_id, emetteur))
+        yield personne_id, curseur
 
 
 class SondeBase:

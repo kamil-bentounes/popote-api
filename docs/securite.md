@@ -8,6 +8,7 @@ désigne la spec, qui reste la référence en cas d'écart. Les règles de forme
 | Pour savoir | Aller à |
 |---|---|
 | Comment on se connecte, ce que garde le navigateur | 4 |
+| Les règles de mot de passe, la liste de fuites, leurs sources et leurs écarts | 4.1 |
 | Quel rôle de base exécute quelle requête | 5.1 |
 | Où vont les photos, comment les images sont servies | 6 |
 | Les parades OWASP, la CSP, les secrets, la chaîne d'approvisionnement, le RGPD | 7 |
@@ -41,12 +42,28 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   de la configuration.
 - **Durée.** 30 jours glissants, 90 jours au plus ; l'identifiant change à la connexion et à chaque changement
   de mot de passe.
+- **Lire la session (0.3, migration 0133).** Table `public.login_session` (`login_session` : `session` désigne
+  déjà la séance de cuisine et `auth.sessions` celle de GoTrue) : `token_hash` (SHA-256 des 32 octets, unique),
+  `person_id` (cascade à la suppression du compte), `created_at`, `last_seen_at`, `expires_at` (glissante),
+  `absolute_expires_at` (90 jours), `revoked_at`. RLS activée sans politique, aucun droit à aucun rôle de l'application (les rôles de maintenance de Supabase,
+  qui contournent la RLS, peuvent la lire : elle ne garde que des empreintes SHA-256 de jetons de 256 bits). La colonne
+  d'appareil arrive en 0.4 avec la création des sessions. `public.session_personne(p_hash bytea)` est
+  `security definer`, `search_path = ''`, exécutable par `popote_api` **seul** (`revoke` explicite à `public`,
+  `anon`, `authenticated`, `service_role`) ; elle rend la personne ou `null` (inconnue, échue, révoquée, au bout
+  des 90 jours, `banned_until` futur, `deleted_at` posé). Elle repousse l'échéance
+  (`least(now() + 30 jours, absolute_expires_at)`) et `last_seen_at` **au plus une fois toutes les 5 minutes** :
+  une lecture n'est pas une écriture à chaque requête. L'API l'appelle en `popote_api`, avant d'emprunter
+  `authenticated`, dans la **même transaction** que le reste de la requête. Le verrou de la ligne tient jusqu'à la
+  fin de la requête : `for update skip locked` évite que deux requêtes simultanées s'attendent (la seconde lit
+  l'ancienne valeur, encore valide).
+- **Le cookie** ne porte que le jeton : 43 caractères base64url (32 octets), décodage strict. Hors local son nom
+  est `__Host-popote_session` et un autre nom est refusé au démarrage.
 - **Falsification de requête (CSRF).** `SameSite=Lax`, plus, sur toute méthode qui écrit : `Origin` égale à
   l'origine attendue, `Sec-Fetch-Site: same-origin`, et un en-tête propre à l'appli (guide OWASP sur le CSRF).
 - **Mots de passe** (NIST SP 800-63B-4) : 15 caractères au moins quand le mot de passe est le seul facteur ;
   au plus 64 caractères et 72 octets une fois normalisé en NFKC (bcrypt ne lit pas au-delà) ; aucune règle de
   composition ; aucun changement imposé ; refus des mots de passe déjà fuités (requête par plage de hachage,
-  sans envoyer le mot de passe). La règle vaut pour tout nouveau mot de passe ; les actuels restent valables
+  sans envoyer le mot de passe ; liste indisponible : accepté et journalisé, voir 4.1). La règle vaut pour tout nouveau mot de passe ; les actuels restent valables
   jusqu'à leur prochain changement. Message unique en cas d'échec (« e-mail ou mot de passe incorrect »).
   Voir D3.
 - **Réinitialisation.** Notre propre jeton (256 bits, gardé haché, usage unique, 30 minutes) dans une table
@@ -73,13 +90,61 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
 - **Journal de sécurité.** Connexions réussies et ratées, déconnexions, changements et réinitialisations de mot
   de passe, invitations créées, acceptées ou révoquées, sessions fermées, comptes supprimés. Gardé un an.
 
+### 4.1 Règles de mot de passe et liste de fuites (code : `security/mots_de_passe.py`, `infra/fuites.py`)
+
+Sources relues à la source le 12/11/2026 : NIST SP 800-63B-4, [§ 3.1.1.2 « Password Verifiers »](https://pages.nist.gov/800-63-4/sp800-63b.html)
+(les références ci-dessous sont des items de cette section), et la documentation de l'API [Pwned Passwords](https://haveibeenpwned.com/API/v3#PwnedPasswords).
+
+| Règle | Source | Réalisation |
+|---|---|---|
+| 15 caractères au moins quand le mot de passe est le seul facteur (8 seulement avec un second facteur : sans objet, il n'y en a pas) | NIST 3.1.1.2, 1er item, « SHALL » | `LONGUEUR_MINIMALE = 15` |
+| Un point de code compte pour un caractère | NIST 3.1.1.2, « SHALL » | longueur prise en `len()` après normalisation |
+| Permettre 64 caractères au moins | NIST 3.1.1.2, « SHOULD » | `LONGUEUR_MAXIMALE = 64`, plus 72 octets UTF-8 (écart 2) |
+| Aucune règle de composition, espaces et Unicode acceptés | NIST 3.1.1.2, « SHALL NOT » / « SHOULD » | aucune règle ; espaces conservés, jamais rognés |
+| Ne pas tronquer | NIST 3.1.1.2, « SHALL verify the entire submitted password » | trop long : refusé à la création ; à la connexion, le candidat de plus de 72 octets est **écarté**, jamais coupé |
+| Comparer à une liste de blocage (mots de passe fuités), mot de passe entier | NIST 3.1.1.2, « SHALL » | Pwned Passwords, ci-dessous |
+| Normaliser avant de hacher | NIST 3.1.1.2, « SHOULD » (forme NFC) | NFKC (écart 1) |
+
+Écarts assumés :
+
+1. **NFKC et non NFC.** NIST écrit NFC (sa version 800-63B-3 écrivait NFKC ou NFKD). NFKC compose comme NFC et
+   ramène en plus les formes de compatibilité (lettres pleine largeur, ligatures) à leur équivalent : un clavier
+   japonais ou un correcteur qui produit `ＡＢＣ` donne le même mot de passe que `ABC`. Les anciens mots de
+   passe ont été hachés bruts par GoTrue : à la connexion, on essaie la forme normalisée puis la forme brute
+   (`candidats_de_connexion`).
+2. **72 octets.** bcrypt (pgcrypto, GoTrue) ne lit pas au-delà de 72 octets. Plutôt que de tronquer (deux
+   mots de passe distincts seraient acceptés l'un pour l'autre), on refuse. Conséquence : en dessous des 64
+   caractères que NIST demande de permettre, un mot de passe d'accents ou d'idéogrammes plus long que 72 octets
+   (36 caractères de deux octets, 24 de trois) est refusé avec un message qui le dit.
+
+**Liste de fuites.** API « range » : `GET https://api.pwnedpasswords.com/range/{5 premiers caractères du SHA-1}`
+(§ « Searching by hash range using k-anonymity ») ; réponse `SUFFIXE:COMPTE` par ligne, la comparaison du suffixe
+se fait chez nous, sans casse. L'en-tête `Add-Padding: true` (§ « Introducing padding ») fait renvoyer 800 à
+1 000 lignes quel que soit le préfixe, les lignes de bourrage ayant un compte de 0 : on les ignore. L'API exige un
+agent utilisateur (§ « Specifying the user agent », absence : `403`) : nous envoyons `popote`, sans version ni nom
+d'hôte. Pas de clé ni de limite de débit (§ « Authorisation », § « Rate limiting »). Notre appel : adresse et hôte
+constants en `https`, redirections refusées, délai total de 3 s lecture comprise, corps lu par morceaux et
+abandonné au-delà de 1 Mio, toute ligne mal formée (ou un corps vide) rend la réponse suspecte.
+
+**Quand la liste est indisponible** (décision du 12/11/2026, B23 du plan 0.4) : le mot de passe est **accepté**
+et l'indisponibilité journalisée par l'appelant (événement de sécurité `verification_fuites_indisponible` et un
+avertissement, avec la seule cause : `delai`, `reseau`, `redirection`, `statut`, `trop_gros` ou `mal_forme`),
+pour tous les parcours. Raison : un foyer de deux personnes ne doit pas être bloqué hors de son compte par la
+panne d'un service tiers, et les règles de longueur restent appliquées. Risque accepté : pendant une panne, un
+mot de passe fuité peut passer ; l'événement permet de le voir. `PwnedPasswords.verifie` ne lève jamais pour
+cela : il rend un `ResultatFuite`. Rien du mot de passe, de son empreinte ni de sa plage n'est journalisé
+(httpx écrit pourtant l'adresse à `INFO` : le module fait taire ce journal).
+
+**Réglage.** `POPOTE_BREACH_CHECK` : `hibp` (défaut) ou `off`. `off` n'est permis qu'en local ; `essai` et `prod`
+refusent de démarrer avec autre chose que `hibp`.
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |
 |---|---|---|---|---|
 | Personne | `popote_api` | `set local role authenticated` | `request.jwt.claims` = `{"sub": <personne>, "role": "authenticated"}` | toute requête d'une personne connectée ; la RLS et les gardes (`tg_saisie_garde`, `tg_depense_garde`…) s'appliquent |
 | Service | `popote_internal` | `set local role service_role` | `{"role": "service_role"}` | seulement les routes `/internal/*`, l'acceptation d'une invitation et les purges ; liste fermée, chaque usage relu |
-| Connexion | `popote_api` | aucun : fonction `security definer` privée | aucune | vérifier un mot de passe |
+| Connexion | `popote_api` | aucun : fonction `security definer` privée | aucune | vérifier un mot de passe ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction |
 | Sauvegarde | `postgres`, hors API | — | — | `pg_dump` lancé par GitHub Actions |
 
 - **Deux rôles de connexion, deux pools.** `popote_api` n'est membre que d'`authenticated`, `popote_internal`
@@ -200,7 +265,13 @@ configuration, journalisation, protection des données.
 ### 7.7 RGPD
 
 - Données et traitements en Europe ; liste des sous-traitants tenue (Supabase, hébergeurs, fournisseurs de
-  modèles, envoi de mails) avec leurs conditions de conservation vérifiées.
+  modèles, envoi de mails, Pwned Passwords) avec leurs conditions de conservation vérifiées.
+- **Pwned Passwords** (`api.pwnedpasswords.com`, service de Have I Been Pwned) : reçoit les 5 premiers
+  caractères hexadécimaux du SHA-1 d'un nouveau mot de passe, l'adresse IP du serveur de l'API et l'agent
+  `popote`. Il ne reçoit ni e-mail, ni identifiant, ni compte, ni le mot de passe, ni le reste de l'empreinte :
+  aucune donnée d'une personne identifiable, d'où aucune conservation à convenir. À confirmer : la
+  localisation du service (hors Union européenne ou non) et son éventuel statut de sous-traitant ne sont pas
+  établis par ce document ; à faire valider avant la bascule (0.8).
 - Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an, journal des appels au modèle 90 jours,
   photos de saisie 30 jours.
 - Export et suppression du compte restent des routes de l'API.

@@ -20,7 +20,6 @@ EN_TETE = "X-Popote-Signature"
 FENETRE_S = 300  # écart d'horloge toléré, dans les deux sens (spec § 3.10)
 LONGUEUR_MAX_DE_L_EN_TETE = 512
 NOMBRE_MAX_DE_V1 = 4  # le secret courant, le précédent, et de la marge
-CORPS_MAX_OCTETS = 1024 * 1024
 # Posée sur l'état de la requête par la dépendance quand la signature est bonne. Les gestionnaires d'erreurs
 # s'en servent : une erreur qui précède la dépendance (méthode, corps mal formé) ne révèle pas la route.
 ETAT_SIGNATURE_VERIFIEE = "signature_verifiee"
@@ -40,7 +39,6 @@ class RaisonDeRefus(StrEnum):
     EN_TETE_REPETE = "en_tete_repete"
     EN_TETE_MAL_FORME = "en_tete_mal_forme"
     HORS_FENETRE = "hors_fenetre"
-    CORPS_TROP_GROS = "corps_trop_gros"
     CORPS_INCOMPLET = "corps_incomplet"
     SIGNATURE_FAUSSE = "signature_fausse"
 

@@ -11,6 +11,9 @@ from popote_api.config import Settings
 SECRET = "s" * 32
 DSN = "postgresql://x:y@127.0.0.1:1/rien"
 RELAIS = {"X-Popote-Relais": SECRET}
+# Ce qu'envoie le front dans une écriture : l'origine de l'environnement et l'en-tête propre à l'appli.
+ECRITURE_LOCALE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+ECRITURE_ESSAI = {"Origin": "https://essai.notre-popote.fr", "X-Popote-Client": "web"}
 
 
 def reglages(env: str, **autres: Any) -> Settings:

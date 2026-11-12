@@ -9,10 +9,15 @@ def client(**autres: object) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-async def test_healthz() -> None:
-    r = await client().get("/api/healthz")
+async def test_healthz_rend_la_version_de_l_image() -> None:
+    r = await client(version="0123456789abcdef0123456789abcdef01234567").get("/api/healthz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json() == {"status": "ok", "version": "0123456789abcdef0123456789abcdef01234567"}
+
+
+async def test_healthz_sans_version_connue_rend_inconnue() -> None:
+    r = await client().get("/api/healthz")
+    assert r.json() == {"status": "ok", "version": "inconnue"}
 
 
 async def test_readyz_sans_base_rend_503() -> None:

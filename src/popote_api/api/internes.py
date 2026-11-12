@@ -8,6 +8,8 @@ corps, pas un usage unique : une requête interceptée peut être rejouée penda
 et un appelant qui n'a pas reçu la réponse la renvoie. Une route interne ne doit donc rien changer de plus la
 seconde fois (travail gardé par une clé naturelle, `upsert`, ou purge qui retrouve la même chose à purger).
 
+Le corps est borné (1 Mio, `limites.TailleMax`, qui lit le corps avant l'application et rend `413` au-delà)
+pour toutes les routes, celles-ci comprises : la signature ne se vérifie qu'après lecture du corps.
 Un corps JSON invalide rend aussi `404`, même signé : FastAPI le lit avant les dépendances. Un corps bien
 formé mais de mauvais type rend `422` à l'appelant signé.
 
@@ -18,20 +20,16 @@ derrière le relais, et celle-ci n'est ni publique, ni consommée par un client 
 """
 
 import logging
-import re
 
 from fastapi import APIRouter, Depends, Request
-from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from popote_api.config import Settings
-from popote_api.errors import Probleme, reponse
+from popote_api.errors import Probleme
 from popote_api.security import signature
 from popote_api.security.signature import RaisonDeRefus, SignatureRefusee
 
 journal = logging.getLogger(__name__)
-_CHIFFRES = re.compile(r"[0-9]{1,18}")  # au plus 18 chiffres : `int()` d'une chaîne plus longue lève
 # Les refus qui méritent un avertissement : un appelant légitime mal réglé, ou une signature qui ne vient pas
 # de nous. Les autres (route sondée, en-tête absent) sont du bruit d'Internet : niveau info.
 REFUS_A_SIGNALER = frozenset(
@@ -42,67 +40,6 @@ REFUS_A_SIGNALER = frozenset(
 def _journalise_le_refus(raison: RaisonDeRefus) -> None:
     niveau = logging.WARNING if raison in REFUS_A_SIGNALER else logging.INFO
     journal.log(niveau, "Requête interne refusée : %s.", raison.value)
-
-
-class CorpsTropGros(Exception):
-    """Le corps d'une requête interne dépasse `CORPS_MAX_OCTETS` ; `CorpsBorne` le rend en 404."""
-
-
-class CorpsBorne:
-    """Middleware ASGI pur : sous `/internal/`, borne le corps avant que quiconque le lise.
-
-    FastAPI lit (et analyse) le corps d'une route à paramètre de corps avant d'appeler les dépendances, et la
-    signature ne se vérifie qu'après lecture du corps : sans cette borne, un inconnu sans secret ferait
-    charger en mémoire un corps de la taille qu'il veut. `/internal/` est hors du relais, donc de ses limites.
-    La taille déclarée trop grosse ou mal formée est refusée d'emblée ; sans `Content-Length` (chunked), les
-    octets sont comptés au fil de la lecture et la requête est coupée au-delà.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not scope["path"].startswith(signature.PREFIXE_INTERNE):
-            await self.app(scope, receive, send)
-            return
-        if self._declaration_refusee(scope):
-            await self._refuse(scope, receive, send)
-            return
-        recus = 0
-        reponse_commencee = False
-
-        async def receive_borne() -> Message:
-            nonlocal recus
-            message = await receive()
-            if message["type"] == "http.request":
-                recus += len(message.get("body", b""))
-                if recus > signature.CORPS_MAX_OCTETS:
-                    raise CorpsTropGros
-            return message
-
-        async def send_suivi(message: Message) -> None:
-            nonlocal reponse_commencee
-            if message["type"] == "http.response.start":
-                reponse_commencee = True
-            await send(message)
-
-        try:
-            await self.app(scope, receive_borne, send_suivi)
-        except CorpsTropGros:
-            if reponse_commencee:
-                raise
-            await self._refuse(scope, receive, send)
-
-    @staticmethod
-    def _declaration_refusee(scope: Scope) -> bool:
-        longueur = Headers(scope=scope).get("content-length", "0").strip()
-        return not _CHIFFRES.fullmatch(longueur) or int(longueur) > signature.CORPS_MAX_OCTETS
-
-    @staticmethod
-    async def _refuse(scope: Scope, receive: Receive, send: Send) -> None:
-        _journalise_le_refus(RaisonDeRefus.CORPS_TROP_GROS)
-        refus = reponse(Request(scope), 404, "introuvable", "Cette adresse n'existe pas.")
-        await refus(scope, receive, send)
 
 
 def _refus_de_forme(request: Request) -> RaisonDeRefus | None:
@@ -126,7 +63,7 @@ async def _controle(request: Request) -> None:
         raise SignatureRefusee(RaisonDeRefus.EN_TETE_ABSENT)
     if len(recus) > 1:
         raise SignatureRefusee(RaisonDeRefus.EN_TETE_REPETE)
-    en_tete = signature.lit_l_en_tete(recus[0], request.app.state.horloge())
+    en_tete = signature.lit_l_en_tete(recus[0], request.app.state.horloge_unix())
     try:
         corps = await request.body()
     except ClientDisconnect as erreur:

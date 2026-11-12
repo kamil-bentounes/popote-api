@@ -1,16 +1,54 @@
+import re
 from enum import StrEnum
+from functools import lru_cache
 from typing import Self
 
-from pydantic import AnyHttpUrl, SecretStr, field_validator, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
+# Le préfixe `__Host-` impose `Secure`, `Path=/` et aucun `Domain` : le navigateur refuse le cookie sinon.
+NOM_DU_COOKIE_DE_SESSION = "__Host-popote_session"
+# Un nom de cookie est un `token` (RFC 6265 § 4.1.1) ; on n'admet que lettres, chiffres, `_` et `-`.
+FORME_D_UN_NOM_DE_COOKIE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+# Les origines (schéma, hôte, port) d'où le front de chaque environnement appelle l'API.
+ORIGINES_PAR_ENV: dict[str, frozenset[str]] = {
+    "prod": frozenset({"https://notre-popote.fr"}),
+    "essai": frozenset({"https://essai.notre-popote.fr"}),
+    "local": frozenset({"http://localhost:5173", "http://127.0.0.1:5173"}),
+}
+# Le Worker du front d'essai (`name` de `popote-web/wrangler.jsonc`) : seul son nom entre dans le motif.
+WORKER_DU_FRONT = "popote-web-essai"
+# Un sous-domaine `workers.dev` est une étiquette DNS : minuscules, chiffres, tirets, 63 au plus.
+SOUS_DOMAINE_WORKERS = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+@lru_cache
+def motif_des_apercus(compte: str) -> re.Pattern[str]:
+    """Les URL d'aperçu (« version URLs ») de Cloudflare Workers du seul Worker du front, sur ce compte.
+
+    Format : `https://<préfixe>-<worker>.<sous-domaine du compte>.workers.dev` (Cloudflare, « Preview URLs »).
+    Le préfixe est l'alias (minuscules, chiffres, tirets, commençant par une lettre) ou l'empreinte de la
+    version (hexadécimal) ; l'étiquette entière tient en 63 caractères. Le sous-domaine du compte est
+    écrit en entier : le Worker d'un autre compte qui porterait le même nom ne passe pas.
+    """
+    nom = re.escape(WORKER_DU_FRONT)
+    maximum = 63 - len(WORKER_DU_FRONT) - 1  # la longueur du préfixe, tiret exclu
+    return re.compile(
+        rf"https://[a-z0-9][a-z0-9-]{{0,{maximum - 1}}}-{nom}\.{re.escape(compte)}\.workers\.dev"
+    )
 
 
 class Env(StrEnum):
     local = "local"
     essai = "essai"
     prod = "prod"
+
+
+class BreachCheck(StrEnum):
+    hibp = "hibp"  # Pwned Passwords (API « range »)
+    off = "off"  # aucune vérification : local seulement
 
 
 class Settings(BaseSettings):
@@ -32,8 +70,21 @@ class Settings(BaseSettings):
     # puis on retire l'ancien.
     internal_secret: SecretStr | None = None
     internal_secret_precedent: SecretStr | None = None
+    # Sous-domaine `workers.dev` du compte Cloudflare, pour reconnaître les aperçus de fusion du front.
+    # Essai seulement : la prod n'a pas d'aperçu.
+    apercu_compte: str | None = None
+
+    # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
+    breach_check: BreachCheck = BreachCheck.hibp
+
+    # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.
+    version: str = Field("inconnue", pattern=r"^[A-Za-z0-9._-]{1,64}$")
+
     # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
     json_logs: bool = True
+    # Le nom du cookie de session ne se change qu'en local, où `__Host-` et `Secure` ne passent pas partout
+    # sur `http://localhost` : hors local, c'est `NOM_DU_COOKIE_DE_SESSION`, un autre nom est une erreur.
+    session_cookie_name: str | None = None
 
     # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
     # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
@@ -68,6 +119,44 @@ class Settings(BaseSettings):
     def relais_exige(self) -> bool:
         return self.env is not Env.local
 
+    @property
+    def nom_du_cookie_de_session(self) -> str:
+        return self.session_cookie_name or NOM_DU_COOKIE_DE_SESSION
+
+    @model_validator(mode="after")
+    def _regle_le_cookie_de_session(self) -> Self:
+        nom = self.session_cookie_name
+        if nom is None:
+            return self
+        if self.env is not Env.local and nom != NOM_DU_COOKIE_DE_SESSION:
+            raise ValueError("session_cookie_name ne se change qu'en local.")
+        if FORME_D_UN_NOM_DE_COOKIE.fullmatch(nom) is None:
+            raise ValueError("session_cookie_name : lettres, chiffres, _ et - seulement (64 au plus).")
+        return self
+
+    @property
+    def origines(self) -> frozenset[str]:
+        return ORIGINES_PAR_ENV[self.env.value]
+
+    def origine_admise(self, origine: str) -> bool:
+        """Une origine exacte de l'environnement, ou, sur l'essai, une URL d'aperçu du front."""
+        if origine in self.origines:
+            return True
+        return (
+            self.apercu_compte is not None
+            and motif_des_apercus(self.apercu_compte).fullmatch(origine) is not None
+        )
+
+    @model_validator(mode="after")
+    def _apercu_seulement_sur_l_essai(self) -> Self:
+        if self.apercu_compte is None:
+            return self
+        if self.env is not Env.essai:
+            raise ValueError("apercu_compte : réservé à l'essai, la prod et le local n'ont pas d'aperçu.")
+        if not SOUS_DOMAINE_WORKERS.fullmatch(self.apercu_compte):
+            raise ValueError("apercu_compte : un sous-domaine workers.dev (minuscules, chiffres, tirets).")
+        return self
+
     @model_validator(mode="after")
     def _controle_les_secrets_internes(self) -> Self:
         # Une variable posée à vide vaut « absente » ; un secret posé doit être sûr, dans tout environnement.
@@ -101,4 +190,10 @@ class Settings(BaseSettings):
             )
         if self.database_url is None:
             raise ValueError("database_url est obligatoire hors local.")
+        return self
+
+    @model_validator(mode="after")
+    def _la_liste_de_fuites_reste_active_hors_local(self) -> Self:
+        if self.relais_exige and self.breach_check is not BreachCheck.hibp:
+            raise ValueError("breach_check : seule la valeur « hibp » est permise hors local.")
         return self

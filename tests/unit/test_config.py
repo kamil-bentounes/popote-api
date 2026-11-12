@@ -3,7 +3,7 @@ from _commun import DSN, SECRET
 from pydantic import ValidationError
 
 import popote_api.main
-from popote_api.config import Env, Settings
+from popote_api.config import BreachCheck, Env, Settings
 from popote_api.main import create_app
 
 
@@ -156,3 +156,73 @@ def test_trois_secrets_distincts_passent() -> None:
         }
     )
     assert len(reglages.secrets_internes) == 2
+
+
+def test_le_cookie_de_session_porte_son_nom_de_prefixe_host_par_defaut() -> None:
+    reglages = Settings.model_validate({"env": "local"})
+    assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
+
+
+def test_en_local_le_nom_du_cookie_de_session_se_configure() -> None:
+    reglages = Settings.model_validate({"env": "local", "session_cookie_name": "popote_session"})
+    assert reglages.nom_du_cookie_de_session == "popote_session"
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_un_autre_nom_de_cookie_de_session_echoue(env: str) -> None:
+    with pytest.raises(ValidationError, match="session_cookie_name"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "session_cookie_name": "popote_session"}
+        )
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_le_nom_du_cookie_de_session_peut_etre_redit(env: str) -> None:
+    reglages = Settings.model_validate(
+        {
+            "env": env,
+            "relay_secret": SECRET,
+            "database_url": DSN,
+            "session_cookie_name": "__Host-popote_session",
+        }
+    )
+    assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
+
+
+@pytest.mark.parametrize("nom", ["", "a b", "a=b", "a;b", "é", "a" * 65, "a\r\nSet-Cookie"])
+def test_un_nom_de_cookie_de_session_illegal_echoue(nom: str) -> None:
+    with pytest.raises(ValidationError, match="session_cookie_name"):
+        Settings.model_validate({"env": "local", "session_cookie_name": nom})
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_desactiver_la_liste_de_fuites_echoue(env: str) -> None:
+    with pytest.raises(ValidationError, match="breach_check"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "breach_check": "off"}
+        )
+
+
+def test_en_local_la_liste_de_fuites_peut_etre_desactivee_par_l_environnement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POPOTE_ENV", "local")
+    monkeypatch.setenv("POPOTE_BREACH_CHECK", "off")
+    assert Settings().breach_check is BreachCheck.off
+
+
+def test_une_valeur_inconnue_de_breach_check_echoue() -> None:
+    with pytest.raises(ValidationError, match="breach_check"):
+        Settings.model_validate({"env": "local", "breach_check": "hibp2"})
+
+
+def test_la_version_est_lue_dans_l_environnement_de_l_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POPOTE_ENV", "local")
+    monkeypatch.setenv("POPOTE_VERSION", "a" * 40)
+    assert Settings().version == "a" * 40
+
+
+@pytest.mark.parametrize("valeur", ["", "a b", "x" * 65, '"; drop', "é"])
+def test_une_version_mal_formee_echoue(valeur: str) -> None:
+    with pytest.raises(ValidationError, match="version"):
+        Settings.model_validate({"env": "local", "version": valeur})

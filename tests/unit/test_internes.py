@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.dependencies.models import Dependant
 from pydantic import BaseModel, ConfigDict
 from starlette.routing import BaseRoute
-from starlette.types import Message, Receive, Scope, Send
 
 from popote_api import relais
 from popote_api.api import internes
@@ -32,7 +31,7 @@ class Charge(BaseModel):
 def app_interne(env: str = "essai", **autres: str) -> FastAPI:
     """L'application, l'horloge figée à `T0`, et trois routes internes de test (écho, lecture, corps typé)."""
     app = create_app(reglages(env, internal_secret=SECRET, **autres))
-    app.state.horloge = lambda: float(T0)
+    app.state.horloge_unix = lambda: float(T0)
     routeur = internes.nouveau_routeur()
 
     @routeur.post("/echo")
@@ -69,7 +68,8 @@ async def appel(
     """Appelle la route signée par défaut ; `en_tetes` le remplace en entier."""
     envoyes = signee(methode, chemin, corps) if en_tetes is None else en_tetes
     if corps:
-        envoyes = {**envoyes, "Content-Length": str(len(corps))}
+        # `limites.TypeJson` : une écriture qui porte un corps doit annoncer du JSON, signée ou non.
+        envoyes = {"Content-Type": "application/json", **envoyes, "Content-Length": str(len(corps))}
     return await appeler(app, methode, chemin, envoyes, requete, corps)
 
 
@@ -184,17 +184,6 @@ async def test_deux_en_tetes_de_signature_sont_refuses() -> None:
     en_tetes = [(signature.EN_TETE, juste), (signature.EN_TETE, juste)]
     retour = await appeler(app_interne(), "GET", "/internal/lecture", en_tetes)
     assert introuvable(retour)
-
-
-async def test_un_corps_declare_trop_gros_est_refuse_sans_etre_lu() -> None:
-    en_tetes = {**signee("POST", "/internal/echo"), "Content-Length": str(signature.CORPS_MAX_OCTETS + 1)}
-    assert introuvable(await appeler(app_interne(), "POST", "/internal/echo", en_tetes))
-
-
-@pytest.mark.parametrize("longueur", ["abc", "-1", "9" * 5000, "\u0661", ""])
-async def test_une_longueur_declaree_mal_formee_est_refusee_sans_planter(longueur: str) -> None:
-    en_tetes = {**signee("POST", "/internal/echo"), "Content-Length": longueur}
-    assert introuvable(await appeler(app_interne(), "POST", "/internal/echo", en_tetes))
 
 
 async def test_sans_chemin_brut_la_requete_est_refusee() -> None:
@@ -532,20 +521,36 @@ async def test_aucune_route_interne_ne_repond_sans_signature() -> None:
     assert vues == 3
 
 
-# --- le corps est borné avant toute lecture ---------------------------------------------------------------
+# --- le corps est borné avant toute lecture (par `limites.TailleMax`, pour toute l'application) -----------
+
+TAILLE_MAX = 1024 * 1024
+JSON = {"Content-Type": "application/json"}
 
 
 def _morceau(octets: int, *, suite: bool = True) -> dict[str, object]:
     return {"type": "http.request", "body": b"x" * octets, "more_body": suite}
 
 
-async def test_un_corps_par_morceaux_qui_depasse_la_borne_est_coupe_sans_lire_le_reste() -> None:
-    en_tetes = signee("POST", "/internal/echo")
-    quart = signature.CORPS_MAX_OCTETS // 4
-    morceaux = [_morceau(quart) for _ in range(5)] + [_morceau(1, suite=False)]
+async def test_un_corps_declare_trop_gros_est_refuse_en_413_avant_la_signature() -> None:
+    en_tetes = {**JSON, **signee("POST", "/internal/echo"), "Content-Length": str(TAILLE_MAX + 1)}
+    retour = await appeler(app_interne(), "POST", "/internal/echo", en_tetes, receptions=[])
+    assert retour.status == 413
+
+
+async def test_un_corps_par_morceaux_qui_depasse_la_borne_est_coupe_en_413_sans_lire_le_reste() -> None:
+    morceaux = [_morceau(TAILLE_MAX // 4) for _ in range(5)] + [_morceau(1, suite=False)]
+    en_tetes = {**JSON, **signee("POST", "/internal/echo")}
     retour = await appeler(app_interne(), "POST", "/internal/echo", en_tetes, receptions=morceaux)
-    assert introuvable(retour)
+    assert retour.status == 413
     assert len(morceaux) == 1  # coupé au cinquième morceau : le dernier n'a jamais été lu
+
+
+async def test_un_corps_trop_gros_sur_une_route_a_corps_type_rend_413_pas_200() -> None:
+    en_tetes = {"Content-Type": "application/json"}
+    retour = await appeler(
+        app_interne(), "POST", "/internal/charge", en_tetes, receptions=[_morceau(TAILLE_MAX + 1)]
+    )
+    assert retour.status == 413
 
 
 async def test_un_corps_par_morceaux_dans_la_borne_passe() -> None:
@@ -556,36 +561,10 @@ async def test_un_corps_par_morceaux_dans_la_borne_passe() -> None:
     assert retour.status == 200
 
 
-async def test_un_corps_declare_trop_gros_sur_une_route_a_corps_typé_est_refuse_sans_etre_lu() -> None:
-    # FastAPI lit le corps de cette route avant ses dépendances : seule la borne d'amont l'arrête.
-    en_tetes = {"Content-Type": "application/json", "Content-Length": str(signature.CORPS_MAX_OCTETS + 1)}
-    retour = await appeler(app_interne(), "POST", "/internal/charge", en_tetes, receptions=[])
-    assert introuvable(retour)
-
-
-async def test_un_corps_par_morceaux_trop_gros_sur_une_route_a_corps_type_rend_404() -> None:
-    en_tetes = {"Content-Type": "application/json"}
-    recus = [_morceau(signature.CORPS_MAX_OCTETS), _morceau(1)]
-    retour = await appeler(app_interne(), "POST", "/internal/charge", en_tetes, receptions=recus)
-    assert introuvable(retour)
-
-
-async def test_la_borne_ne_s_applique_pas_hors_de_l_interne() -> None:
-    app = app_interne()
-
-    @app.post("/api/_test/gros")
-    async def gros(request: Request) -> dict[str, int]:
-        return {"octets": len(await request.body())}
-
-    corps = [_morceau(signature.CORPS_MAX_OCTETS), _morceau(10, suite=False)]
-    retour = await appeler(app, "POST", "/api/_test/gros", RELAIS, receptions=corps)
-    assert json.loads(retour.corps) == {"octets": signature.CORPS_MAX_OCTETS + 10}
-
-
 async def test_une_deconnexion_pendant_la_lecture_du_corps_rend_404_sans_erreur(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    en_tetes = {**signee("POST", "/internal/echo"), "Content-Length": "10"}
+    en_tetes = {**JSON, **signee("POST", "/internal/echo"), "Content-Length": "10"}
     with caplog.at_level(logging.INFO):
         retour = await appeler(app_interne(), "POST", "/internal/echo", en_tetes, receptions=[])
     assert introuvable(retour)
@@ -612,23 +591,3 @@ async def test_un_en_tete_absent_est_journalise_en_info_une_signature_fausse_en_
 def test_les_routes_internes_sont_hors_du_contrat() -> None:
     chemins = app_interne("local").openapi()["paths"]
     assert [c for c in chemins if c.startswith("/internal")] == []
-
-
-async def test_une_reponse_deja_commencee_n_en_recoit_pas_un_404_de_plus() -> None:
-    async def route_qui_lit_apres_avoir_repondu(scope: Scope, receive: Receive, send: Send) -> None:
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        while True:
-            await receive()
-
-    scope = {"type": "http", "path": "/internal/x", "headers": [], "query_string": b""}
-    envoyes: list[Message] = []
-
-    async def receive() -> Message:
-        return _morceau(signature.CORPS_MAX_OCTETS + 1)  # type: ignore[return-value]
-
-    async def send(message: Message) -> None:
-        envoyes.append(message)
-
-    with pytest.raises(internes.CorpsTropGros):
-        await internes.CorpsBorne(route_qui_lit_apres_avoir_repondu)(scope, receive, send)
-    assert [m["type"] for m in envoyes] == ["http.response.start"]

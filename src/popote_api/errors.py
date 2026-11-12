@@ -2,8 +2,9 @@
 
 Règle de levée : une route ou une dépendance FastAPI lève `Probleme` (ou `HTTPException`) ; un
 middleware, lui, rend `reponse(...)` directement. Une exception levée dans un middleware échappe
-aux handlers ci-dessous et finit en 500. L'authentification et la limite de débit sont donc des
-dépendances FastAPI, pas des middlewares.
+aux handlers ci-dessous et finit en 500. L'authentification est donc une dépendance FastAPI, pas un
+middleware. Seule exception : la limite de débit par adresse, qui doit refuser avant que le corps soit lu et
+compter aussi les routes inconnues ; son middleware rend `reponse(...)` et ne lève jamais.
 """
 
 import logging

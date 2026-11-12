@@ -111,6 +111,8 @@ remettrait `current_household()` à `NULL` et lui permettrait de créer un secon
 |---|---|
 | `current_household()` | `SECURITY DEFINER` : contourne la RLS de `user_profile` par *ownership de table*, ce qui évite la récursion de policy. **Ne jamais poser `FORCE ROW LEVEL SECURITY` sur `user_profile`.** |
 | `is_service_role()` | `session_user = 'popote_internal'`, ou `session_user = 'authenticator'` avec le claim JWT `role = service_role` (branche retirée à J+2). Voir `docs/securite.md` § 5.1. |
+| `mon_email()` | `SECURITY DEFINER`, `search_path = ''`, exécutable par `authenticated` seul (0134). L'adresse de `auth.uid()`, ou `NULL` : `user_profile` n'a pas d'e-mail et `authenticated` ne lit pas `auth.users`. Aucun paramètre : on ne peut demander que la sienne. Sert `GET /api/v1/me`. |
+| `session_personne(p_hash bytea)` | `SECURITY DEFINER`, `search_path = ''`, exécutable par `popote_api` **seul** (0133). La personne d'une session de connexion valide, ou `NULL` ; repousse l'échéance au plus une fois toutes les 5 minutes. Table `login_session` : hors des trois classes, RLS activée sans politique, aucun droit à aucun rôle de l'application (seuls les rôles de maintenance de Supabase, qui contournent la RLS, la lisent : elle ne garde que des empreintes SHA-256). Voir `docs/securite.md` § 4. |
 | `tg_class_b_guard` | `BEFORE UPDATE` sur les 4 tables de classe B. Pose la traçabilité, refuse les lignes sûres. Générique via `to_jsonb(old) ? 'confidence'`. |
 | `tg_nutrition_target_household` | `BEFORE INSERT` : remplit `household_id`. S'exécute avant `NOT NULL` et avant le `WITH CHECK`. |
 | `current_cycle()` | Le cycle vivant du foyer, ou `NULL`. |
