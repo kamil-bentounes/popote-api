@@ -5,7 +5,7 @@ La garde refuse par défaut : tout scope `http` ou `websocket`, quel que soit le
 
 import hmac
 import logging
-from ipaddress import ip_address
+from ipaddress import IPv6Address, ip_address
 
 from fastapi import Request
 from starlette.datastructures import Headers
@@ -34,6 +34,17 @@ def relais_valide(headers: Headers, settings: Settings) -> bool:
     return hmac.compare_digest(recu.encode(), attendu.encode())
 
 
+def _ip_normalisee(brut: str) -> str:
+    """L'adresse en forme canonique ; refuse un identifiant de zone, ramène `::ffff:a.b.c.d` à l'IPv4."""
+    adresse = ip_address(brut)
+    if isinstance(adresse, IPv6Address):
+        if adresse.scope_id:
+            raise ValueError("identifiant de zone IPv6")
+        if adresse.ipv4_mapped:
+            return str(adresse.ipv4_mapped)
+    return str(adresse)
+
+
 def ip_de(request: Request) -> str | None:
     """L'adresse de la personne, telle que le relais l'a vue.
 
@@ -47,7 +58,7 @@ def ip_de(request: Request) -> str | None:
     if not relais_valide(request.headers, settings):
         return None
     try:
-        return str(ip_address(request.headers.get(EN_TETE_IP, "").strip()))
+        return _ip_normalisee(request.headers.get(EN_TETE_IP, "").strip())
     except ValueError:
         journal.warning("X-Popote-IP absente ou invalide malgré un relais authentique.")
         return None

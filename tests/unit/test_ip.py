@@ -36,6 +36,8 @@ async def ip_vue(ip_annoncee: str | None, env: str = "essai") -> str | None:
         (" 203.0.113.7 ", "203.0.113.7"),
         ("2001:db8::1", "2001:db8::1"),
         ("2001:DB8:0:0:0:0:0:1", "2001:db8::1"),
+        ("::ffff:203.0.113.7", "203.0.113.7"),
+        ("::ffff:cb00:7107", "203.0.113.7"),
     ],
 )
 async def test_une_ip_valide_annoncee_par_le_relais_authentique_est_rendue(
@@ -44,7 +46,10 @@ async def test_une_ip_valide_annoncee_par_le_relais_authentique_est_rendue(
     assert await ip_vue(annoncee) == attendue
 
 
-@pytest.mark.parametrize("annoncee", [None, "", "   ", "pas-une-ip", "203.0.113.7, 10.0.0.1", "999.1.1.1"])
+@pytest.mark.parametrize(
+    "annoncee",
+    [None, "", "   ", "pas-une-ip", "203.0.113.7, 10.0.0.1", "999.1.1.1", "fe80::1%eth0", "fe80::1%25eth0"],
+)
 async def test_une_ip_absente_ou_invalide_rend_none_et_jamais_l_adresse_du_relais(
     annoncee: str | None, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -29,9 +29,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _exige_le_necessaire_hors_local(self) -> Self:
+        secret = self.relay_secret.get_secret_value() if self.relay_secret else ""
+        if not secret.isascii():
+            # L'en-tête HTTP reçu est comparé en octets : un secret hors ASCII ne se transmet pas sûrement.
+            raise ValueError("relay_secret : caractères ASCII uniquement.")
         if not self.relais_exige:
             return self
-        secret = self.relay_secret.get_secret_value() if self.relay_secret else ""
         if len(secret) < LONGUEUR_MINIMALE_DU_SECRET:
             raise ValueError(
                 f"relay_secret est obligatoire hors local, {LONGUEUR_MINIMALE_DU_SECRET} caractères au moins."

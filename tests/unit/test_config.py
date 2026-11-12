@@ -69,3 +69,10 @@ def test_create_app_sans_popote_env_echoue() -> None:
 
 def test_le_module_ne_cree_pas_d_application_a_l_import() -> None:
     assert not hasattr(popote_api.main, "app")
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+@pytest.mark.parametrize("secret", ["é" * 32, "s" * 31 + "é", "s" * 31 + "\u200b"])
+def test_un_secret_non_ascii_echoue_au_demarrage(env: str, secret: str) -> None:
+    with pytest.raises(ValidationError, match="ASCII"):
+        Settings.model_validate({"env": env, "relay_secret": secret, "database_url": DSN})
