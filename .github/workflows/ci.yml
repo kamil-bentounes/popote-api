@@ -188,9 +188,9 @@ jobs:
               | curl --silent --show-error --fail-with-body --max-time 30 --config - "$@"
           }
           conteneur="$SCW_API/containers/v1beta1/regions/$SCW_REGION/containers/$SCW_CONTAINER_ID"
-          corps=$(jq -n --arg image "$IMAGE" '{registry_image: $image}')
+          # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
+          corps=$(jq -n --arg image "$IMAGE" '{registry_image: $image, redeploy: true}')
           scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
-          scw --request POST --header 'Content-Type: application/json' --data '{}' "$conteneur/deploy" > /dev/null
           sleep 10 # laisser le statut quitter `ready` avant de le lire
           for _ in $(seq 1 60); do
             statut=$(scw "$conteneur" | jq -r '.status' || echo inconnu)
