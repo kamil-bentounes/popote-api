@@ -1,5 +1,5 @@
 import httpx
-from _commun import RELAIS, reglages
+from _commun import ECRITURE_ESSAI, RELAIS, reglages
 
 from popote_api.main import create_app
 
@@ -18,7 +18,7 @@ async def test_les_preuves_nexistent_pas_en_local() -> None:
 
 
 async def test_le_cookie_de_preuve_a_les_bons_attributs() -> None:
-    r = await client("essai").post("/api/_preuves/cookie", headers=RELAIS)
+    r = await client("essai").post("/api/_preuves/cookie", headers=RELAIS | ECRITURE_ESSAI)
     cookie = r.headers["set-cookie"]
     for attribut in ("__Host-popote_preuve=", "HttpOnly", "Secure", "Path=/", "SameSite=lax"):
         assert attribut in cookie

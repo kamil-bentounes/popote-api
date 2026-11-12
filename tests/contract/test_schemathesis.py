@@ -1,7 +1,7 @@
 """Schemathesis éprouve l'API en mémoire contre son propre contrat (spec § 9.2).
 
 Les quatre contrôles : pas de 5xx non documenté, réponse conforme au schéma, type de contenu conforme,
-statut documenté. La sonde de la base est factice (`SondeBase(verifie=...)`) : `/api/readyz` rend ainsi
+statut documenté. La sonde de la base est factice (`SondeBase(verifie)`) : `/api/readyz` rend ainsi
 ses deux réponses documentées, 200 et 503, sans base ; la vraie base est éprouvée par
 `tests/integration/test_readyz.py`.
 """
@@ -39,17 +39,17 @@ CONFIGURATION = SchemathesisConfig.from_dict(
 )
 
 
-def _schema(verifie: Callable[[str], Awaitable[bool]]) -> OpenApiSchema:
+def _schema(verifie: Callable[[], Awaitable[bool]]) -> OpenApiSchema:
     app = create_app(Settings.model_validate({"env": "local"}))
-    app.state.sonde = SondeBase("postgresql://factice", verifie=verifie)
+    app.state.sonde = SondeBase(verifie)
     return schemathesis.openapi.from_asgi("/api/openapi.json", app, config=CONFIGURATION)
 
 
-async def _repond(_dsn: str) -> bool:
+async def _repond() -> bool:
     return True
 
 
-async def _ne_repond_pas(_dsn: str) -> bool:
+async def _ne_repond_pas() -> bool:
     return False
 
 

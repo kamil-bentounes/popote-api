@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 import pytest
-from _commun import RELAIS, reglages
+from _commun import ECRITURE_ESSAI, RELAIS, reglages
 from fastapi import FastAPI, Request, Response
 
 from popote_api.main import create_app
@@ -337,11 +337,12 @@ async def test_la_personne_garde_30_ecritures_par_minute() -> None:
         for i in range(30):
             r = await c.post(
                 "/api/_test/personne",
-                headers=avec_relais(f"203.0.113.{i}") | WEB | {"X-Test-Personne": "anne"},
+                headers=avec_relais(f"203.0.113.{i}") | ECRITURE_ESSAI | {"X-Test-Personne": "anne"},
             )
             assert r.status_code == 200
         r = await c.post(
-            "/api/_test/personne", headers=avec_relais("198.51.100.1") | WEB | {"X-Test-Personne": "anne"}
+            "/api/_test/personne",
+            headers=avec_relais("198.51.100.1") | ECRITURE_ESSAI | {"X-Test-Personne": "anne"},
         )
     assert r.status_code == 429
 
