@@ -85,6 +85,15 @@ ok "contenu illisible dans l'archive ; une autre clé ne la déchiffre pas"
 grep -q '^sauvegarde:   public\.' "$travail/journal.txt" || ko "le journal ne donne pas les comptes"
 ok "le journal donne des tailles et des comptes, aucune valeur ni nom d'objet"
 
+# --- La prod n'accepte aucun destinataire de l'essai ------------------------------------------------------
+age-keygen -o "$travail/cle-prod.txt" 2> /dev/null
+age-keygen -y "$travail/cle-prod.txt" > "$travail/destinataires-prod.txt"
+CIBLE=prod DESTINATAIRES="$travail/destinataires-prod.txt" DESTINATAIRES_ESSAI="$travail/destinataires.txt" \
+  bash ops/sauvegarde/sauvegarde.sh --local-seulement "$travail/sortie-prod" > "$travail/prod.txt" 2>&1 ||
+  { cat "$travail/prod.txt" >&2; ko "prod avec une clé distincte de celle de l'essai : la sauvegarde devait réussir"; }
+age -d -i "$travail/cle-prod.txt" "$travail"/sortie-prod/popote-*.tar.age | tar -t > /dev/null || ko "l'archive de prod ne s'ouvre pas avec la clé de prod"
+ok "prod : une clé distincte de celle de l'essai est acceptée, et son archive s'ouvre avec la clé de prod"
+
 # --- Les refus ------------------------------------------------------------------------------------------
 refus() { # refus <description> <motif attendu dans le message> <VAR=valeur…>
   local description=$1 motif=$2; shift 2
@@ -99,6 +108,7 @@ echo 'AGE-SECRET-KEY-1NOTAREALKEY' > "$travail/privee.txt"
 refus "destinataires absents" "introuvables ou vides" DESTINATAIRES="$travail/absent.txt"
 refus "destinataires vides" "introuvables ou vides" DESTINATAIRES="$travail/vide.txt"
 refus "clé privée parmi les destinataires" "clé privée" DESTINATAIRES="$travail/privee.txt"
+refus "prod : un destinataire commun avec l'essai" "ouvrirait la prod" CIBLE=prod DESTINATAIRES="$travail/destinataires.txt" DESTINATAIRES_ESSAI="$travail/destinataires.txt"
 refus "cible inconnue" "prod ou essai" CIBLE=recette
 refus "variable manquante" "variables manquantes : PGPASSWORD" PGPASSWORD=
 [ ! -e "$travail/refus" ] || ko "un refus a laissé une sortie"

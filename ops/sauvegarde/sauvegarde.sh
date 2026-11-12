@@ -10,7 +10,8 @@
 # session, pas en mode transaction : `pg_export_snapshot` exige que la connexion reste la même) ;
 # SUPABASE_URL SUPABASE_SECRET_KEY (les fichiers des seaux) ; S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY
 # (sauf avec --local-seulement). Destinataires `age` : ops/sauvegarde/destinataires-$CIBLE.txt, ou le
-# fichier de DESTINATAIRES (les essais). S3_ENDPOINT et S3_REGION valent Scaleway (fr-par) par défaut.
+# fichier de DESTINATAIRES (les essais) ; pour la prod, aucun destinataire ne doit figurer dans
+# destinataires-essai.txt (ou DESTINATAIRES_ESSAI). S3_ENDPOINT et S3_REGION valent Scaleway (fr-par) par défaut.
 #
 # Le journal ne contient que des tailles, des comptes et des noms de tables : jamais une valeur, jamais
 # un nom d'objet. Pas de `set -x`.
@@ -43,6 +44,16 @@ destinataires=${DESTINATAIRES:-$racine/ops/sauvegarde/destinataires-$CIBLE.txt}
 # Une clé privée posée ici par erreur chiffrerait pour rien et finirait dans l'historique git.
 ! grep -q 'AGE-SECRET-KEY' "$destinataires" || echoue "le fichier des destinataires contient une clé privée"
 grep -Eq '^age1[a-z0-9]+$' "$destinataires" || echoue "aucune clé publique age1… dans le fichier des destinataires"
+
+# La clé privée de l'essai est un secret GitHub : si elle ouvrait aussi les sauvegardes de la prod, le secret
+# de l'essai (moins protégé) donnerait la prod. La prod n'accepte donc aucun destinataire de l'essai.
+if [ "$CIBLE" = prod ]; then
+  destinataires_essai=${DESTINATAIRES_ESSAI:-$racine/ops/sauvegarde/destinataires-essai.txt}
+  if [ -f "$destinataires_essai" ]; then
+    communs=$(grep -Fxf <(grep -E '^age1[a-z0-9]+$' "$destinataires_essai") <(grep -E '^age1[a-z0-9]+$' "$destinataires") || true)
+    [ -z "$communs" ] || echoue "un destinataire de la prod figure aussi dans destinataires-essai.txt : la clé de l'essai ouvrirait la prod"
+  fi
+fi
 
 for outil in pg_dump pg_dumpall psql age node tar; do
   command -v "$outil" > /dev/null || echoue "outil absent : $outil"
