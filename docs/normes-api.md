@@ -113,6 +113,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `popote-api`. L'intégration continue compare chaque branche à `main` (`oasdiff`) et refuse une rupture non
   annoncée. `popote-web` fixe une version du contrat et régénère son client ; un écart fait échouer son
   intégration continue.
+- Régénérer le contrat : `uv run python scripts/exporte_contrat.py` (application construite en `local`, sans base ;
+  clés triées, fin de ligne finale). `openapi.json` est marqué `linguist-generated` : il ne s'écrit jamais à la
+  main, et en cas de conflit on le régénère. Chaque route porte un `operation_id` stable et un `summary`.
+- Les erreurs d'une route sont déclarées avec `responses=reponses_erreur(404, 409)` (`errors.py`) : le contrat
+  les publie en `application/problem+json`, schéma `ProblemDetails` (la forme que `reponse()` produit).
+  `readyz` déclare aussi `503`.
+- Gardes de la CI (job `contrat`) : le contrat régénéré doit être celui qui est versionné ; `oasdiff breaking`
+  compare à `origin/main:openapi.json` et échoue sur une rupture (niveau `ERR`) ; retirer une route sans
+  l'avoir marquée `deprecated: true` avec `x-sunset` (date au moins 30 jours après) est une rupture. Tant que
+  `main` n'a pas de contrat, le contrôle le dit et passe. `tests/contract/` (Schemathesis, version figée)
+  vérifie en mémoire : pas de 5xx non documenté, schéma, type de contenu et statut documentés.
 
 ## 3.10 Par défaut, fermé
 
