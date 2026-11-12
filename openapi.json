@@ -130,6 +130,25 @@
         ],
         "title": "ProblemDetails",
         "type": "object"
+      },
+      "Sante": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version"
+        ],
+        "title": "Sante",
+        "type": "object"
       }
     }
   },
@@ -147,7 +166,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Etat"
+                  "$ref": "#/components/schemas/Sante"
                 }
               }
             },

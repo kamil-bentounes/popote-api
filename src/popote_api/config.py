@@ -2,7 +2,7 @@ import re
 from enum import StrEnum
 from typing import Self
 
-from pydantic import AnyHttpUrl, SecretStr, field_validator, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
@@ -18,6 +18,11 @@ class Env(StrEnum):
     prod = "prod"
 
 
+class BreachCheck(StrEnum):
+    hibp = "hibp"  # Pwned Passwords (API « range »)
+    off = "off"  # aucune vérification : local seulement
+
+
 class Settings(BaseSettings):
     # hide_input_in_errors : l'erreur de démarrage ne doit jamais recopier un secret mal formé.
     model_config = SettingsConfigDict(env_prefix="POPOTE_", extra="ignore", hide_input_in_errors=True)
@@ -31,6 +36,12 @@ class Settings(BaseSettings):
     # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
     database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
+    breach_check: BreachCheck = BreachCheck.hibp
+
+    # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.
+    version: str = Field("inconnue", pattern=r"^[A-Za-z0-9._-]{1,64}$")
+
     # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
     json_logs: bool = True
     # Le nom du cookie de session ne se change qu'en local, où `__Host-` et `Secure` ne passent pas partout
@@ -93,4 +104,10 @@ class Settings(BaseSettings):
             )
         if self.database_url is None:
             raise ValueError("database_url est obligatoire hors local.")
+        return self
+
+    @model_validator(mode="after")
+    def _la_liste_de_fuites_reste_active_hors_local(self) -> Self:
+        if self.relais_exige and self.breach_check is not BreachCheck.hibp:
+            raise ValueError("breach_check : seule la valeur « hibp » est permise hors local.")
         return self

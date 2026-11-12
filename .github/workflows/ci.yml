@@ -149,17 +149,46 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      # L'identifiant de l'image scannée : `deploie-essai` vérifie que l'archive chargée est bien celle-là.
+      id: ${{ steps.archive.outputs.id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: docker build -t popote-api:ci .
+      - name: Construire l'image
+        run: docker build --build-arg POPOTE_VERSION="$GITHUB_SHA" -t popote-api:ci .
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: popote-api:ci
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+      # L'aller-retour est éprouvé à chaque exécution, pas seulement sur main : le déploiement ne tourne
+      # qu'après la fusion, trop tard pour découvrir qu'une archive ne rend pas la même image.
+      - name: Archiver l'image scannée et vérifier qu'elle se recharge à l'identique
+        id: archive
+        run: |
+          set -euo pipefail
+          avant=$(docker image inspect --format '{{.Id}}' popote-api:ci)
+          docker save --output "$RUNNER_TEMP/image.tar" popote-api:ci
+          docker rmi popote-api:ci > /dev/null
+          docker load --input "$RUNNER_TEMP/image.tar" > /dev/null
+          apres=$(docker image inspect --format '{{.Id}}' popote-api:ci)
+          if [ "$avant" != "$apres" ]; then
+            echo "::error::l'archive ne rend pas l'image scannée"
+            exit 1
+          fi
+          echo "id=$avant" >> "$GITHUB_OUTPUT"
+      - name: Transmettre l'image scannée au déploiement
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-scannee
+          path: ${{ runner.temp }}/image.tar
+          # Le temps d'un déploiement : l'image ne contient aucun secret, mais n'a pas à rester.
+          retention-days: 1
+          if-no-files-found: error
   secrets:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -321,27 +350,43 @@ jobs:
       SCW_REGISTRY: ${{ vars.SCW_REGISTRY }}
       SCW_CONTAINER_ID: ${{ vars.SCW_CONTAINER_ID }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          persist-credentials: false
-      - name: Construire l'image
-        id: image
+          name: image-scannee
+          path: ${{ runner.temp }}/image
+      - name: Charger l'image scannée
+        env:
+          IMAGE_SCANNEE: ${{ needs.image.outputs.id }}
         run: |
           set -euo pipefail
-          image="$SCW_REGISTRY/api:${GITHUB_SHA::12}"
-          docker build -t "$image" .
-          echo "nom=$image" >> "$GITHUB_OUTPUT"
-      - name: Se connecter au registre et pousser l'image
+          docker load --input "$RUNNER_TEMP/image/image.tar" > /dev/null
+          if [ "$(docker image inspect --format '{{.Id}}' popote-api:ci)" != "$IMAGE_SCANNEE" ]; then
+            echo "::error::l'archive n'est pas l'image que Trivy a scannée"
+            exit 1
+          fi
+      - name: Se connecter au registre, pousser l'image et lire son empreinte
+        id: pousse
         env:
-          IMAGE: ${{ steps.image.outputs.nom }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
         run: |
           set -euo pipefail
+          depot="$SCW_REGISTRY/api"
+          tag="${GITHUB_SHA::12}"
           printf '%s' "$SCW_SECRET_KEY" | docker login "${SCW_REGISTRY%%/*}" --username nologin --password-stdin
-          docker push "$IMAGE"
-      - name: Mettre à jour le conteneur et attendre qu'il soit prêt
+          docker tag popote-api:ci "$depot:$tag"
+          docker push "$depot:$tag"
+          # L'empreinte vient de la réponse du registre au dépôt : c'est elle que le conteneur exécutera.
+          reference=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$depot:$tag" | grep -F "$depot@" | head -n 1)
+          if ! printf '%s' "$reference" | grep -Eq '^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::empreinte de l'image poussée introuvable ou mal formée"
+            exit 1
+          fi
+          echo "empreinte poussée : ${reference#*@}"
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Déployer l'empreinte, vérifier la version en ligne, sinon rétablir l'image précédente
         env:
-          IMAGE: ${{ steps.image.outputs.nom }}
+          REFERENCE: ${{ steps.pousse.outputs.reference }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
         run: |
           set -euo pipefail
@@ -351,38 +396,69 @@ jobs:
               | curl --silent --show-error --fail-with-body --max-time 30 --config - "$@"
           }
           conteneur="$SCW_API/containers/v1beta1/regions/$SCW_REGION/containers/$SCW_CONTAINER_ID"
-          # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
-          corps=$(jq -n --arg image "$IMAGE" '{registry_image: $image, redeploy: true}')
-          scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
-          sleep 10 # laisser le statut quitter `ready` avant de le lire
-          for _ in $(seq 1 60); do
-            statut=$(scw "$conteneur" | jq -r '.status' || echo inconnu)
-            echo "statut du conteneur : $statut"
-            case "$statut" in
-              ready) exit 0 ;;
-              error | locked) echo "::error::le conteneur est en statut $statut"; exit 1 ;;
-            esac
-            sleep 5
-          done
-          echo "::error::le conteneur n'est pas prêt après 5 minutes"
+
+          # Dans ces fonctions, appelées sous `if`, `set -e` ne joue pas : chaque échec est un `return 1`.
+          attendre_pret() {
+            local statut
+            for _ in $(seq 1 60); do
+              statut=$(scw "$conteneur" | jq -r '.status') || statut=inconnu
+              echo "statut du conteneur : $statut"
+              case "$statut" in
+                ready) return 0 ;;
+                error | locked) echo "::error::le conteneur est en statut $statut"; return 1 ;;
+              esac
+              sleep 5
+            done
+            echo "::error::le conteneur n'est pas prêt après 5 minutes"
+            return 1
+          }
+          deployer() {
+            local corps
+            # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
+            corps=$(jq -n --arg image "$1" '{registry_image: $image, redeploy: true}') || return 1
+            scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null || return 1
+            sleep 10 # laisser le statut quitter `ready` avant de le lire
+            attendre_pret
+          }
+          # Seule la version rendue prouve que la nouvelle image répond : l'ancienne répond 200 aussi.
+          attendre_version() {
+            local version fin=$((SECONDS + 180))
+            while :; do
+              version=$(curl --silent --max-time 10 https://essai.notre-popote.fr/api/healthz | jq -r '.version // empty' 2> /dev/null) || version=""
+              echo "version en ligne : ${version:-aucune}"
+              if [ "$version" = "$GITHUB_SHA" ]; then
+                return 0
+              fi
+              if [ "$SECONDS" -ge "$fin" ]; then
+                echo "::error::/api/healthz ne rend pas la version $GITHUB_SHA après 3 minutes"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # Lue avant la mise à jour : c'est l'image à reposer si la nouvelle ne démarre pas.
+          precedente=$(scw "$conteneur" | jq -r '.registry_image // empty')
+          if [ -z "$precedente" ]; then
+            echo "::error::image en place illisible : rien à reposer en cas d'échec, on ne déploie pas"
+            exit 1
+          fi
+          if deployer "$REFERENCE" && attendre_version; then
+            echo "déploiement vérifié"
+            exit 0
+          fi
+          echo "::error::la nouvelle image ne tient pas : on repose l'image précédente"
+          if deployer "$precedente"; then
+            echo "image précédente reposée"
+          else
+            echo "::error::l'image précédente n'a pas pu être reposée : l'essai est à rétablir à la main"
+          fi
           exit 1
-      - name: Interroger /api/healthz jusqu'à 200
-        run: |
-          set -euo pipefail
-          fin=$((SECONDS + 180))
-          until [ "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 https://essai.notre-popote.fr/api/healthz)" = 200 ]; do
-            if [ "$SECONDS" -ge "$fin" ]; then
-              echo "::error::/api/healthz ne répond pas 200 après 3 minutes"
-              exit 1
-            fi
-            sleep 5
-          done
-          echo "/api/healthz répond 200"
       - name: Ne garder que les 5 images les plus récentes
         # Le déploiement est déjà vérifié : un nettoyage raté ne doit pas le rougir.
         continue-on-error: true
         env:
-          IMAGE: ${{ steps.image.outputs.nom }}
+          TAG_COURANT: ${{ steps.pousse.outputs.tag }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
         run: |
@@ -393,7 +469,6 @@ jobs:
           }
           registre="$SCW_API/registry/v1/regions/$SCW_REGION"
           espace="${SCW_REGISTRY#*/}"
-          tag_courant="${IMAGE##*:}"
           id_espace=$(scw "$registre/namespaces?name=$espace&project_id=$SCW_DEFAULT_PROJECT_ID" \
             | jq -r --arg n "$espace" '[.namespaces[] | select(.name == $n)][0].id // empty')
           [ -n "$id_espace" ] || { echo "::error::espace de noms $espace introuvable"; exit 1; }
@@ -402,7 +477,7 @@ jobs:
           [ -n "$id_image" ] || { echo "::error::image api introuvable dans $espace"; exit 1; }
           # Les plus récentes d'abord ; on saute les 5 premières et, par prudence, le tag qu'on vient de déployer.
           anciens=$(scw "$registre/images/$id_image/tags?order_by=created_at_desc&page_size=100" \
-            | jq -r --arg courant "$tag_courant" '.tags[5:][] | select(.name != $courant) | .id')
+            | jq -r --arg courant "$TAG_COURANT" '.tags[5:][] | select(.name != $courant) | .id')
           for id_tag in $anciens; do
             scw --request DELETE "$registre/tags/$id_tag" > /dev/null
             echo "tag supprimé : $id_tag"

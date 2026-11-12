@@ -14,5 +14,9 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev \
 USER 10001
 # La valeur la plus stricte par défaut : l'essai la remplace au déploiement.
 ENV POPOTE_ENV=prod
+# Le SHA du commit, rendu par /api/healthz : le déploiement vérifie que c'est cette image qui répond.
+# En dernier, pour que sa variation n'invalide aucune couche de dépendances.
+ARG POPOTE_VERSION=inconnue
+ENV POPOTE_VERSION=$POPOTE_VERSION
 EXPOSE 8080
 CMD ["/app/.venv/bin/uvicorn", "--factory", "popote_api.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header", "--no-access-log"]

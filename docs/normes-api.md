@@ -135,8 +135,19 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   10 par jour. En-têtes `RateLimit-Policy` et `RateLimit` ; `429` avec `Retry-After`.
 - **Modèles** : quotas par foyer et par usage, décomptés de façon atomique en base
   (`update … where appels < quota returning …`) AVANT l'appel ; plafond en euros appliqué.
-- **Tailles et délais** : corps JSON 1 Mo au plus ; photos à part (§ 6.1) ; délai serveur 30 s, sauf les
-  appels au modèle traités en travail asynchrone (§ 3.7).
+- **Tailles, types et délais** (`src/popote_api/limites.py`, middlewares ASGI qui rendent leur réponse sans
+  jamais lever) : corps 1 Mio au plus (`413 corps_trop_gros`), que `Content-Length` l'annonce ou non, les octets
+  reçus en flux étant comptés ; une écriture (`POST`, `PUT`, `PATCH`) qui porte un corps est en
+  `application/json` (`charset=utf-8` toléré ; `application/merge-patch+json` aussi, pour `PATCH`), sinon
+  `415 type_non_supporte` ; photos à part (§ 6.1) ; délai serveur 25 s (le relais coupe à 30 s : l'API répond avant lui), au-delà `503 delai_depasse` avec
+  `Retry-After: 10` (une requête qui a déjà commencé sa réponse ne peut plus changer de statut : sa
+  connexion est coupée et l'événement journalisé), sauf les appels au modèle traités en travail asynchrone
+  (§ 3.7). Un client qui retente un `POST` après un `503` le fait avec son `Idempotency-Key` (§ 3.5).
+  Le refus de la garde du relais passe avant : sans le secret du relais, le corps n'est pas lu.
+  **Règle des routes qui écrivent** : elles sont `async def`, jamais `def`. Une route `def` tourne dans un fil
+  que le délai ne peut pas annuler : le client reçoit la `503` pendant que l'écriture se termine. Le travail
+  bloquant d'une route (appel à une bibliothèque synchrone, base) s'exécute sous un délai interne plus court
+  que 25 s (par exemple `statement_timeout` côté base), pour qu'il échoue avant la `503`, jamais après.
 - La « dernière activité » d'une session et les compteurs ne s'écrivent pas plus d'une fois toutes les
   5 minutes par session : une lecture ne devient pas une écriture.
 
@@ -170,8 +181,14 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.9 Cache, versions, contrat
 
-- Données privées : `Cache-Control: no-store`. Référentiels publics (catalogue, aliments) : `ETag` et
-  `Cache-Control: private, max-age=…`.
+- Données privées : `Cache-Control: no-store`, posé par défaut sur toute réponse de l'API qui n'en porte pas
+  (middleware `SansCache` : un oubli d'une route ne rend jamais une réponse privée mise en cache par un
+  intermédiaire). Référentiels publics (catalogue, aliments) : `ETag` et `Cache-Control: private, max-age=…`.
+- **`no-store` et `304` ne se contredisent pas.** `no-store` interdit au cache HTTP (celui du navigateur, d'un
+  intermédiaire) de garder la réponse. Les requêtes conditionnelles du § 3.5 et § 3.7 ne passent pas par ce
+  cache : c'est le code du client qui garde l'`ETag` en mémoire (TanStack Query) et le renvoie dans
+  `If-None-Match` ; la réponse `304` lui dit de garder la donnée qu'il a déjà, il n'y a rien à relire dans un
+  cache HTTP. Ce qu'on économise, c'est le corps, pas la requête.
 - Seuls des ajouts compatibles dans `/v1`. Une rupture ouvre `/v2`. Une route retirée annonce `Deprecation`
   (RFC 9745) et `Sunset` (RFC 8594) au moins 30 jours avant.
 - Le contrat est produit par le code (FastAPI, OpenAPI 3.1), exporté dans `openapi.json` et versionné dans
@@ -238,7 +255,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   [`exploitation.md`](exploitation.md) § 10.
 - `suivi.signale(exc, request_id)` : la prise du suivi hébergé (D4), sans effet ; elle ne fait jamais échouer
   la réponse d'une 500.
-- `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
+- `/api/healthz` (le processus vit ; rend aussi `version`, le SHA du commit de l'image) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
   La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun
   droit sur les tables) et lit une ligne de `public.instance_setting` : table de référence lisible sans foyer,
