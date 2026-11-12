@@ -4,6 +4,9 @@
 - `Base.session(empreinte)` : le contexte « personne » d'une requête portée par une session. Lit la session
   (`session_personne`, exécutable par `popote_api` seul) puis emprunte `authenticated`, dans la MÊME
   transaction.
+- `Base.connexion()` : pool `popote_api`, ni rôle emprunté ni identité (`current_user = popote_api`). Réservé
+  aux fonctions `security definer` dont seul `popote_api` a l'`execute` : connexion, limites, sessions,
+  vérification d'un mot de passe (liste fermée).
 - `Base.service()` : pool `popote_internal`, `set local role service_role`. Réservé aux routes internes,
   à l'invitation et aux purges (liste fermée).
 
@@ -60,6 +63,7 @@ ROLE_PERSONNE: LiteralString = "set local role authenticated"
 PREAMBULE_PERSONNE: LiteralString = f"{ROLE_PERSONNE}; {DELAIS_API}"
 # La personne de la session, ou null. Se lit sous le rôle de connexion : `authenticated` n'a pas le droit.
 LIT_LA_SESSION: LiteralString = "select public.session_personne(%s) as personne"
+PREAMBULE_CONNEXION: LiteralString = DELAIS_API  # pas de `set role` : la transaction reste `popote_api`
 PREAMBULE_SERVICE: LiteralString = (
     f"set local role service_role; {DELAIS_INTERNE}; "
     f"set local statement_timeout = '{DELAI_DE_LA_BASE_DU_SERVICE}'"
@@ -196,6 +200,15 @@ class Base:
         travail de la requête partagent la transaction, que le contexte valide en sortie normale.
         """
         return _contexte_de_session(self._api, empreinte, self._emetteur)
+
+    def connexion(self) -> AbstractAsyncContextManager[Curseur]:
+        """Une transaction `popote_api` sans rôle emprunté ni revendication : aucune table n'y est lisible.
+
+        Elle ne sert qu'à appeler les fonctions `security definer` réservées à `popote_api` (rien n'y
+        identifie une personne : aucune revendication, et le schéma `auth` lui est fermé).
+        Seul le code de la liste fermée l'appelle.
+        """
+        return _contexte(self._api, PREAMBULE_CONNEXION, None, BaseIndisponibleError())
 
     def service(self) -> AbstractAsyncContextManager[Curseur]:
         """Une transaction `service_role`. Seul le code de la liste fermée l'appelle."""

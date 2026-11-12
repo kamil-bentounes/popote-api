@@ -26,10 +26,24 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   avec `crypt()` le hachage bcrypt de `auth.users` (prouvé en local le 12/11 sur des comptes réels de banc :
   bon mot de passe accepté, mauvais refusé). L'API n'appelle donc pas le point de connexion public de Supabase
   Auth : ni ses limites par IP partagées, ni des jetons à révoquer. La fonction :
-  - refuse un compte sans hachage, banni (`banned_until` dans le futur) ou supprimé (`deleted_at`), et tout
-    hachage qui ne commence pas par `$2a$` ou `$2b$` ;
-  - compare contre un hachage factice quand l'e-mail est inconnu, pour un temps de réponse identique ;
-  - reçoit un mot de passe déjà borné à 72 octets par l'API (pgcrypto ne lit pas au-delà).
+  - refuse sans exception et sans dire pourquoi : adresse inconnue, deux comptes pour la même adresse (à la casse
+    près), compte SSO ou anonyme, banni (`banned_until` dans le futur), supprimé (`deleted_at`), hachage vide, nul ou
+    mal formé, adresse non confirmée (`email_confirmed_at` nul : GoTrue refuse aussi cette connexion, et sans cela
+    une inscription avec l'adresse d'un tiers ouvrirait la porte), mot de passe vide, nul ou de plus de 72 octets ;
+    un compte supprimé ne compte pas dans le doublon d'adresse ;
+  - **n'accepte que `$2a$`** (B15, migration 0137) : pgcrypto ne reconnaît pas `$2b$` ni `$2y$` et, devant un préfixe
+    inconnu, retombe sur l'ancien `crypt` DES sans erreur (vérifié). Un compte à un autre préfixe passe par « mot
+    de passe oublié » (il a un profil) ; les préfixes **et les coûts** (`$2a$10$`) des hachages de la prod sont comptés à la répétition de la bascule : le
+    hachage factice a le coût 10, un autre coût en prod ferait dire au temps que le compte existe ;
+  - fait **exactement un `crypt()` dans toutes les branches** : le vrai hachage, ou un hachage factice de même
+    coût (`$2a$10$`) pour un compte inconnu, banni, supprimé, sans hachage ou mal formé. Mesuré en local le 12/11 :
+    58,7 ms pour un compte connu et un mauvais mot de passe, 59,5 ms pour une adresse inconnue (médiane de 25) ;
+  - reçoit un mot de passe déjà borné à 72 octets par l'API (`candidats_de_connexion`) et le refuse au-delà, **sans
+    le tronquer** (une troncature accepterait un mot de passe qui n'est pas le bon) ;
+  - cherche l'e-mail sous la forme de l'API (`email_normalise`, la même que la clé de limite : B24), en égalité
+    après `lower(btrim())`, jamais en motif (`ilike`) ;
+  - `popote_api` seul l'exécute (`Base.connexion()`) ; la variante `verifie_mot_de_passe_de(personne, mot de
+    passe)` sert la réauthentification. Une fonction interne (`private.mot_de_passe_correspond`) porte le `crypt()`.
 - **Comptes sans mot de passe** (nés d'un lien magique, qui disparaît) : ils passent par « mot de passe
   oublié » pour en choisir un. Leur nombre est compté sur la copie de la prod pendant la répétition, et Kamil
   est prévenu s'il y en a dans le foyer.
@@ -88,7 +102,8 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   publiable par défaut peut être supprimée. Si elle ne le peut pas, `/auth/v1` ne tient que par les réglages
   ci-dessus, et c'est écrit.
 - **Journal de sécurité.** Connexions réussies et ratées, déconnexions, changements et réinitialisations de mot
-  de passe, invitations créées, acceptées ou révoquées, sessions fermées, comptes supprimés. Gardé un an.
+  de passe, invitations créées, acceptées ou révoquées, sessions fermées, comptes supprimés. Gardé un an, sauf les
+  échecs et blocages de connexion (90 jours) ; voir 4.2.
 
 ### 4.1 Règles de mot de passe et liste de fuites (code : `security/mots_de_passe.py`, `infra/fuites.py`)
 
@@ -139,21 +154,52 @@ l'import de ce module).
 **Réglage.** `POPOTE_BREACH_CHECK` : `hibp` (défaut) ou `off`. `off` n'est permis qu'en local ; `essai` et `prod`
 refusent de démarrer avec autre chose que `hibp`.
 
+### 4.2 Journal de sécurité et clés HMAC (0.4, migration 0136 ; code : `security/journal_securite.py`, `security/empreintes.py`)
+
+- **Table `public.security_event`** : `id`, `occurred_at`, `kind` (liste fermée par CHECK : `connexion_reussie`,
+  `connexion_ratee`, `connexion_bloquee`, `deconnexion`, `reauthentification_reussie`, `reauthentification_ratee`,
+  `session_fermee`, `mot_de_passe_change`, `reinitialisation_demandee`, `reinitialisation_utilisee`,
+  `invitation_creee`, `invitation_acceptee`, `invitation_revoquee`, `compte_supprime`, `compte_repris`,
+  `verification_fuites_indisponible` ; un test compare cette liste à l'énumération `Evenement`), `person_id`
+  (`on delete set null`), `session_id` et `invitation_id` (sans clé étrangère : la session ou le lien peut être
+  purgé avant l'événement), `account_key` et `ip_hash` (32 octets), `request_id` (32 caractères hexadécimaux, celui
+  de l'API). **Rien d'autre** : ni e-mail, ni IP, ni agent utilisateur, ni champ libre. RLS activée et forcée, aucune
+  politique, aucun droit à aucun rôle de l'application.
+- **Clés HMAC.** `account_key` = HMAC-SHA256 du poivre sur l'e-mail normalisé (`email_normalise` : NFKC, minuscules,
+  espaces de bord retirés : la forme unique, aussi pour la recherche en base et la création du compte) ; `ip_hash` =
+  HMAC-SHA256 de l'IP canonique : IPv4 entière, `::ffff:a.b.c.d` ramenée à l'IPv4, **IPv6 réduite à son /64**, requête
+  sans adresse = une clé commune « sans-ip ». Chaque clé a son étiquette : une clé de compte n'est jamais une clé
+  d'IP. Le poivre (`POPOTE_IDENTITY_PEPPER`, 32 caractères au moins) n'apparaît dans aucun `repr` ni journal.
+- **Sans poivre** (le conteneur d'essai ne l'a pas encore) : hors local, `cle_compte` et `cle_ip` rendent `None`,
+  l'événement s'écrit **sans clés** (on perd le lien entre événements, pas l'événement) et un avertissement part au
+  démarrage. Un appelant qui compte par clé (les limites de connexion) refuse au lieu de compter sans clé. En local
+  le poivre est tiré au hasard par processus.
+- **Conservation.** `connexion_ratee` et `connexion_bloquee`, liées à une clé de compte et non à une personne :
+  **90 jours** ; tout le reste **1 an**. Purge par lots de 5 000, idempotente, qui rend un nombre de lignes et jamais
+  une valeur ; tâche `pg_cron` quotidienne (`journal-securite-purge`, 03 h 41 UTC) en SQL pur, gardée comme celle des
+  rappels (sans l'extension, la migration passe et avertit).
+- **Droits.** Le schéma `private` naît fermé (`revoke all`, aucun rôle n'a `usage`) : les aides internes
+  (`private.ecrit_evenement`) et les variantes à horloge (`private.purge_journal_securite(p_now, p_lot)`) y vivent. Une
+  fonction exécutable par `authenticated` n'a jamais de paramètre d'horloge (une personne choisirait sa date ; un test
+  de surface le garde). `public.journalise` est exécutable par `popote_api` (contexte connexion) **et** `service_role`
+  (contexte service, où le rôle COURANT est `service_role`), jamais par `authenticated` ni `popote_internal` : une
+  personne ne forge pas d'événement. Le droit se lit sur le rôle courant : les tests jouent `set local role`.
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |
 |---|---|---|---|---|
 | Personne | `popote_api` | `set local role authenticated` | `request.jwt.claims` = `{"sub": <personne>, "role": "authenticated"}` | toute requête d'une personne connectée ; la RLS et les gardes (`tg_saisie_garde`, `tg_depense_garde`…) s'appliquent |
 | Service | `popote_internal` | `set local role service_role` | `{"role": "service_role"}` | seulement les routes `/internal/*`, l'acceptation d'une invitation et les purges ; liste fermée, chaque usage relu |
-| Connexion | `popote_api` | aucun : fonction `security definer` privée | aucune | vérifier un mot de passe ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction |
+| Connexion | `popote_api` | aucun : fonction `security definer` privée (`Base.connexion()`) | aucune | vérifier un mot de passe, limites, sessions, journal ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction ; liste fermée, comme le service |
 | Sauvegarde | `postgres`, hors API | — | — | `pg_dump` lancé par GitHub Actions |
 
 - **Deux rôles de connexion, deux pools.** `popote_api` n'est membre que d'`authenticated`, `popote_internal`
   que de `service_role`, tous deux `NOINHERIT` et sans super-utilisateur. Le pool de `popote_internal` n'est
   monté que par le code des routes internes, de l'invitation et des purges. Un `set role` oublié ou une
   injection dans une requête de personne ne peut donc pas atteindre le contournement de la RLS.
-- **Un contexte = une transaction.** `Base.personne(id)` et `Base.service()` (`infra/db.py`) ouvrent chacun une
-  transaction dans le bon rôle ; tout y est posé par `set local` ou `set_config(…, true)` et meurt au `commit`
+- **Un contexte = une transaction.** `Base.personne(id)`, `Base.connexion()` (le rôle `popote_api` nu, sans `set role`) et `Base.service()`
+  (`infra/db.py`) ouvrent chacun une transaction dans le bon rôle ; tout y est posé par `set local` ou `set_config(…, true)` et meurt au `commit`
   ou au `rollback` (aussi sur une annulation côté client : la connexion rendue au pool est propre).
   `POPOTE_DATABASE_URL` est le rôle `popote_api`, exigé hors local ; `POPOTE_DATABASE_URL_INTERNAL`, le rôle
   `popote_internal`, est facultative pour l'instant : sans elle l'application démarre avec un avertissement et
@@ -303,7 +349,7 @@ configuration, journalisation, protection des données.
   aucune donnée d'une personne identifiable, d'où aucune conservation à convenir. À confirmer : la
   localisation du service (hors Union européenne ou non) et son éventuel statut de sous-traitant ne sont pas
   établis par ce document ; à faire valider avant la bascule (0.8).
-- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an, journal des appels au modèle 90 jours,
+- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an (échecs et blocages de connexion : 90 jours), journal des appels au modèle 90 jours,
   photos de saisie 30 jours.
 - Export et suppression du compte restent des routes de l'API.
 

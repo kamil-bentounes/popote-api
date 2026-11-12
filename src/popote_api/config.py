@@ -8,6 +8,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, ValidationInfo, field_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
+LONGUEUR_MINIMALE_DU_POIVRE = 32
 HOTES_LOCAUX = frozenset({"127.0.0.1", "localhost", "::1"})
 FORME_D_UN_NOM_D_HOTE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
 
@@ -88,6 +89,10 @@ class Settings(BaseSettings):
     # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
     database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Le poivre des clés HMAC du journal et des limites (`security/empreintes.py`). Facultatif tant que le
+    # conteneur d'essai ne l'a pas : sans lui hors local, les clés manquent (journal sans clés, avertissement
+    # au démarrage) ; en local il est tiré au hasard par processus. Posé, il fait 32 caractères au moins.
+    identity_pepper: SecretStr | None = None
     # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans
     # `internal_secret`, toute route interne répond 404 (fermé par défaut) et le démarrage avertit.
     # `internal_secret_precedent` sert la rotation : le nouveau secret va en `internal_secret`, l'ancien ici,
@@ -147,6 +152,22 @@ class Settings(BaseSettings):
         if adresse.scheme == "http" and not (info.data.get("env") is Env.local and hote in HOTES_LOCAUX):
             raise ValueError("supabase_url : https obligatoire (http seulement vers l'hôte local, en local).")
         return adresse
+
+    @field_validator("identity_pepper", mode="before")
+    @classmethod
+    def _poivre_vide_vaut_absent(cls, valeur: object) -> object:
+        return None if valeur == "" else valeur
+
+    @field_validator("identity_pepper")
+    @classmethod
+    def _poivre_assez_long(cls, poivre: SecretStr | None) -> SecretStr | None:
+        if poivre is None:
+            return None
+        # Un retour à la ligne de fin (secret lu dans un fichier) ne compte ni dans la longueur ni la clé.
+        propre = poivre.get_secret_value().strip()
+        if len(propre) < LONGUEUR_MINIMALE_DU_POIVRE:
+            raise ValueError(f"identity_pepper : {LONGUEUR_MINIMALE_DU_POIVRE} caractères au moins.")
+        return SecretStr(propre)
 
     @property
     def emetteur_des_jetons(self) -> str | None:
