@@ -110,7 +110,7 @@ remettrait `current_household()` à `NULL` et lui permettrait de créer un secon
 | Objet | Rôle |
 |---|---|
 | `current_household()` | `SECURITY DEFINER` : contourne la RLS de `user_profile` par *ownership de table*, ce qui évite la récursion de policy. **Ne jamais poser `FORCE ROW LEVEL SECURITY` sur `user_profile`.** |
-| `is_service_role()` | `current_user = 'service_role'`, plus le claim JWT en secours. |
+| `is_service_role()` | `session_user = 'popote_internal'`, ou `session_user = 'authenticator'` avec le claim JWT `role = service_role` (branche retirée à J+2). Voir `docs/securite.md` § 5.1. |
 | `tg_class_b_guard` | `BEFORE UPDATE` sur les 4 tables de classe B. Pose la traçabilité, refuse les lignes sûres. Générique via `to_jsonb(old) ? 'confidence'`. |
 | `tg_nutrition_target_household` | `BEFORE INSERT` : remplit `household_id`. S'exécute avant `NOT NULL` et avant le `WITH CHECK`. |
 | `current_cycle()` | Le cycle vivant du foyer, ou `NULL`. |
