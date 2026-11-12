@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import SecretStr
 
-from popote_api import contrat, errors, relais
+from popote_api import contrat, erreurs_base, errors, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
@@ -25,7 +25,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()  # type: ignore[call-arg]
     # Le contrat n'est publié ni en prod, ni sous une forme interactive. Pas de redirection de
     # barre finale : `/api/x/` n'est pas `/api/x`, et une redirection révélerait la route.
-    base = Base.depuis_dsn(_secret(settings.database_url), _secret(settings.database_url_internal))
+    base = Base.depuis_dsn(
+        _secret(settings.database_url),
+        _secret(settings.database_url_internal),
+        emetteur=settings.emetteur_des_jetons,
+    )
     if not base.service_configure:
         journal.warning("POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503).")
 
@@ -59,5 +63,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.env is Env.essai:
         app.include_router(preuves.router)
     errors.installe(app)
+    erreurs_base.installe(app)
     contrat.installe(app)
     return app

@@ -97,6 +97,20 @@ class ServiceIndisponibleError(BaseError):
     """Le pool `popote_internal` n'est pas configuré : `POPOTE_DATABASE_URL_INTERNAL` manque."""
 
 
+def revendications_personne(personne_id: UUID, emetteur: str | None) -> dict[str, str]:
+    """Ce que PostgREST pose dans `request.jwt.claims` pour une personne connectée, et que le SQL lit.
+
+    Inventaire des migrations (`tests/unit/test_revendications.py` le garde) : `sub` (via `auth.uid()`),
+    `role` (`is_service_role()`, `auth.role()`) et `iss` (`tg_recipe_photo`). Le JWT de GoTrue porte aussi
+    `aud`, `exp`, `iat`, `email`, `phone`, `app_metadata`, `user_metadata`, `aal`, `amr`, `session_id` et
+    `is_anonymous` : aucune requête ne les lit, on ne les invente pas.
+    """
+    revendications = {"sub": str(personne_id), "role": "authenticated"}
+    if emetteur:
+        revendications["iss"] = emetteur
+    return revendications
+
+
 def cree_pool(dsn: str, taille_max: int, attente_s: float = ATTENTE_D_UNE_CONNEXION_S) -> Pool:
     """Un pool fermé, sans connexion ouverte : le conteneur dort à zéro instance (`min_size=0`).
 
@@ -119,17 +133,19 @@ def cree_pool(dsn: str, taille_max: int, attente_s: float = ATTENTE_D_UNE_CONNEX
 class Base:
     """Les deux pools et les deux contextes. Une instance par application, fermée à l'arrêt."""
 
-    def __init__(self, api: Pool | None, interne: Pool | None) -> None:
+    def __init__(self, api: Pool | None, interne: Pool | None, *, emetteur: str | None = None) -> None:
         for nom in JOURNAUX_A_FILTRER:
             logging.getLogger(nom).addFilter(FILTRE_DU_POOL)  # sans doublon : même instance
         self._api = api
         self._interne = interne
+        self._emetteur = emetteur
 
     @classmethod
-    def depuis_dsn(cls, dsn_api: str | None, dsn_interne: str | None) -> Self:
+    def depuis_dsn(cls, dsn_api: str | None, dsn_interne: str | None, *, emetteur: str | None = None) -> Self:
         return cls(
             cree_pool(dsn_api, TAILLE_MAX_API) if dsn_api else None,
             cree_pool(dsn_interne, TAILLE_MAX_INTERNE) if dsn_interne else None,
+            emetteur=emetteur,
         )
 
     @property
@@ -149,7 +165,7 @@ class Base:
 
     def personne(self, personne_id: UUID) -> AbstractAsyncContextManager[Curseur]:
         """Une transaction qui agit comme cette personne : la RLS et les gardes jouent comme pour elle."""
-        revendications = {"sub": str(personne_id), "role": "authenticated"}
+        revendications = revendications_personne(personne_id, self._emetteur)
         return _contexte(self._api, PREAMBULE_PERSONNE, revendications, BaseIndisponibleError())
 
     def service(self) -> AbstractAsyncContextManager[Curseur]:
