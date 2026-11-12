@@ -1,0 +1,80 @@
+name: Contrôles
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions: {}
+concurrency:
+  group: ci-${{ github.ref }}
+  # Annuler un run dépassé seulement sur une demande de fusion : chaque envoi sur main est vérifié.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # edge-runtime reste : les tests appellent des fonctions Edge.
+      - run: npx supabase start -x studio,imgproxy,logflare,vector,supavisor
+      # Les clés locales de démonstration ne sont pas des secrets.
+      - run: bash ops/env-local.sh
+      # `supabase start` applique déjà les migrations d'une base neuve, et il n'y a pas de seed.sql :
+      # un `db reset` ne ferait que redémarrer la pile.
+      - run: npm run seed
+      - name: Servir les fonctions Edge
+        run: |
+          nohup npx supabase functions serve > "$RUNNER_TEMP/functions.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS \
+              -H 'Origin: http://localhost:5173' \
+              -H 'Access-Control-Request-Method: POST' \
+              http://127.0.0.1:54321/functions/v1/accept-invite || true)
+            if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+              echo "fonctions prêtes"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "les fonctions ne répondent pas (dernier code : $code)"
+          cat "$RUNNER_TEMP/functions.log"
+          exit 1
+      - run: npx vitest run
+      - name: Journal des fonctions
+        if: failure()
+        run: cat "$RUNNER_TEMP/functions.log" || true
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # l'action liste les commits de la demande de fusion
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false" # pas de commentaire : le jeton reste en lecture seule
+  semgrep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    container:
+      image: semgrep/semgrep:1.182.0@sha256:4a34048c04fef049f71665047f074cffb00cc3d89482f965a5cd151d589237af
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: semgrep scan --config p/python --config p/typescript --config p/owasp-top-ten --error --metrics off
