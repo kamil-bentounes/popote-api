@@ -16,6 +16,8 @@ Usage :
     python3 ops/aligne_droits.py --appliquer     # envoie le SQL, relit, exit 1 s'il reste un écart
 
 Environnement : SUPABASE_ESSAI_TOKEN et ESSAI_REF (jamais affichés).
+Liste blanche : la cible est la référence ESSAI_REF (`--cible` ne peut que la répéter) ; la source doit être
+un hôte local. Tout le reste est refusé, la prod comprise.
 Codes de sortie : 0 aucun écart, 1 écart restant, 2 erreur d'utilisation ou d'accès.
 """
 
@@ -28,9 +30,10 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,7 +44,10 @@ DEFAULT_BATCH_SIZE = 200
 API_TIMEOUT_SECONDS = 60
 PSQL_TIMEOUT_SECONDS = 60
 
-# La prod ne doit jamais être une cible, même par une erreur de variable d'environnement.
+# Les cibles sont une liste blanche : la référence de l'essai (ESSAI_REF) et, pour la source seulement,
+# un hôte local. La prod reste en plus refusée en dur : si ESSAI_REF la désignait par erreur, la liste
+# blanche, qui se lit dans la même variable, la laisserait passer.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 FORBIDDEN_PROJECT_REF = "mjlxfffdirlqmmjzhorg"
 PROJECT_REF_PATTERN = re.compile(r"[a-z]{20}")
 
@@ -432,10 +438,20 @@ def parse_snapshot_output(output: str) -> RawSnapshot:
     return snapshot
 
 
-def read_source(dsn: str) -> Snapshot:
-    """Lecture seule de la base locale : la transaction est refusée si elle écrit."""
+def check_source_dsn(dsn: str) -> None:
+    """La source est la base locale : seule une adresse `postgresql://` vers un hôte local passe."""
     if dsn.startswith("-"):
         raise AlignmentError("le DSN source ne peut pas commencer par un tiret")
+    parts = urllib.parse.urlsplit(dsn)
+    if parts.scheme not in ("postgres", "postgresql") or "host" in urllib.parse.parse_qs(parts.query):
+        raise AlignmentError("le DSN source doit être une adresse postgresql:// sans paramètre host")
+    if (parts.hostname or "") not in LOCAL_HOSTS:
+        raise AlignmentError("la source doit être un hôte local")
+
+
+def read_source(dsn: str) -> Snapshot:
+    """Lecture seule de la base locale : la transaction est refusée si elle écrit."""
+    check_source_dsn(dsn)
     environment = {**os.environ, "PGOPTIONS": "-c default_transaction_read_only=on"}
     try:
         result = subprocess.run(  # noqa: S603 - arguments en liste, pas de shell
@@ -457,11 +473,13 @@ def read_source(dsn: str) -> Snapshot:
 class ManagementApi:
     """POST /v1/projects/{ref}/database/query. Le jeton n'est ni affiché ni conservé dans repr."""
 
-    def __init__(self, project_ref: str, token: str) -> None:
+    def __init__(self, project_ref: str, token: str, allowed_refs: Collection[str]) -> None:
         if not PROJECT_REF_PATTERN.fullmatch(project_ref):
-            raise AlignmentError("ESSAI_REF n'a pas la forme d'une référence de projet")
+            raise AlignmentError("la cible n'a pas la forme d'une référence de projet")
         if project_ref == FORBIDDEN_PROJECT_REF:
             raise AlignmentError("la prod n'est jamais une cible")
+        if project_ref not in allowed_refs:
+            raise AlignmentError("la cible n'est pas dans la liste blanche (ESSAI_REF)")
         self._url = f"https://api.supabase.com/v1/projects/{project_ref}/database/query"
         self._token = token
 
@@ -520,14 +538,21 @@ def print_report(report: Report) -> None:
 def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--appliquer", action="store_true", help="envoie le SQL à la cible")
+    parser.add_argument("--cible", help="référence du projet visé ; doit être ESSAI_REF (par défaut)")
     parser.add_argument("--source-dsn", default=os.environ.get("ALIGNE_SOURCE_DSN", DEFAULT_SOURCE_DSN))
     parser.add_argument("--sortie", type=Path, default=DEFAULT_OUTPUT_PATH, help="fichier SQL écrit")
     parser.add_argument("--taille-lot", type=int, default=DEFAULT_BATCH_SIZE)
     return parser.parse_args(argv)
 
 
+def open_target(arguments: argparse.Namespace) -> ManagementApi:
+    essai_ref = read_environment("ESSAI_REF")
+    return ManagementApi(arguments.cible or essai_ref, read_environment("SUPABASE_ESSAI_TOKEN"), {essai_ref})
+
+
 def run(arguments: argparse.Namespace) -> int:
-    api = ManagementApi(read_environment("ESSAI_REF"), read_environment("SUPABASE_ESSAI_TOKEN"))
+    check_source_dsn(arguments.source_dsn)
+    api = open_target(arguments)
     source = read_source(arguments.source_dsn)
     report = compute_report(source, api.read_snapshot())
     statements = render_sql(report.to_fix)

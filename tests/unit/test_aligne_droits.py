@@ -263,20 +263,94 @@ class TestBatches:
         assert len(sent) == 2
 
 
+ESSAI = "abcdefghijklmnopqrst"
+AUTRE = "tsrqponmlkjihgfedcba"
+
+
 class TestApi:
-    def test_prod_is_refused(self) -> None:
-        with pytest.raises(tool.AlignmentError):
-            tool.ManagementApi(tool.FORBIDDEN_PROJECT_REF, "jeton")
+    def test_prod_is_refused_even_if_someone_allows_it(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="prod"):
+            tool.ManagementApi(tool.FORBIDDEN_PROJECT_REF, "jeton", {tool.FORBIDDEN_PROJECT_REF})
 
     def test_malformed_reference_is_refused(self) -> None:
         with pytest.raises(tool.AlignmentError):
-            tool.ManagementApi("../x", "jeton")
+            tool.ManagementApi("../x", "jeton", {"../x"})
+
+    def test_target_outside_the_allowlist_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.ManagementApi(AUTRE, "jeton", {ESSAI})
+
+    def test_empty_allowlist_refuses_everything(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.ManagementApi(ESSAI, "jeton", set())
+
+    def test_target_in_the_allowlist_is_accepted(self) -> None:
+        api = tool.ManagementApi(ESSAI, "jeton", {ESSAI})
+        assert repr(api) == "ManagementApi(<projet d'essai>)"
 
     def test_token_is_not_in_repr(self) -> None:
-        assert "jeton-secret" not in repr(tool.ManagementApi("abcdefghijklmnopqrst", "jeton-secret"))
+        assert "jeton-secret" not in repr(tool.ManagementApi(ESSAI, "jeton-secret", {ESSAI}))
 
     def test_snapshot_output_shape_is_checked(self) -> None:
         with pytest.raises(tool.AlignmentError):
             tool.parse_snapshot_output('{"schemas": []}')
         with pytest.raises(tool.AlignmentError):
             tool.parse_snapshot_output("pas du json")
+
+
+class TestSourceLocale:
+    @pytest.mark.parametrize(
+        "dsn",
+        [
+            "postgresql://postgres:postgres@127.0.0.1:54322/postgres",
+            "postgresql://postgres:postgres@localhost:54322/postgres",
+            "postgres://u@[::1]:5432/postgres",
+        ],
+    )
+    def test_local_hosts_are_accepted(self, dsn: str) -> None:
+        tool.check_source_dsn(dsn)
+
+    @pytest.mark.parametrize(
+        "dsn",
+        [
+            "postgresql://postgres:x@db.abcdefghijklmnopqrst.supabase.co:5432/postgres",
+            "postgresql://u@127.0.0.1.evil.example/postgres",
+            "postgresql://u@localhost.evil.example/postgres",
+            "postgresql:///postgres?host=db.example.com",
+            "host=db.example.com dbname=postgres",
+            "postgresql://postgres@/postgres",
+            "",
+        ],
+    )
+    def test_any_other_host_is_refused(self, dsn: str) -> None:
+        with pytest.raises(tool.AlignmentError):
+            tool.check_source_dsn(dsn)
+
+
+class TestCible:
+    def environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ESSAI_REF", ESSAI)
+        monkeypatch.setenv("SUPABASE_ESSAI_TOKEN", "jeton")
+
+    def test_the_target_defaults_to_the_trial_reference(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.environment(monkeypatch)
+        api = tool.open_target(tool.parse_arguments([]))
+        assert api._url.startswith(f"https://api.supabase.com/v1/projects/{ESSAI}/")
+
+    def test_another_reference_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.environment(monkeypatch)
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.open_target(tool.parse_arguments(["--cible", AUTRE]))
+
+    def test_the_prod_is_refused_even_when_the_environment_names_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.environment(monkeypatch)
+        monkeypatch.setenv("ESSAI_REF", tool.FORBIDDEN_PROJECT_REF)
+        with pytest.raises(tool.AlignmentError, match="prod"):
+            tool.open_target(tool.parse_arguments([]))
+
+    def test_the_exit_code_is_two_for_a_foreign_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.environment(monkeypatch)
+        code = tool.main(["--source-dsn", "postgresql://u@db.example.com/postgres"])
+        assert code == 2
