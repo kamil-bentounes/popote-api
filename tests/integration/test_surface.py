@@ -25,6 +25,9 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.journalise(text, uuid, uuid, uuid, bytea, bytea, text)": {"popote_api", "service_role"},
     "private.ecrit_evenement(text, uuid, uuid, uuid, bytea, bytea, text)": set(),
     "private.purge_journal_securite(timestamp with time zone, integer)": set(),
+    "public.verifie_mot_de_passe(text, text)": {"popote_api"},
+    "public.verifie_mot_de_passe_de(uuid, text)": {"popote_api"},
+    "private.mot_de_passe_correspond(text, text)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()
