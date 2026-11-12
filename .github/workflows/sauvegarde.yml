@@ -1,0 +1,96 @@
+name: Sauvegarde
+# La sauvegarde chiffrée nocturne de la prod et de l'essai (docs/exploitation.md, § 5.4).
+# Deux jobs indépendants, chacun dans son environnement GitHub (ses secrets et ses variables) : si la prod
+# échoue, l'essai part quand même. Un échec envoie un mail de GitHub.
+on:
+  schedule:
+    - cron: "30 2 * * *" # 02:30 UTC
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: sauvegarde
+  # Jamais d'annulation : une sauvegarde entamée va au bout.
+  cancel-in-progress: false
+jobs:
+  prod:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: prod-sauvegarde
+    permissions:
+      contents: read
+    env:
+      CIBLE: prod
+      # Le pooler Supavisor en mode SESSION (port 5432), rôle `postgres.<réf>`.
+      PGHOST: ${{ vars.PROD_PGHOST }}
+      PGPORT: "5432"
+      PGUSER: ${{ vars.PROD_PGUSER }}
+      PGDATABASE: postgres
+      SUPABASE_URL: ${{ vars.PROD_SUPABASE_URL }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: ./.github/actions/outils-sauvegarde
+      - name: Sauvegarder la prod
+        env:
+          PGPASSWORD: ${{ secrets.PROD_PGPASSWORD }}
+          SUPABASE_SECRET_KEY: ${{ secrets.PROD_SUPABASE_SECRET_KEY }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+        run: |
+          # Une valeur absente doit faire échouer ici, avec son nom, plutôt qu'au milieu de la sauvegarde.
+          if [ -z "$SUPABASE_SECRET_KEY" ]; then
+            echo "::error::le secret PROD_SUPABASE_SECRET_KEY manque dans l'environnement prod-sauvegarde : sans lui, les fichiers des seaux ne seraient pas sauvegardés"
+            exit 1
+          fi
+          manque=()
+          for nom in PGHOST PGUSER SUPABASE_URL S3_BUCKET PGPASSWORD SUPABASE_SECRET_KEY S3_ACCESS_KEY S3_SECRET_KEY; do
+            [ -n "${!nom}" ] || manque+=("$nom")
+          done
+          if [ ${#manque[@]} -gt 0 ]; then
+            echo "::error::sauvegarde de la prod impossible, valeurs manquantes dans l'environnement prod-sauvegarde : ${manque[*]} (secrets PROD_PGPASSWORD, PROD_SUPABASE_SECRET_KEY, S3_ACCESS_KEY, S3_SECRET_KEY ; variables PROD_PGHOST, PROD_PGUSER, PROD_SUPABASE_URL, S3_BUCKET)"
+            exit 1
+          fi
+          bash ops/sauvegarde/sauvegarde.sh
+  essai:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: essai
+    permissions:
+      contents: read
+    env:
+      CIBLE: essai
+      PGHOST: ${{ vars.ESSAI_PGHOST }}
+      PGPORT: "5432"
+      PGUSER: ${{ vars.ESSAI_PGUSER }}
+      PGDATABASE: postgres
+      SUPABASE_URL: ${{ vars.ESSAI_SUPABASE_URL }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: ./.github/actions/outils-sauvegarde
+      - name: Sauvegarder l'essai
+        env:
+          PGPASSWORD: ${{ secrets.ESSAI_PGPASSWORD }}
+          SUPABASE_SECRET_KEY: ${{ secrets.ESSAI_SUPABASE_SECRET_KEY }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+        run: |
+          manque=()
+          for nom in PGHOST PGUSER SUPABASE_URL S3_BUCKET PGPASSWORD SUPABASE_SECRET_KEY S3_ACCESS_KEY S3_SECRET_KEY; do
+            [ -n "${!nom}" ] || manque+=("$nom")
+          done
+          if [ ${#manque[@]} -gt 0 ]; then
+            echo "::error::sauvegarde de l'essai impossible, valeurs manquantes dans l'environnement essai : ${manque[*]} (secrets ESSAI_PGPASSWORD, ESSAI_SUPABASE_SECRET_KEY, S3_ACCESS_KEY, S3_SECRET_KEY ; variables ESSAI_PGHOST, ESSAI_PGUSER, ESSAI_SUPABASE_URL, S3_BUCKET)"
+            exit 1
+          fi
+          bash ops/sauvegarde/sauvegarde.sh
