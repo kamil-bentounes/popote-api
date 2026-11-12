@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from popote_api import errors, relais
+from popote_api import errors, limites, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
@@ -26,8 +26,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     dsn = settings.database_url.get_secret_value() if settings.database_url else None
     app.state.sonde = SondeBase(dsn)
 
-    # Le dernier middleware ajouté est le plus extérieur : `Identifiant` enveloppe `Garde`, si bien que
-    # le refus de la garde porte lui aussi son identifiant.
+    # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`
+    # (tout refus porte son identifiant), `Garde` (un appelant sans le secret du relais est renvoyé avant
+    # que son corps soit lu), puis les limites de `limites.py`, le délai enveloppant les autres.
+    app.add_middleware(limites.TailleMax)
+    app.add_middleware(limites.TypeJson)
+    app.add_middleware(limites.Delai, secondes=limites.DELAI_SECONDES)
+    app.add_middleware(limites.SansCache)
     app.add_middleware(relais.Garde, settings=settings)
     app.add_middleware(Identifiant)
 
