@@ -51,7 +51,9 @@ LONGUEUR_MAX_DU_CHEMIN: Final = 2048
 
 # sf-string de la RFC 9651 § 3.3.3 : des guillemets, autour d'ASCII imprimable (%x20-7E) où seuls `"` et
 # `\` ont besoin d'un échappement. Pas de paramètre (`;a=1`), pas de liste : l'en-tête est UNE chaîne.
-CHAINE_DE_CHAMP: Final = re.compile(r'"((?:[ !#-\[\]-~]|\\["\\])*)"')
+# Classe écrite en points de code (%x20-21, %x23-5B, %x5D-7E) : disjointe de l'échappement `\\` qui suit, donc
+# aucun retour arrière exponentiel ; l'en-tête est de plus borné en longueur avant la correspondance.
+CHAINE_DE_CHAMP: Final = re.compile(r'"((?:[\x20\x21\x23-\x5b\x5d-\x7e]|\\["\\])*)"')
 ECHAPPEMENT: Final = re.compile(r'\\(["\\])')
 
 DETAIL_MANQUANT: Final = (
