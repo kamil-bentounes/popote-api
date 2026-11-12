@@ -1,10 +1,15 @@
 """Des foyers et des personnes de test, créés en direct dans la base puis retirés par `nettoie()`.
 
 Données inventées seulement. La connexion est celle de l'administrateur local : c'est la préparation
-des données, jamais le chemin éprouvé. Les sessions de connexion arrivent avec leur table (étape 0.3, T6).
+des données, jamais le chemin éprouvé. Les sessions de connexion sont posées en direct dans leur table : la
+création par la connexion est l'étape 0.4.
 """
 
+import base64
+import hashlib
+import secrets
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import psycopg
@@ -16,12 +21,31 @@ class Personne:
     foyer_id: UUID
 
 
+@dataclass(frozen=True)
+class SessionDeTest:
+    """Le jeton tel que le cookie le porte, et l'empreinte que la base garde."""
+
+    id: UUID
+    jeton: str
+    empreinte: bytes
+
+
+def jeton_et_empreinte() -> tuple[str, bytes]:
+    octets = secrets.token_bytes(32)
+    return base64.urlsafe_b64encode(octets).decode("ascii").rstrip("="), hashlib.sha256(octets).digest()
+
+
 class Fabrique:
     def __init__(self, admin: psycopg.Connection[tuple[object, ...]]) -> None:
         self._admin = admin
         self._foyers: list[UUID] = []
         self._utilisateurs: list[UUID] = []
         self._recettes: list[UUID] = []
+
+    @property
+    def admin(self) -> psycopg.Connection[tuple[object, ...]]:
+        """La connexion de préparation, pour relire ou fausser une ligne que le test inspecte."""
+        return self._admin
 
     def foyer(self) -> UUID:
         foyer_id = uuid4()
@@ -59,6 +83,30 @@ class Fabrique:
         )
         self._recettes.append(recette_id)
         return recette_id
+
+    def session(
+        self,
+        personne_id: UUID,
+        *,
+        vue_il_y_a: timedelta = timedelta(0),
+        echeance_dans: timedelta = timedelta(days=30),
+        absolue_dans: timedelta = timedelta(days=90),
+        revoquee: bool = False,
+    ) -> SessionDeTest:
+        """Une session posée en direct (la connexion est l'étape 0.4) ; elle part avec sa personne."""
+        jeton, empreinte = jeton_et_empreinte()
+        ligne = self._admin.execute(
+            """
+            insert into public.login_session
+              (token_hash, person_id, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at)
+            values (%s, %s, now() - %s, now() - %s, now() + %s, now() + %s,
+                    case when %s then now() end)
+            returning id
+            """,
+            (empreinte, personne_id, vue_il_y_a, vue_il_y_a, echeance_dans, absolue_dans, revoquee),
+        ).fetchone()
+        assert ligne is not None
+        return SessionDeTest(ligne[0], jeton, empreinte)
 
     def nettoie(self) -> None:
         # Pas de clé étrangère de la recette vers le foyer : la suppression du foyer ne l'emporte pas.
