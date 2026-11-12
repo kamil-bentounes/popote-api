@@ -92,11 +92,37 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.5 Écritures sûres
 
-- **Idempotence** (brouillon IETF `Idempotency-Key`, version 08) : en-tête obligatoire sur tout `POST` qui crée
-  ou déclenche un effet (dépense, repas mangé, invitation, appel au modèle). La clé, l'empreinte du corps et la
-  réponse sont gardées 24 h : un second envoi rend la même réponse sans refaire l'effet ; la même clé avec un
-  autre corps rend `422` ; un second envoi pendant que le premier tourne rend `409` ; l'en-tête manquant rend
-  `400`.
+- **Idempotence** (brouillon IETF `draft-ietf-httpapi-idempotency-key-header-08`, vérifié le 12/11/2026) :
+  en-tête obligatoire sur tout `POST` d'une personne connectée qui crée ou déclenche un effet (dépense, repas
+  mangé, appel au modèle). Un second envoi de la même clé rend la même réponse sans refaire l'effet ; la même
+  clé avec un autre contenu rend `422 cle_idempotence_reutilisee` ; un second envoi pendant que le premier tourne
+  rend `409 requete_en_cours` ; l'en-tête manquant rend `400 cle_idempotence_manquante`, mal formé
+  `400 cle_idempotence_invalide`.
+  - **Forme de l'en-tête** : une chaîne de champ structuré (RFC 9651), donc entre guillemets :
+    `Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"`. Contenu ASCII imprimable de 1 à 255 caractères,
+    `"` et `\` échappés par `\`. Ni paramètre (`;a=1`), ni liste, ni deuxième ligne d'en-tête : `400`.
+  - **Même envoi** = même méthode, même chemin, même chaîne de requête, même corps (SHA-256, `empreinte_de_la_requete`).
+  - **Garde** : `idempotency_key` (migration 0135), clé primaire (personne, clé), RLS sur `auth.uid()` : la même
+    clé chez l'autre personne est indépendante. La réponse (statut 2xx, en-têtes `Content-Type`, `Location` et
+    `ETag` seulement, corps de 64 Kio au plus) est écrite **dans la transaction de l'effet**, celle de
+    `Base.session` : une exception annule les deux, rien n'est gardé, un nouvel envoi refait l'effet. Une route
+    idempotente échoue en levant `Probleme`, jamais en rendant une réponse d'erreur (sinon l'effet est annulé et
+    la route rend `500` : faute de programmation).
+  - **Un envoi à la fois par clé** : `pg_try_advisory_xact_lock(hashtext('idempotence'), hashtext(<personne>||<clé>))`,
+    sans attente, tenu jusqu'à la validation de la transaction. Deux clés au même hachage de 32 bits se refusent
+    l'une l'autre un instant (un `409` qu'on retente), sans jamais rendre la mauvaise réponse.
+  - **24 heures** : une ligne échue ne compte plus (la requête suivante la remplace) ; `idempotence_purge()` les
+    efface par lots chaque nuit à 03 h 17 UTC, par une tâche `pg_cron` (planifiée dans la migration si
+    l'extension est là, sinon un avertissement le dit). `pg_cron` plutôt qu'une route interne : aucun secret, rien
+    qui dépende de l'API. Le corps gardé est un contenu de la personne : 24 h, lisible d'elle seule, effacé avec son
+    compte.
+  - **Une route** : un routeur `APIRouter(route_class=RouteIdempotente)` (`security/idempotence.py`) ; ses `POST` et
+    `PATCH` exigent la clé, déclarent l'en-tête et les `400`, `409`, `422` au contrat ; ses autres routes (`GET`…) ne
+    changent pas, et une même route ne mêle pas une méthode sûre et un `POST` (`ValueError` à la construction). `tests/unit/test_posts_idempotents.py` garde que tout `POST` ou `PATCH` de `/api/v1` en vient, sauf
+    ceux de sa liste blanche écrite.
+  - **Hors champ** : les `POST` sans session (connexion, acceptation d'invitation) n'ont pas de personne à qui
+    rattacher une clé ; leur jeton à usage unique les protège du double envoi. Les effets longs (appel au modèle)
+    sont des travaux asynchrones (§ 3.7) dont le `POST` de création est court, donc idempotent comme ci-dessus.
 - **Concurrence** (RFC 9110, requêtes conditionnelles) : `ETag` tiré d'une colonne `version` (entier,
   incrémenté par déclencheur) sur chaque table que deux personnes peuvent éditer (charges, lignes du mois,
   recettes du foyer, réglages) ; `If-Match` obligatoire sur `PUT`, `PATCH` et `DELETE` de ces ressources :
