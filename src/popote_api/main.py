@@ -7,6 +7,7 @@ from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import SondeBase
+from popote_api.trace import Trace
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -29,11 +30,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sonde = SondeBase(dsn)
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
-    # `Acces`, `Garde`. Le refus de la garde porte donc son identifiant, et sa ligne d'accès aussi. Le
-    # gestionnaire des 500 s'exécute encore au-dessus de tous : il lit l'identifiant dans l'état de la
-    # requête, pas dans la `ContextVar` (voir `errors._inattendue`).
+    # `Trace`, `Acces`, `Garde`. Le refus de la garde porte donc son identifiant et sa trace, et sa ligne
+    # d'accès aussi. Le gestionnaire des 500 s'exécute encore au-dessus de tous : il lit les identifiants dans
+    # l'état de la requête, pas dans les `ContextVar` (voir `errors._inattendue`).
     app.add_middleware(relais.Garde, settings=settings)
     app.add_middleware(journal.Acces)
+    app.add_middleware(Trace)
     app.add_middleware(Identifiant)
 
     app.include_router(health.router)
