@@ -1,15 +1,19 @@
 """La fabrique de l'application. Lancement : `uvicorn --factory popote_api.main:create_app`."""
 
-from fastapi import FastAPI
+import time
+from collections.abc import Callable
+
+from fastapi import Depends, FastAPI
 
 from popote_api import errors, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import SondeBase
+from popote_api.security.debit import Debit, limite_par_ip
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, horloge: Callable[[], float] = time.monotonic) -> FastAPI:
     # POPOTE_ENV et les autres réglages viennent de l'environnement du processus.
     settings = settings or Settings()  # type: ignore[call-arg]
     # Le contrat n'est publié ni en prod, ni sous une forme interactive. Pas de redirection de
@@ -21,8 +25,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url=None if settings.env is Env.prod else "/api/openapi.json",
         redirect_slashes=False,
+        # Fermé par défaut : toute route est limitée par adresse, avant qu'aucun cookie soit lu.
+        dependencies=[Depends(limite_par_ip)],
     )
     app.state.settings = settings
+    app.state.debit = Debit(horloge)
     dsn = settings.database_url.get_secret_value() if settings.database_url else None
     app.state.sonde = SondeBase(dsn)
 

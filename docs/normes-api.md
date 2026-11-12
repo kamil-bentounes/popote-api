@@ -74,11 +74,29 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.6 Limites
 
-- **Débit** (brouillon IETF `RateLimit` ; `429` : RFC 6585) : lecture 120/min et écriture 30/min par session,
-  comptées en mémoire par instance (approximatif, suffisant pour un foyer) ; les limites qui protègent un
-  compte sont comptées en base, donc justes quelle que soit l'instance : connexion 5 essais par compte et
-  20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure et par compte, invitations
-  10 par jour. En-têtes `RateLimit-Policy` et `RateLimit` ; `429` avec `Retry-After`.
+- **Débit** (`security/debit.py`, dépendance FastAPI de l'application entière ; `429` : RFC 6585 § 4) :
+  lecture (`GET`, `HEAD`) 120 par minute, écriture (`POST`, `PUT`, `PATCH`, `DELETE`) 30 par minute, comptées en
+  mémoire par instance (approximatif, suffisant pour un foyer). Fenêtre fixe de 60 s, ouverte à la première
+  requête de la clé : une rafale à cheval sur deux fenêtres peut doubler le plafond un instant.
+  - **Deux limiteurs.** Le premier, par adresse (`ip_de`, celle que le relais a vue), s'applique à toute
+    route avant qu'aucun cookie soit lu : un cookie inventé n'ouvre jamais un compteur neuf. Sans adresse
+    valable, la clé est commune (`sans-ip`). Le second, par personne, est appelé par la dépendance de session
+    (T6) avec l'identifiant validé en base : `limite_par_personne(request, response, personne)`.
+  - **Mémoire bornée** (10 000 clés par limiteur) sans jamais oublier un compteur actif : on retire d'abord
+    les fenêtres expirées ; s'il n'y en a pas, la requête d'une clé *nouvelle* est refusée (`503
+    limiteur_sature` + `Retry-After`) et l'événement est journalisé (au plus une fois par minute, sans adresse).
+  - **Non limités** : `/api/healthz` et `/api/readyz`. Une adresse qui n'existe pas (`404`) ou une méthode
+    refusée (`405`) ne passe par aucune dépendance et n'est donc pas comptée.
+  - **En-têtes** (brouillon IETF `draft-ietf-httpapi-ratelimit-headers`, **version -11 du 23/05/2026**, toujours
+    un brouillon : un client ne doit pas en dépendre) : champs structurés (RFC 9651), listes d'éléments dont la
+    valeur est une chaîne. `RateLimit-Policy: "read";q=120;w=60` (`q` quota, `w` fenêtre en secondes) ;
+    `RateLimit: "read";r=57;t=30` (`r` restant, `t` secondes avant le renouvellement). Le nom du quota est
+    `read` ou `write`. Posés sur chaque réponse limitée, `429` comprise. Sur la `429`, `Retry-After` est un
+    nombre entier de secondes (RFC 9110, `delay-seconds`) égal à `t` : le brouillon demande qu'il ne soit
+    pas antérieur à la fin de la fenêtre.
+  Les limites qui protègent un compte sont comptées en base, donc justes quelle que soit l'instance :
+  connexion 5 essais par compte et 20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure
+  et par compte, invitations 10 par jour.
 - **Modèles** : quotas par foyer et par usage, décomptés de façon atomique en base
   (`update … where appels < quota returning …`) AVANT l'appel ; plafond en euros appliqué.
 - **Tailles et délais** : corps JSON 1 Mo au plus ; photos à part (§ 6.1) ; délai serveur 30 s, sauf les
