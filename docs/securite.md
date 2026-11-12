@@ -185,6 +185,23 @@ refusent de démarrer avec autre chose que `hibp`.
   (contexte service, où le rôle COURANT est `service_role`), jamais par `authenticated` ni `popote_internal` : une
   personne ne forge pas d'événement. Le droit se lit sur le rôle courant : les tests jouent `set local role`.
 
+### 4.4 Sessions côté base (0.4, migration 0139 ; code : `security/sessions_base.py`, `security/appareil.py`)
+
+- **Une règle de lecture, deux portes.** `private.session_valide` (échue, révoquée, 90 jours, personne bannie ou
+  supprimée, activité écrite au plus toutes les 5 minutes) sert `session_personne` et `session_courante` (qui rend aussi
+  l'identifiant de session et `reauth_at`).
+- **Créer.** `public.cree_session` : au plus 10 sessions actives par personne (la 11e ferme la plus ancienne par
+  dernière activité ; les créations d'une même personne se sérialisent par verrou consultatif). Une connexion réussie
+  **révoque la session présentée** si elle est valide (événement `session_fermee`) ; un cookie invalide est ignoré.
+- **Faire tourner, fermer.** `fait_tourner_session` change l'empreinte (l'ancienne meurt aussitôt ; une session morte
+  ne tourne pas) ; `ferme_session` est idempotente ; `marque_reauth` exige la session ET la personne.
+- **Appareil.** `browser` et `os` : des familles courtes bornées par CHECK, résumées de l'en-tête `User-Agent` par
+  `resume_agent`. Ni le texte de l'agent, ni l'IP, ni une localisation n'est gardé avec la session.
+- **Droits.** `popote_api` (contexte connexion) et `service_role` (contexte service), jamais `authenticated` ni
+  `popote_internal` ; l'horloge n'existe que dans les variantes de `private`.
+- **Purge.** Sessions échues ou révoquées depuis plus de 30 jours, par lots ; `pg_cron` chaque nuit
+  (`login-session-purge`, 03 h 53 UTC).
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |
