@@ -13,15 +13,16 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from popote_api.config import Settings
 from popote_api.errors import reponse
+from popote_api.security.signature import PREFIXE_INTERNE
 
 journal = logging.getLogger(__name__)
 
 EN_TETE = "x-popote-relais"
 EN_TETE_IP = "x-popote-ip"
 REFUS_WEBSOCKET = 1008  # code RFC 6455 « violation de politique »
-# Préfixes de chemin servis sans relais. Vide à l'étape 0.2 : `/internal/` y entrera à l'étape 0.3,
-# protégé par son propre HMAC.
-EXEMPTIONS: tuple[str, ...] = ()
+# Préfixes de chemin servis sans relais : `/internal/` (appelé par la base, pas par Cloudflare), protégé par
+# son propre HMAC. Le préfixe finit par `/` : `/internal` et `/internalx` ne sont pas exemptés.
+EXEMPTIONS: tuple[str, ...] = (PREFIXE_INTERNE,)
 
 
 def relais_valide(headers: Headers, settings: Settings) -> bool:

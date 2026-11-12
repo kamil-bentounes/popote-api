@@ -101,7 +101,13 @@ async def client(fabrique: Fabrique, base: Base | None = None) -> AsyncIterator[
     """L'application complète ; les routes d'essai passent par sa `Base`, ou par celle qu'on lui donne."""
     app = create_app(
         Settings.model_validate(
-            {"env": "local", "database_url": DSN_API, "database_url_internal": DSN_INTERNAL}
+            {
+                "env": "local",
+                "database_url": DSN_API,
+                "database_url_internal": DSN_INTERNAL,
+                "internal_secret": "i"
+                * 32,  # sans lui, le démarrage avertit et fausse les comptes d'avertissements
+            }
         )
     )
     ajoute_les_routes(app, fabrique.personne(fabrique.foyer()).id, base or app.state.base)

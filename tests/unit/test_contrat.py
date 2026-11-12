@@ -42,7 +42,7 @@ def test_le_contrat_serialise_trie_ses_cles_et_finit_par_une_fin_de_ligne() -> N
 
 
 def test_le_contrat_de_l_essai_est_celui_de_local() -> None:
-    """Les routes provisoires de l'essai (preuves) restent hors contrat."""
+    """Le contrat ne dépend pas de l'environnement qui le produit."""
     assert serialise(create_app(reglages("essai")).openapi()) == OPENAPI_JSON.read_text(encoding="utf-8")
 
 

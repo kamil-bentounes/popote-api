@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, limites, relais
-from popote_api.api import health, preuves, v1
+from popote_api.api import health, internes, v1
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import Base, SondeBase
@@ -41,6 +41,10 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
             avertissements.warning(
                 "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
             )
+        if not settings.secrets_internes:
+            avertissements.warning(
+                "POPOTE_INTERNAL_SECRET absente : toute route /internal/* répond 404 (fermée par défaut)."
+            )
         try:
             await base.ouvre()  # sans attendre de connexion : le démarrage ne dépend pas de la base
             yield
@@ -63,6 +67,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.state.settings = settings
     app.state.base = base
     app.state.debit = Debit(horloge)
+    app.state.horloge_unix = time.time  # l'instant de la signature interne ; les tests la remplacent
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
@@ -83,9 +88,8 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.add_middleware(Identifiant)
 
     app.include_router(health.router)
+    app.include_router(internes.router)
     app.include_router(v1.cree_routeur())
-    if settings.env is Env.essai:
-        app.include_router(preuves.router)
     errors.installe(app)
     erreurs_base.installe(app)
     contrat.installe(app)

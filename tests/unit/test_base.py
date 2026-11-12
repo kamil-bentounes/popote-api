@@ -34,7 +34,7 @@ async def test_ouvrir_et_fermer_sans_pool_ne_fait_rien() -> None:
 
 async def test_le_demarrage_n_attend_pas_de_connexion_et_l_arret_ferme_les_pools() -> None:
     # Adresse injoignable : si le démarrage attendait une connexion, il échouerait ou tarderait.
-    app = create_app(reglages("essai", database_url_internal=DSN))
+    app = create_app(reglages("essai", database_url_internal=DSN, internal_secret="i" * 32))
     debut = time.monotonic()
     async with app.router.lifespan_context(app):
         assert time.monotonic() - debut < 1
@@ -55,7 +55,7 @@ async def test_sans_adresse_interne_le_demarrage_avertit_et_la_base_de_service_m
 
 
 async def test_avec_l_adresse_interne_le_demarrage_n_avertit_pas(caplog: pytest.LogCaptureFixture) -> None:
-    app = create_app(reglages("essai", database_url_internal=DSN))
+    app = create_app(reglages("essai", database_url_internal=DSN, internal_secret="i" * 32))
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
         async with app.router.lifespan_context(app):
             pass
