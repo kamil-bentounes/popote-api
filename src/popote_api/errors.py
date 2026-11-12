@@ -2,8 +2,9 @@
 
 Règle de levée : une route ou une dépendance FastAPI lève `Probleme` (ou `HTTPException`) ; un
 middleware, lui, rend `reponse(...)` directement. Une exception levée dans un middleware échappe
-aux handlers ci-dessous et finit en 500. L'authentification et la limite de débit sont donc des
-dépendances FastAPI, pas des middlewares.
+aux handlers ci-dessous et finit en 500. L'authentification est donc une dépendance FastAPI, pas un
+middleware. Seule exception : la limite de débit par adresse, qui doit refuser avant que le corps soit lu et
+compter aussi les routes inconnues ; son middleware rend `reponse(...)` et ne lève jamais.
 """
 
 import logging
@@ -16,6 +17,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from popote_api import suivi
+from popote_api.journal import CONTEXTE
 
 journal = logging.getLogger(__name__)
 
@@ -56,6 +60,7 @@ MESSAGES_422 = {
     "string_too_short": "Trop court : {min_length} caractères au minimum.",
     "string_too_long": "Trop long : {max_length} caractères au maximum.",
     "int_parsing": "Un nombre entier est attendu.",
+    "int_type": "Un nombre entier est attendu.",
     "float_parsing": "Un nombre est attendu.",
     "bool_parsing": "Un booléen (vrai ou faux) est attendu.",
     "dict_type": "Un objet JSON est attendu.",
@@ -74,6 +79,10 @@ MESSAGES_422 = {
     "extra_forbidden": "Ce champ n'est pas permis.",
     "value_error": "La valeur n'est pas acceptée.",
 }
+
+
+class ValeurRefusee(ValueError):
+    """Un refus de validation dont le message, écrit pour la personne, sort tel quel dans le `422`."""
 
 
 class ParametreEnCause(BaseModel):
@@ -190,6 +199,9 @@ def _pointeur(chemin: tuple[Any, ...]) -> str:
 
 
 def _message(erreur: Mapping[str, Any]) -> str:
+    refus = (erreur.get("ctx") or {}).get("error")
+    if isinstance(refus, ValeurRefusee):
+        return str(refus)
     modele = MESSAGES_422.get(erreur["type"])
     if modele is None:
         return MESSAGE_PAR_DEFAUT
@@ -229,6 +241,15 @@ def installe(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _inattendue(request: Request, exc: Exception) -> JSONResponse:
-        journal.exception("Erreur inattendue (request_id=%s)", _identifiant(request), exc_info=exc)
+        identifiant = _identifiant(request)
+        # Ce gestionnaire s'exécute au-dessus de nos middlewares, qui ont déjà rendu leurs `ContextVar` :
+        # les identifiants se lisent donc dans l'état de la requête.
+        contexte = {nom: getattr(request.state, nom, None) for nom in CONTEXTE}
+        journal.exception("Erreur inattendue", exc_info=exc, extra=contexte)
         setattr(exc, DEJA_JOURNALISEE, True)
+        try:
+            suivi.signale(exc, identifiant)
+        except Exception:
+            # Un récepteur en panne ne doit pas faire échouer la réponse : on le dit, et on rend la 500.
+            journal.exception("Le suivi des erreurs a échoué", extra=contexte)
         return reponse(request, 500, "erreur_interne", "Une erreur inattendue est survenue.")

@@ -18,7 +18,8 @@ ECRITURE_ESSAI = {"Origin": "https://essai.notre-popote.fr", "X-Popote-Client": 
 
 def reglages(env: str, **autres: Any) -> Settings:
     """Des réglages valides pour l'environnement demandé (secret et base fournis hors local)."""
-    valeurs: dict[str, Any] = {"env": env}
+    # Le journal JSON est coupé par défaut : les tests ne touchent pas à la configuration du journal.
+    valeurs: dict[str, Any] = {"env": env, "json_logs": False}
     if env != "local":
         valeurs |= {"relay_secret": SECRET, "database_url": DSN}
     return Settings.model_validate(valeurs | autres)
@@ -31,7 +32,18 @@ class Retour:
     corps: bytes
 
 
-async def appeler(app: FastAPI, methode: str, chemin: str, en_tetes: dict[str, str] | None = None) -> Retour:
+EnTetes = dict[str, str] | list[tuple[str, str]]
+
+
+def _en_tetes_asgi(en_tetes: EnTetes | None) -> list[tuple[bytes, bytes]]:
+    """Une liste de paires permet de répéter un en-tête, ce qu'un dict ne sait pas dire."""
+    paires = en_tetes.items() if isinstance(en_tetes, dict) else (en_tetes or [])
+    return [(k.lower().encode(), v.encode()) for k, v in paires]
+
+
+async def appeler(
+    app: FastAPI, methode: str, chemin: str, en_tetes: EnTetes | None = None, requete: str = ""
+) -> Retour:
     """Appelle l'application en ASGI brut, pour maîtriser le chemin exact (httpx le normalise)."""
     scope = {
         "type": "http",
@@ -41,9 +53,9 @@ async def appeler(app: FastAPI, methode: str, chemin: str, en_tetes: dict[str, s
         "scheme": "http",
         "path": unquote(chemin),
         "raw_path": chemin.encode(),
-        "query_string": b"",
+        "query_string": requete.encode(),
         "root_path": "",
-        "headers": [(k.lower().encode(), v.encode()) for k, v in (en_tetes or {}).items()],
+        "headers": _en_tetes_asgi(en_tetes),
         "client": ("127.0.0.1", 123),
         "server": ("test", 80),
     }

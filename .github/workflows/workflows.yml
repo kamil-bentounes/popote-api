@@ -1,0 +1,64 @@
+name: Workflows
+# Les workflows eux-mêmes : syntaxe (actionlint), sécurité (zizmor), et dépendances nouvelles d'une demande
+# de fusion (dependency-review). Fichier à part : il ne dépend pas de `ci.yml`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions: {}
+concurrency:
+  group: workflows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # Versions figées ; la somme de contrôle de chaque archive est vérifiée avant de l'ouvrir.
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      ZIZMOR_VERSION: "1.31.1"
+      ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Installer actionlint et zizmor
+        run: |
+          set -euo pipefail
+          outils="$RUNNER_TEMP/outils"
+          mkdir -p "$outils/actionlint" "$outils/zizmor"
+          curl -fsSL --retry 3 -o "$outils/actionlint.tgz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $outils/actionlint.tgz" | sha256sum --check --strict
+          tar -xzf "$outils/actionlint.tgz" -C "$outils/actionlint" actionlint
+          curl -fsSL --retry 3 -o "$outils/zizmor.tgz" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  $outils/zizmor.tgz" | sha256sum --check --strict
+          tar -xzf "$outils/zizmor.tgz" -C "$outils/zizmor" zizmor
+          echo "$outils/actionlint" >> "$GITHUB_PATH"
+          echo "$outils/zizmor" >> "$GITHUB_PATH"
+      - name: actionlint
+        run: actionlint -color
+      - name: zizmor
+        env:
+          # Lecture seule : sert aux audits en ligne (commit d'imposteur, action vulnérable connue).
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format plain .github
+  dependances:
+    # Seulement sur une demande de fusion : l'action compare la base et la tête.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
