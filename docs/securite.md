@@ -295,6 +295,34 @@ refusent de démarrer avec autre chose que `hibp`.
 - Déploiement par identité fédérée (OIDC) quand l'hébergeur le permet ; sinon une clé limitée au projet, à
   durée courte, renouvelée. Procédure écrite pour changer chaque secret.
 
+#### Administration de Supabase Auth (`src/popote_api/infra/auth_admin.py`)
+
+Le seul module qui écrit un compte : `cree_compte`, `change_mot_de_passe`, `supprime_compte`. Réglages
+`POPOTE_SUPABASE_URL` (une seule adresse, qui sert aussi à `iss` : https, origine seule, hôte vérifié ;
+http seulement vers l'hôte local, en local ; vide vaut absente) et `POPOTE_SUPABASE_SECRET_KEY` (`SecretStr`),
+**facultatifs pour l'instant**. L'adresse seule est valide ; la clé sans l'adresse est refusée au démarrage ;
+l'administration exige les deux : sinon l'application démarre avec un avertissement et chaque opération rend
+`503 auth_indisponible`.
+
+- **Clé dans `apikey` seul** (preuve 1 : acceptée seule ou doublée d'`Authorization`). Un seul en-tête, une
+  seule place où elle voyage ; `Authorization` attend un JWT, et cette clé n'en est pas un.
+- **Délais finis** : connexion 3 s, lecture 10 s, échéance totale 15 s. **Aucune reprise** : un `cree_compte`
+  rejoué pourrait créer un compte que l'appelant ne connaît pas. Redirections refusées : la clé ne suit pas un
+  `Location`. `trust_env=False` : ni `HTTP(S)_PROXY` ni `SSL_CERT_*` du poste ne détournent la clé. Réponse
+  bornée à 64 Kio, sans décompression demandée.
+- **Un succès se reconnaît à son corps** : la création rend l'identifiant, le changement rend le compte
+  (même identifiant), la suppression rend un objet JSON ou rien ; une page de mandataire répondue en `200`
+  est une erreur, pas un succès. Clé et adresse de base sont validées au démarrage (en-tête transmissible,
+  nom d'hôte ou IP littérale, port 1 à 65535) et la clé à la construction du client.
+- **Le message d'Auth n'est jamais gardé ni journalisé** (il recopie l'adresse). Une exception ne porte que le
+  statut HTTP et le `error_code` d'Auth, et seulement s'il a la forme d'un code (`[a-z][a-z0-9_]{0,63}`).
+- **Erreurs** : `email_exists` / `user_already_exists` → `CompteDejaExistant` (`409 compte_existant`) ;
+  `weak_password`, ou mot de passe non transmissible (plus de 72 octets, nul, substitut isolé, refusé avant tout
+  appel) → `MotDePasseRefuseParAuth` ; tout le reste, panne, délai, statut ou corps imprévu →
+  `AuthIndisponible` (`503`). `supprime_compte` tient pour un succès le seul `404 user_not_found`.
+- L'identifiant d'un compte entre dans l'adresse sous forme d'`UUID` seulement ; la clé n'apparaît ni dans un
+  `repr`, ni dans les réglages sérialisés, ni dans un journal.
+
 ### 7.5 Chaîne d'approvisionnement
 
 - Versions figées (`uv.lock`, `package-lock.json`), mises à jour hebdomadaires automatiques et relues ;
