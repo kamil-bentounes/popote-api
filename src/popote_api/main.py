@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, relais
-from popote_api.api import health, preuves
+from popote_api.api import health, preuves, v1
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import Base, SondeBase
@@ -69,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(Identifiant)
 
     app.include_router(health.router)
+    app.include_router(v1.cree_routeur())
     if settings.env is Env.essai:
         app.include_router(preuves.router)
     errors.installe(app)

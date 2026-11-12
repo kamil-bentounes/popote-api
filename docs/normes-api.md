@@ -194,6 +194,25 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 - Toute route exige une session, sauf une liste écrite : connexion, lecture et acceptation d'une invitation,
   demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`.
+- **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
+  que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
+  (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte
+  SHA-256 des 32 octets du jeton et appelle `session_personne` ; elle rend la personne **et** le curseur de sa
+  transaction (un seul emprunt au pool par requête, session et contexte personne dans la même transaction).
+  Un cookie absent, mal formé, inconnu, échu, révoqué, au bout des 90 jours, d'une personne bannie ou
+  supprimée rend le même `401 pas_de_session`, pour qu'on n'apprenne rien sur les jetons.
+- **`WWW-Authenticate`** : la RFC 9110 § 15.5.2 exige un défi dans tout `401`. Aucun schéma enregistré ne décrit
+  un cookie de session ; nous annonçons `WWW-Authenticate: Cookie realm="popote"`, un nom de schéma à nous
+  (RFC 9110 § 11.1 : un `auth-scheme` est un `token`, enregistré ou non). Jamais `Basic`, `Digest` ou
+  `Negotiate` : le navigateur ouvrirait une fenêtre de saisie, et `Bearer` promettrait un en-tête
+  `Authorization` que personne n'envoie.
+- **Fermé par défaut, et prouvé** : `tests/unit/test_routes_fermees.py` énumère toutes les routes de
+  l'application. Hors de la liste blanche écrite dans le test (`/api/healthz`, `/api/readyz`, et le contrat
+  `/api/openapi.json` que FastAPI sert hors prod), chacune exige `personne_connectee`. Une route ajoutée sans
+  session fait échouer ce test ; une route sous `/api/v1` l'a d'office, par le routeur.
+- **Modèles** : `schemas/base.py` donne `Entree` (`extra="forbid"`) et `Sortie`. Tout modèle de `schemas/`
+  descend de l'une ou de l'autre, tout corps de requête descend d'`Entree` à toute profondeur
+  (`tests/unit/test_modeles.py`).
 - Les routes `/internal/*` (rappels, purges) n'acceptent ni cookie ni session : seulement une signature
   HMAC de la requête, avec horodatage (5 minutes de validité), clé propre à chaque environnement.
 - Les modèles d'entrée refusent les champs inconnus (`extra="forbid"`) ; les modèles de sortie ne listent que
