@@ -71,6 +71,30 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   incrémenté par déclencheur) sur chaque table que deux personnes peuvent éditer (charges, lignes du mois,
   recettes du foyer, réglages) ; `If-Match` obligatoire sur `PUT`, `PATCH` et `DELETE` de ces ressources :
   `412` si la version a changé, `428` s'il manque. Les colonnes `version` arrivent par les migrations de 0.5.
+- **Outillage** : `popote_api/conditionnel.py`. `etag_de_version(n)` rend `"v<n>"` ; `etag_de_contenu(octets)`
+  un SHA-256 tronqué à 128 bits en base64url ; tous deux sont **forts**. `exige_if_match(request, etag_actuel)`
+  garde l'écriture et `repond_ou_304(request, etag, corps)` la lecture, à appeler une fois la ressource trouvée
+  et la personne autorisée (un `404` passe avant toute précondition). La RFC 9110 s'applique ainsi :
+  - `If-Match` : comparaison **forte** (§ 8.8.3.2), donc un `W/"…"` ne correspond jamais ; `*` correspond à toute
+    ressource existante ; une liste correspond si un membre correspond. Absent : `428
+    precondition_requise`. Sans correspondance : `412 precondition_echouee`, avec l'`ETag` **actuel** en
+    en-tête, pour que le client relise sans second aller-retour. Jamais le « succès » facultatif d'une écriture
+    déjà appliquée (§ 13.1.1) : deux personnes du foyer qui éditent ensemble doivent voir le conflit.
+  - `If-None-Match` : comparaison **faible** ; `*` correspond à toute ressource existante. Si la condition est
+    fausse, `304` pour `GET` et `HEAD`, `412` pour les autres méthodes (§ 13.1.2). Le `304` n'a pas de corps et
+    reprend `ETag` et `Cache-Control` du `200` (§ 15.4.5), plus `Vary`, `Content-Location` et `Expires` si la route
+    les pose. `Date` vient du serveur.
+  - Ordre (§ 13.2.2) : `If-Match`, puis `If-None-Match`. Un `If-Match` faux l'emporte sur un `304`.
+  - Listes : plusieurs lignes d'un même en-tête valent une liste ; les éléments vides sont ignorés ; une virgule
+    peut se trouver dans une étiquette (`"a,b"`), on lit donc étiquette par étiquette. Une valeur vide est une
+    liste vide : aucune correspondance.
+  - Un en-tête conditionnel **mal formé** (guillemets manquants, `w/` minuscule, `*` mêlé à une étiquette,
+    deux étiquettes sans virgule) rend `400 requete_mal_formee`, jamais ignoré : ignorer un `If-Match` ouvrirait
+    la mise à jour perdue.
+  - `If-Modified-Since`, `If-Unmodified-Since`, `Range`, `If-Range` sont ignorés : pas de date de modification.
+    `If-Unmodified-Since` ne remplace pas `If-Match` (`428`).
+  - Le client fait ses lectures conditionnelles lui-même (l'`ETag` gardé en mémoire et renvoyé dans
+    `If-None-Match`) : `Cache-Control: no-store` et `304` ne se contredisent pas.
 
 ## 3.6 Limites
 
