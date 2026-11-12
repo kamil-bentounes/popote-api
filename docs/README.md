@@ -12,6 +12,7 @@
 | [`prompts.md`](prompts.md) | Les prompts, le schéma strict, la lecture de photo |
 | [`mails.md`](mails.md) | Ce qui part par e-mail, et le réglage SMTP à faire |
 | [`dev.md`](dev.md) | Lancer le projet en local |
+| [`exploitation.md`](exploitation.md) | Opérations sur un projet hébergé : aligner les droits d'un projet neuf |
 
 > Les documents de conception (spec, plan, mesures) sont dans `.design/` — ce sont des
 > brouillons de travail, pas de la documentation.

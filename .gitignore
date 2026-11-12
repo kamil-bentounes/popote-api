@@ -29,4 +29,6 @@ tests/fixtures/*.local.sql
 __pycache__/
 .ruff_cache/
 .mypy_cache/
+# Le SQL écrit à blanc par ops/aligne_droits.py : un résultat de travail, jamais versionné.
+aligne_droits.sql
 .pytest_cache/
