@@ -19,6 +19,7 @@ import psycopg
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from popote_api.identifiant import request_id_courant
+from popote_api.trace import span_id_courant, trace_id_courant
 
 journal_acces = logging.getLogger("popote_api.acces")
 
@@ -29,7 +30,11 @@ _MARQUE = "_popote_journal"
 
 
 # Les identifiants de corrélation que chaque ligne porte, et la `ContextVar` d'où ils viennent.
-CONTEXTE: dict[str, ContextVar[str | None]] = {"request_id": request_id_courant}
+CONTEXTE: dict[str, ContextVar[str | None]] = {
+    "request_id": request_id_courant,
+    "trace_id": trace_id_courant,
+    "span_id": span_id_courant,
+}
 
 
 def _entree(exc: BaseException) -> dict[str, Any]:

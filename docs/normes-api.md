@@ -127,11 +127,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.11 Suivi
 
-- En-tête `traceparent` (W3C Trace Context) accepté et propagé ; journaux JSON sur la sortie standard, avec
-  l'identifiant de trace ; aucune donnée personnelle dans les journaux (pas de montant, pas de prénom, pas
-  d'e-mail en clair).
-- Journaux : une ligne = un objet JSON (`ts`, `level`, `logger`, `msg`, `request_id`). L'accès n'écrit que le
-  gabarit de la route (jamais le chemin brut, la requête, l'IP, l'agent utilisateur). Aucune exception n'est
+- En-tête `traceparent` (W3C Trace Context niveau 1, Recommandation du 23/11/2021, § 3.2) lu, et son `trace-id`
+  repris ; journaux JSON sur la sortie standard, avec l'identifiant de trace ; aucune donnée personnelle dans les
+  journaux (pas de montant, pas de prénom, pas d'e-mail en clair).
+- `traceparent` valide : version `00` de 55 caractères exactement, ou version inconnue (`01` à `fe`) d'au moins 55
+  caractères dont la suite commence par `-` ; `trace-id` 32 et `parent-id` 16 chiffres hexadécimaux **minuscules**,
+  non nuls ; drapeaux sur 2 chiffres. Version `ff`, majuscule, mauvaise longueur, tout à zéro, deux lignes
+  `traceparent`, plus de 512 caractères : l'en-tête est **ignoré** et une trace neuve commence. Le `span-id` est
+  toujours celui de la requête (neuf), jamais le `parent-id` reçu ; `tracestate` n'est pas interprété. Pas de SDK
+  OpenTelemetry à cette étape : le format est le sien, l'export viendra avec D4.
+- Journaux : une ligne = un objet JSON (`ts`, `level`, `logger`, `msg`, `request_id`, `trace_id`, `span_id`).
+  L'accès n'écrit que le gabarit de la route (jamais le chemin brut, la requête, l'IP, l'agent utilisateur). Aucune exception n'est
   écrite par son message, quel que soit son type (il peut recopier une valeur) : seulement son type et sa pile ;
   pour `psycopg.Error`, en plus `sqlstate`, contrainte, table. La forme exacte d'une ligne :
   [`exploitation.md`](exploitation.md) § 10.

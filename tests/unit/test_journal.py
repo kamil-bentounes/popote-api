@@ -17,7 +17,7 @@ from psycopg import errors
 from psycopg.pq import DiagnosticField
 from pydantic import BaseModel, ValidationError
 
-from popote_api import journal
+from popote_api import journal, trace
 from popote_api.identifiant import request_id_courant
 from popote_api.main import create_app
 
@@ -25,6 +25,8 @@ NOMS_UVICORN = ("uvicorn", "uvicorn.error", "uvicorn.access")
 # Une valeur qui ne doit jamais atteindre le journal. Construite à l'exécution : le texte d'une pile
 # recopie les lignes de code, pas les valeurs.
 DONNEE = "-".join(["valeur", "personnelle"])
+TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+TRACEPARENT = f"00-{TRACE_ID}-00f067aa0ba902b7-01"
 HORODATAGE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
 
 
@@ -100,18 +102,33 @@ def test_les_accents_restent_lisibles_dans_la_ligne() -> None:
     assert "café" in journal.Formateur().format(enregistrement("café"))
 
 
-def test_l_identifiant_vient_de_l_enregistrement_puis_du_contexte() -> None:
-    jeton = request_id_courant.set("ctx-req")
+def test_les_identifiants_viennent_de_l_enregistrement_puis_du_contexte() -> None:
+    jetons = (
+        request_id_courant.set("ctx-req"),
+        trace.trace_id_courant.set("ctx-trace"),
+        trace.span_id_courant.set("ctx-span"),
+    )
     try:
-        assert formate(enregistrement())["request_id"] == "ctx-req"
-        assert formate(enregistrement(request_id="enr-req"))["request_id"] == "enr-req"
-        assert formate(enregistrement(request_id=None))["request_id"] == "ctx-req"
+        implicite = formate(enregistrement())
+        assert (implicite["request_id"], implicite["trace_id"], implicite["span_id"]) == (
+            "ctx-req",
+            "ctx-trace",
+            "ctx-span",
+        )
+        explicite = formate(enregistrement(request_id="enr-req", trace_id="enr-trace", span_id=None))
+        assert (explicite["request_id"], explicite["trace_id"], explicite["span_id"]) == (
+            "enr-req",
+            "enr-trace",
+            "ctx-span",
+        )
     finally:
-        request_id_courant.reset(jeton)
+        request_id_courant.reset(jetons[0])
+        trace.trace_id_courant.reset(jetons[1])
+        trace.span_id_courant.reset(jetons[2])
 
 
-def test_sans_contexte_l_identifiant_est_absent_plutot_que_nul() -> None:
-    assert "request_id" not in formate(enregistrement())
+def test_sans_contexte_les_identifiants_sont_absents_plutot_que_nuls() -> None:
+    assert not {"request_id", "trace_id", "span_id"} & formate(enregistrement()).keys()
 
 
 # --- les exceptions -------------------------------------------------------------------------------
@@ -336,7 +353,7 @@ async def test_la_ligne_d_acces_ne_porte_que_le_gabarit_de_la_route(
         app,
         "GET",
         f"/api/x/{DONNEE}",
-        {"User-Agent": "agent-" + DONNEE},
+        {"User-Agent": "agent-" + DONNEE, "traceparent": TRACEPARENT},
         requete=f"jeton={DONNEE}",
     )
     sortie = capsys.readouterr().out
@@ -354,6 +371,8 @@ async def test_la_ligne_d_acces_ne_porte_que_le_gabarit_de_la_route(
     )
     assert isinstance(ligne["duration_ms"], float)
     assert ligne["request_id"] == retour.en_tetes["x-request-id"]
+    assert ligne["trace_id"] == TRACE_ID
+    assert re.fullmatch(r"[0-9a-f]{16}", ligne["span_id"])
     assert HORODATAGE.fullmatch(ligne["ts"])
 
 
@@ -377,44 +396,49 @@ async def test_une_methode_refusee_porte_encore_le_gabarit(
     assert lignes(sortie)[0]["route"] == "/api/x/{identifiant}"
 
 
-async def test_un_journal_ecrit_dans_une_route_porte_l_identifiant_de_la_requete(
+async def test_un_journal_ecrit_dans_une_route_porte_les_identifiants_de_la_requete(
     etat_du_journal: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    retour = await appeler(app_journalisee(), "GET", "/api/x/1")
+    retour = await appeler(app_journalisee(), "GET", "/api/x/1", {"traceparent": TRACEPARENT})
     dans_la_route = next(
         ligne for ligne in lignes(capsys.readouterr().out) if ligne["msg"] == "dans la route"
     )
     assert dans_la_route["request_id"] == retour.en_tetes["x-request-id"]
+    assert dans_la_route["trace_id"] == TRACE_ID
 
 
-async def test_le_refus_de_la_garde_a_une_ligne_d_acces_avec_son_identifiant(
+async def test_le_refus_de_la_garde_a_une_ligne_d_acces_avec_ses_identifiants(
     etat_du_journal: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    retour = await appeler(app_journalisee("essai"), "GET", f"/api/x/{DONNEE}")
+    retour = await appeler(app_journalisee("essai"), "GET", f"/api/x/{DONNEE}", {"traceparent": TRACEPARENT})
     sortie = capsys.readouterr().out
     assert retour.status == 404
     assert DONNEE not in sortie
     (ligne,) = lignes(sortie)
     assert (ligne["status"], ligne["route"]) == (404, "(aucune)")
     assert ligne["request_id"] == retour.en_tetes["x-request-id"]
+    assert ligne["trace_id"] == TRACE_ID
 
 
-async def test_une_500_produit_une_ligne_d_erreur_et_une_ligne_d_acces_avec_le_meme_identifiant(
+async def test_une_500_produit_une_ligne_d_erreur_et_une_ligne_d_acces_avec_les_memes_identifiants(
     etat_du_journal: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     transport = httpx.ASGITransport(app=app_journalisee(), raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        reponse = await client.get("/api/_test/boom")
+        reponse = await client.get("/api/_test/boom", headers={"traceparent": TRACEPARENT})
     assert reponse.status_code == 500
     toutes = lignes(capsys.readouterr().out)
     erreurs = [ligne for ligne in toutes if ligne["level"] == "ERROR"]
     assert len(erreurs) == 1
     assert erreurs[0]["request_id"] == reponse.json()["instance"] == reponse.headers["x-request-id"]
+    assert erreurs[0]["trace_id"] == TRACE_ID
+    assert re.fullmatch(r"[0-9a-f]{16}", erreurs[0]["span_id"])
     assert erreurs[0]["exception"][0]["type"] == "builtins.RuntimeError"
     assert "interne" not in json.dumps(erreurs[0])
     (acces,) = [ligne for ligne in toutes if ligne["logger"] == "popote_api.acces"]
     assert (acces["status"], acces["route"]) == (500, "/api/_test/boom")
     assert acces["request_id"] == erreurs[0]["request_id"]
+    assert acces["trace_id"] == TRACE_ID
 
 
 async def test_une_erreur_de_base_dans_une_route_est_journalisee_sans_son_message(
@@ -478,3 +502,4 @@ async def test_les_scopes_qui_ne_sont_pas_http_ne_font_pas_de_ligne_d_acces(
 async def test_l_identifiant_courant_est_rendu_apres_la_requete(etat_du_journal: None) -> None:
     await appeler(app_journalisee(), "GET", "/api/x/1")
     assert request_id_courant.get() is None
+    assert trace.trace_id_courant.get() is None
