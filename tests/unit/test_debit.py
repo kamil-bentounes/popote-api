@@ -49,9 +49,15 @@ def app_de_test(horloge: Horloge, env: str = "local", max_cles: int | None = Non
         return {"ok": True}
 
     @app.api_route("/api/_test/personne", methods=["GET", "POST"])
-    async def personne(request: Request, response: Response) -> dict[str, bool]:
-        await limite_par_personne(request, response, request.headers["x-test-personne"])
+    async def personne(request: Request) -> dict[str, bool]:
+        await limite_par_personne(request, request.headers["x-test-personne"])
         return {"ok": True}
+
+    @app.get("/api/_test/personne-reponse")
+    async def personne_reponse(request: Request) -> Response:
+        # Une route qui rend un `Response` (comme `repond_ou_304`) : FastAPI ne lui complète aucun en-tête.
+        await limite_par_personne(request, request.headers["x-test-personne"])
+        return Response(status_code=304)
 
     @app.get("/api/_test/lecture-seule")
     async def lecture_seule() -> dict[str, bool]:
@@ -482,3 +488,13 @@ def test_un_afflux_de_cles_nouvelles_ne_declenche_pas_un_balayage_par_requete() 
     for i in range(100):
         assert limiteur.consomme(f"inconnu{i}", LECTURE) is None
     assert FenetresComptees.balayages == 1  # un seul balayage, puis rien avant la première échéance
+
+
+async def test_une_reponse_rendue_telle_quelle_annonce_le_quota_de_la_personne_pas_celui_de_l_adresse() -> (
+    None
+):
+    async with client(app_de_test(Horloge())) as c:
+        r = await c.get("/api/_test/personne-reponse", headers={"X-Test-Personne": "anne"})
+    assert r.status_code == 304
+    assert r.headers["ratelimit-policy"] == '"read";q=120;w=60'
+    assert r.headers["ratelimit"] == '"read";r=119;t=60'

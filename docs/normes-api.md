@@ -60,7 +60,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - Jamais de trace, de requête SQL, de message de fournisseur ni de texte en anglais dans une réponse. L'erreur
   d'origine va au journal, reliée par `instance`.
 - **Erreurs de la base** (`erreurs_base.py`, traduites une fois, à la frontière) : `23505` → `409 conflit` ;
-  `23503`, `23514`, `22P02` → `422 donnees_invalides` sans pointeur ; `40001`, `40P01`, `55P03` → `503 reessayer`
+  `23503`, `23514`, `22P02` → `422 donnees_invalides` sans pointeur ; `40001`, `40P01`, `55P03`, `25P03` → `503 reessayer`
   avec `Retry-After: 1` ; `57014` (`statement_timeout`, requête annulée) → `503 delai_depasse` ; pool épuisé,
   connexion coupée ou refusée → `503 base_indisponible` ; pas de pool `popote_internal` → `503
   service_indisponible`. `42501` (droit refusé) vaut `404 introuvable` seulement dans `refus_vaut_introuvable()`,
@@ -97,11 +97,37 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.5 Écritures sûres
 
-- **Idempotence** (brouillon IETF `Idempotency-Key`, version 08) : en-tête obligatoire sur tout `POST` qui crée
-  ou déclenche un effet (dépense, repas mangé, invitation, appel au modèle). La clé, l'empreinte du corps et la
-  réponse sont gardées 24 h : un second envoi rend la même réponse sans refaire l'effet ; la même clé avec un
-  autre corps rend `422` ; un second envoi pendant que le premier tourne rend `409` ; l'en-tête manquant rend
-  `400`.
+- **Idempotence** (brouillon IETF `draft-ietf-httpapi-idempotency-key-header-08`, vérifié le 12/11/2026) :
+  en-tête obligatoire sur tout `POST` d'une personne connectée qui crée ou déclenche un effet (dépense, repas
+  mangé, appel au modèle). Un second envoi de la même clé rend la même réponse sans refaire l'effet ; la même
+  clé avec un autre contenu rend `422 cle_idempotence_reutilisee` ; un second envoi pendant que le premier tourne
+  rend `409 requete_en_cours` ; l'en-tête manquant rend `400 cle_idempotence_manquante`, mal formé
+  `400 cle_idempotence_invalide`.
+  - **Forme de l'en-tête** : une chaîne de champ structuré (RFC 9651), donc entre guillemets :
+    `Idempotency-Key: "depense-2026-11-12-0001"`. Contenu ASCII imprimable de 1 à 255 caractères,
+    `"` et `\` échappés par `\`. Ni paramètre (`;a=1`), ni liste, ni deuxième ligne d'en-tête : `400`.
+  - **Même envoi** = même méthode, même chemin, même chaîne de requête, même corps (SHA-256, `empreinte_de_la_requete`).
+  - **Garde** : `idempotency_key` (migration 0135), clé primaire (personne, clé), RLS sur `auth.uid()` : la même
+    clé chez l'autre personne est indépendante. La réponse (statut 2xx, en-têtes `Content-Type`, `Location` et
+    `ETag` seulement, corps de 64 Kio au plus) est écrite **dans la transaction de l'effet**, celle de
+    `Base.session` : une exception annule les deux, rien n'est gardé, un nouvel envoi refait l'effet. Une route
+    idempotente échoue en levant `Probleme`, jamais en rendant une réponse d'erreur (sinon l'effet est annulé et
+    la route rend `500` : faute de programmation).
+  - **Un envoi à la fois par clé** : `pg_try_advisory_xact_lock(hashtext('idempotence'), hashtext(<personne>||<clé>))`,
+    sans attente, tenu jusqu'à la validation de la transaction. Deux clés au même hachage de 32 bits se refusent
+    l'une l'autre un instant (un `409` qu'on retente), sans jamais rendre la mauvaise réponse.
+  - **24 heures** : une ligne échue ne compte plus (la requête suivante la remplace) ; `idempotence_purge()` les
+    efface par lots chaque nuit à 03 h 17 UTC, par une tâche `pg_cron` (planifiée dans la migration si
+    l'extension est là, sinon un avertissement le dit). `pg_cron` plutôt qu'une route interne : aucun secret, rien
+    qui dépende de l'API. Le corps gardé est un contenu de la personne : 24 h, lisible d'elle seule, effacé avec son
+    compte.
+  - **Une route** : un routeur `APIRouter(route_class=RouteIdempotente)` (`security/idempotence.py`) ; ses `POST` et
+    `PATCH` exigent la clé, déclarent l'en-tête et les `400`, `409`, `422` au contrat ; ses autres routes (`GET`…) ne
+    changent pas, et une même route ne mêle pas une méthode sûre et un `POST` (`ValueError` à la construction). `tests/unit/test_posts_idempotents.py` garde que tout `POST` ou `PATCH` de `/api/v1` en vient, sauf
+    ceux de sa liste blanche écrite.
+  - **Hors champ** : les `POST` sans session (connexion, acceptation d'invitation) n'ont pas de personne à qui
+    rattacher une clé ; leur jeton à usage unique les protège du double envoi. Les effets longs (appel au modèle)
+    sont des travaux asynchrones (§ 3.7) dont le `POST` de création est court, donc idempotent comme ci-dessus.
 - **Concurrence** (RFC 9110, requêtes conditionnelles) : `ETag` tiré d'une colonne `version` (entier,
   incrémenté par déclencheur) sur chaque table que deux personnes peuvent éditer (charges, lignes du mois,
   recettes du foyer, réglages) ; `If-Match` obligatoire sur `PUT`, `PATCH` et `DELETE` de ces ressources :
@@ -149,13 +175,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
     que celui de la personne : deux téléphones d'un foyer partagent une adresse et relisent la session toutes
     les 3 s. Les websockets ne sont pas comptés.
   - **Par personne : 120 lectures et 30 écritures par minute**, une dépendance FastAPI appelée par la
-    dépendance de session (T6) avec l'identifiant validé en base :
-    `limite_par_personne(request, response, personne)`. L'état est distinct de celui de l'adresse ; ses
-    en-têtes `RateLimit*` priment sur ceux de l'adresse.
+    dépendance de session avec l'identifiant de la personne validé en base (`person_id`, pas l'empreinte de
+    la session : toutes les sessions d'une personne partagent un compteur) : `limite_par_personne(request,
+    personne)`. L'état est distinct de celui de l'adresse. Le verdict est posé dans l'état de la requête et
+    `LimiteParAdresse` écrit ses en-têtes `RateLimit*` au départ de toute réponse, y compris un `Response`
+    rendu tel quel par la route (`200`/`304` conditionnels) ; ils priment sur ceux de l'adresse.
   - **Mémoire bornée** (10 000 clés par limiteur) sans jamais oublier un compteur actif : on retire d'abord
     les fenêtres expirées ; s'il n'y en a pas, la requête d'une clé *nouvelle* est refusée (`503
     limiteur_sature` + `Retry-After`) et l'événement est journalisé (au plus une fois par minute, sans adresse).
-  - **Non limités** : `/api/healthz` et `/api/readyz`, quelle que soit la méthode.
+  - **Non limités** : `/api/healthz` et `/api/readyz`, quelle que soit la méthode, et `/internal/*` : ces
+    routes n'ont ni relais ni adresse, leurs appelants partageraient la clé `sans-ip` avec un inconnu qui tape
+    l'URL du conteneur ; la signature les garde.
   - **En-têtes** (brouillon IETF `draft-ietf-httpapi-ratelimit-headers`, **version -11 du 23/05/2026**, toujours
     un brouillon : un client ne doit pas en dépendre) : champs structurés (RFC 9651), listes d'éléments dont la
     valeur est une chaîne. `RateLimit-Policy: "read";q=600;w=60` (`q` quota, `w` fenêtre en secondes) ;
@@ -180,7 +210,12 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   **Règle des routes qui écrivent** : elles sont `async def`, jamais `def`. Une route `def` tourne dans un fil
   que le délai ne peut pas annuler : le client reçoit la `503` pendant que l'écriture se termine. Le travail
   bloquant d'une route (appel à une bibliothèque synchrone, base) s'exécute sous un délai interne plus court
-  que 25 s (par exemple `statement_timeout` côté base), pour qu'il échoue avant la `503`, jamais après.
+  que 25 s (par exemple `statement_timeout` côté base : 8 s pour une personne, 20 s pour le contexte
+  `service()`), pour qu'il échoue avant la `503`, jamais après.
+  **Aucune attente hors SQL pendant une transaction de route** (appel réseau, `asyncio.sleep`, travail
+  long) : la transaction resterait ouverte sans requête, et la base la coupe à 15 s d'inactivité
+  (`idle_in_transaction_session_timeout`, SQLSTATE `25P03`, rendu `503 reessayer`). On fait l'attente
+  avant d'ouvrir le contexte, ou après l'avoir fermé.
 - La « dernière activité » d'une session et les compteurs ne s'écrivent pas plus d'une fois toutes les
   5 minutes par session : une lecture ne devient pas une écriture.
 
@@ -309,7 +344,8 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   - **Tout refus est un `404`** `introuvable`, jamais `401` ou `403` : on ne révèle pas la route. Pour la même
     raison, une `405` (mauvaise méthode) ou une `422` (corps JSON invalide, lu par FastAPI avant les dépendances)
     qui précède la vérification se rend `404` ; la raison du refus (`signature_fausse`, `hors_fenetre`…) va au
-    journal, jamais une valeur reçue. Un corps de mauvais type, signé, rend `422`.
+    journal, jamais une valeur reçue (un avertissement au plus par minute et par motif, les autres en `info`).
+    Un corps de mauvais type, signé, rend `422`.
   - **Corps** : la borne de 1 Mio (`limites.TailleMax`, qui lit le corps avant l'application) et l'exigence de
     `Content-Type: application/json` pour un corps (`limites.TypeJson`) valent aussi pour `/internal/*`, avant la
     vérification de signature : `413` et `415` ne disent rien de la route. La garde d'origine exempte `/internal/`
