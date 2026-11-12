@@ -9,9 +9,9 @@
  * ne sait pas ordonnancer les étapes ne doit pas apparaître à la sélection du
  * mercredi, où elle produirait un plan faux.
  */
-import { agrege, parPart, plausible, pour100De } from '../../src/lib/nutrition/macros.ts'
-import type { Agregat } from '../../src/lib/nutrition/macros.ts'
-import { titrePropre } from '../../src/lib/recettes/texte.ts'
+import { agrege, parPart, plausible, pour100De } from './partage/macros.ts'
+import type { Agregat } from './partage/macros.ts'
+import { titrePropre } from './partage/texte.ts'
 import { analyser } from './ingredient.ts'
 import { rattacher } from './aliment.ts'
 import type { AlimentIndexe } from './aliment.ts'

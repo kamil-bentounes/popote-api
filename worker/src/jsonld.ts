@@ -9,7 +9,7 @@
  * Mesuré : 98 % de pages exploitables sur le corpus.
  */
 
-import { decodeEntites } from '../../src/lib/recettes/texte.ts'
+import { decodeEntites } from './partage/texte.ts'
 
 export interface RecetteBrute {
   url: string

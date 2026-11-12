@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { titrePropre } from '../../src/lib/recettes/texte.ts'
+import { titrePropre } from '../src/partage/texte.ts'
 
 describe('les titres réels', () => {
   it('nettoie les dix titres de la maquette', () => {

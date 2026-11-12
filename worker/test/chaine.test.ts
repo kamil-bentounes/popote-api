@@ -17,8 +17,8 @@ import type { Contexte } from '../src/ingere.ts'
 import { etapes as lireEtapes, ingredients as lireIngredients, dureeIso, parts }
   from '../src/jsonld.ts'
 import type { RecetteBrute } from '../src/jsonld.ts'
-import { actionsDeLaSession } from '../../src/lib/plan/fusion.ts'
-import { planifie } from '../../src/lib/plan/ordonnance.ts'
+import { actionsDeLaSession } from '../../tests/db/front-fige/lib/plan/fusion.ts'
+import { planifie } from '../../tests/db/front-fige/lib/plan/ordonnance.ts'
 
 const lire = (f: string) =>
   JSON.parse(readFileSync(new URL(f, import.meta.url), 'utf8'))
