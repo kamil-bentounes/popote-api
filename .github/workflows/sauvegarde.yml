@@ -37,8 +37,9 @@ jobs:
       SUPABASE_URL: ${{ vars.PROD_SUPABASE_URL }}
       S3_BUCKET: ${{ vars.S3_BUCKET }}
     steps:
-      # Le journal d'un dépôt public ne doit pas porter l'hôte, l'utilisateur ni l'URL (ni la référence du
-      # projet qu'ils contiennent) : GitHub ne masque d'office que les secrets, pas les variables.
+      # GitHub ne masque d'office que les secrets : l'hôte, l'utilisateur et l'URL sont des variables, que le
+      # bloc `env:` des étapes imprime déjà en clair. Ce masquage ne protège que ce qui s'imprime ensuite (la
+      # référence du projet, que contiennent ces valeurs). Les passer en secrets : issue #56.
       - name: Masquer les variables sensibles
         run: |
           for valeur in "$PGHOST" "$PGUSER" "$SUPABASE_URL" "${PGUSER#*.}" "$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://##; s#\..*$##')"; do
@@ -50,7 +51,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - uses: ./.github/actions/outils-sauvegarde
+      # La forme `$/` (syntaxe « dépôt courant ») n'a pas été éprouvée sur une vraie sauvegarde : on garde `./`.
+      - uses: ./.github/actions/outils-sauvegarde # zizmor: ignore[self-repository]
       - name: Sauvegarder la prod
         env:
           PGPASSWORD: ${{ secrets.PROD_PGPASSWORD }}
@@ -74,15 +76,14 @@ jobs:
           bash ops/sauvegarde/sauvegarde.sh
       - name: Signaler la réussite à la sonde extérieure (facultatif)
         env:
-          SONDE_URL: ${{ vars.SONDE_SAUVEGARDE_URL }}
+          SONDE_URL: ${{ secrets.SONDE_SAUVEGARDE_URL }}
         run: |
           # Un « dead man's switch » : la sonde alerte si ce signal n'arrive plus (cron coupé, dépôt inactif).
-          # Sans SONDE_SAUVEGARDE_URL dans l'environnement, rien à faire.
+          # Sans le secret SONDE_SAUVEGARDE_URL dans l'environnement, rien à faire.
           if [ -z "$SONDE_URL" ]; then
-            echo "pas de sonde configurée (variable SONDE_SAUVEGARDE_URL)"
+            echo "pas de sonde configurée (secret SONDE_SAUVEGARDE_URL)"
             exit 0
           fi
-          echo "::add-mask::$SONDE_URL"
           curl -fsS -m 10 --retry 3 -o /dev/null "$SONDE_URL" || echo "::warning::la sonde extérieure n'a pas répondu"
 
   essai:
@@ -101,8 +102,9 @@ jobs:
       SUPABASE_URL: ${{ vars.ESSAI_SUPABASE_URL }}
       S3_BUCKET: ${{ vars.S3_BUCKET }}
     steps:
-      # Le journal d'un dépôt public ne doit pas porter l'hôte, l'utilisateur ni l'URL (ni la référence du
-      # projet qu'ils contiennent) : GitHub ne masque d'office que les secrets, pas les variables.
+      # GitHub ne masque d'office que les secrets : l'hôte, l'utilisateur et l'URL sont des variables, que le
+      # bloc `env:` des étapes imprime déjà en clair. Ce masquage ne protège que ce qui s'imprime ensuite (la
+      # référence du projet, que contiennent ces valeurs). Les passer en secrets : issue #56.
       - name: Masquer les variables sensibles
         run: |
           for valeur in "$PGHOST" "$PGUSER" "$SUPABASE_URL" "${PGUSER#*.}" "$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://##; s#\..*$##')"; do
@@ -114,7 +116,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - uses: ./.github/actions/outils-sauvegarde
+      # La forme `$/` (syntaxe « dépôt courant ») n'a pas été éprouvée sur une vraie sauvegarde : on garde `./`.
+      - uses: ./.github/actions/outils-sauvegarde # zizmor: ignore[self-repository]
       - name: Sauvegarder l'essai
         env:
           PGPASSWORD: ${{ secrets.ESSAI_PGPASSWORD }}
@@ -133,13 +136,12 @@ jobs:
           bash ops/sauvegarde/sauvegarde.sh
       - name: Signaler la réussite à la sonde extérieure (facultatif)
         env:
-          SONDE_URL: ${{ vars.SONDE_SAUVEGARDE_URL }}
+          SONDE_URL: ${{ secrets.SONDE_SAUVEGARDE_URL }}
         run: |
           # Un « dead man's switch » : la sonde alerte si ce signal n'arrive plus (cron coupé, dépôt inactif).
-          # Sans SONDE_SAUVEGARDE_URL dans l'environnement, rien à faire.
+          # Sans le secret SONDE_SAUVEGARDE_URL dans l'environnement, rien à faire.
           if [ -z "$SONDE_URL" ]; then
-            echo "pas de sonde configurée (variable SONDE_SAUVEGARDE_URL)"
+            echo "pas de sonde configurée (secret SONDE_SAUVEGARDE_URL)"
             exit 0
           fi
-          echo "::add-mask::$SONDE_URL"
           curl -fsS -m 10 --retry 3 -o /dev/null "$SONDE_URL" || echo "::warning::la sonde extérieure n'a pas répondu"
