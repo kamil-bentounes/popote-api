@@ -6,6 +6,7 @@ from popote_api import contrat, errors, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
+from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import SondeBase
 
 
@@ -25,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     dsn = settings.database_url.get_secret_value() if settings.database_url else None
     app.state.sonde = SondeBase(dsn)
+    app.state.auth_admin = cree_auth_admin(settings)
 
     # Le dernier middleware ajouté est le plus extérieur : `Identifiant` enveloppe `Garde`, si bien que
     # le refus de la garde porte lui aussi son identifiant.

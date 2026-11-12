@@ -76,3 +76,105 @@ def test_le_module_ne_cree_pas_d_application_a_l_import() -> None:
 def test_un_secret_non_ascii_echoue_au_demarrage(env: str, secret: str) -> None:
     with pytest.raises(ValidationError, match="ASCII"):
         Settings.model_validate({"env": env, "relay_secret": secret, "database_url": DSN})
+
+
+# --- Administration de Supabase Auth ----------------------------------------------------------------
+
+CLE_SUPABASE = "sb_secret_" + "k" * 30
+
+
+def test_les_reglages_d_auth_sont_facultatifs() -> None:
+    reglages = Settings.model_validate({"env": "local"})
+    assert reglages.supabase_url is None and reglages.supabase_secret_key is None
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_les_reglages_d_auth_restent_facultatifs(env: str) -> None:
+    reglages = Settings.model_validate({"env": env, "relay_secret": SECRET, "database_url": DSN})
+    assert reglages.supabase_url is None
+
+
+def test_les_reglages_d_auth_sont_lus_dans_l_environnement(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POPOTE_ENV", "local")
+    monkeypatch.setenv("POPOTE_SUPABASE_URL", "http://127.0.0.1:54321")
+    monkeypatch.setenv("POPOTE_SUPABASE_SECRET_KEY", CLE_SUPABASE)
+    reglages = Settings()
+    assert reglages.supabase_url == "http://127.0.0.1:54321"
+    assert reglages.supabase_secret_key is not None
+    assert reglages.supabase_secret_key.get_secret_value() == CLE_SUPABASE
+
+
+@pytest.mark.parametrize(
+    "seul",
+    [{"supabase_url": "https://p.supabase.co"}, {"supabase_secret_key": CLE_SUPABASE}],
+)
+def test_l_url_et_la_cle_d_auth_vont_ensemble(seul: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="vont ensemble") as erreur:
+        Settings.model_validate({"env": "local"} | seul)
+    assert CLE_SUPABASE not in str(erreur.value)
+
+
+@pytest.mark.parametrize(
+    ("saisie", "origine"),
+    [
+        ("https://p.supabase.co", "https://p.supabase.co"),
+        ("https://p.supabase.co/", "https://p.supabase.co"),
+        ("  https://P.supabase.co:8443  ", "https://p.supabase.co:8443"),
+        ("http://127.0.0.1:54321", "http://127.0.0.1:54321"),
+        ("http://localhost:54321/", "http://localhost:54321"),
+        ("http://[::1]:54321", "http://[::1]:54321"),
+    ],
+)
+def test_l_url_d_auth_est_ramenee_a_son_origine(saisie: str, origine: str) -> None:
+    reglages = Settings.model_validate(
+        {"env": "local", "supabase_url": saisie, "supabase_secret_key": CLE_SUPABASE}
+    )
+    assert reglages.supabase_url == origine
+
+
+@pytest.mark.parametrize(
+    "mauvaise",
+    [
+        "p.supabase.co",
+        "ftp://p.supabase.co",
+        "https://",
+        "https://p.supabase.co/auth/v1",
+        "https://p.supabase.co/?a=1",
+        "https://p.supabase.co/#x",
+        "https://nom:motdepasse@p.supabase.co",
+        "https://p.supabase.co:abc",
+        "",
+    ],
+)
+def test_une_url_d_auth_mal_formee_echoue_sans_etre_recopiee(mauvaise: str) -> None:
+    with pytest.raises(ValidationError, match="supabase_url") as erreur:
+        Settings.model_validate(
+            {"env": "local", "supabase_url": mauvaise, "supabase_secret_key": CLE_SUPABASE}
+        )
+    assert "motdepasse" not in str(erreur.value)
+
+
+@pytest.mark.parametrize(
+    ("env", "url"),
+    [
+        ("local", "http://p.supabase.co"),
+        ("local", "http://127.0.0.1.evil.example"),
+        ("essai", "http://127.0.0.1:54321"),
+        ("prod", "http://localhost:54321"),
+    ],
+)
+def test_http_n_est_permis_qu_en_local_et_vers_l_hote_local(env: str, url: str) -> None:
+    autres = {} if env == "local" else {"relay_secret": SECRET, "database_url": DSN}
+    with pytest.raises(ValidationError, match="https obligatoire"):
+        Settings.model_validate(
+            {"env": env, "supabase_url": url, "supabase_secret_key": CLE_SUPABASE} | autres
+        )
+
+
+@pytest.mark.parametrize("cle", ["", "clé-é", "a b", "a\nb", "a\x00b"])
+def test_une_cle_d_auth_non_transmissible_echoue_sans_etre_recopiee(cle: str) -> None:
+    with pytest.raises(ValidationError, match="supabase_secret_key") as erreur:
+        Settings.model_validate(
+            {"env": "local", "supabase_url": "https://p.supabase.co", "supabase_secret_key": cle}
+        )
+    assert cle == "" or cle not in str(erreur.value)

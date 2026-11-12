@@ -164,6 +164,27 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
 - Déploiement par identité fédérée (OIDC) quand l'hébergeur le permet ; sinon une clé limitée au projet, à
   durée courte, renouvelée. Procédure écrite pour changer chaque secret.
 
+#### Administration de Supabase Auth (`src/popote_api/infra/auth_admin.py`)
+
+Le seul module qui écrit un compte : `cree_compte`, `change_mot_de_passe`, `supprime_compte`. Réglages
+`POPOTE_SUPABASE_URL` (https, origine seule ; http seulement vers l'hôte local, en local) et
+`POPOTE_SUPABASE_SECRET_KEY` (`SecretStr`), **facultatifs pour l'instant** et posés ensemble : sans eux
+l'application démarre avec un avertissement et chaque opération rend `503 auth_indisponible`.
+
+- **Clé dans `apikey` seul** (preuve 1 : acceptée seule ou doublée d'`Authorization`). Un seul en-tête, une
+  seule place où elle voyage ; `Authorization` attend un JWT, et cette clé n'en est pas un.
+- **Délais finis** : connexion 3 s, lecture 10 s, échéance totale 15 s. **Aucune reprise** : un `cree_compte`
+  rejoué pourrait créer un compte que l'appelant ne connaît pas. Redirections refusées : la clé ne suit pas un
+  `Location`.
+- **Le message d'Auth n'est jamais gardé ni journalisé** (il recopie l'adresse). Une exception ne porte que le
+  statut HTTP et le `error_code` d'Auth, et seulement s'il a la forme d'un code (`[a-z][a-z0-9_]{0,63}`).
+- **Erreurs** : `email_exists` / `user_already_exists` → `CompteDejaExistant` (`409 compte_existant`) ;
+  `weak_password`, ou mot de passe non transmissible (plus de 72 octets, nul, substitut isolé, refusé avant tout
+  appel) → `MotDePasseRefuseParAuth` ; tout le reste, panne, délai, statut ou corps imprévu →
+  `AuthIndisponible` (`503`). `supprime_compte` tient pour un succès le seul `404 user_not_found`.
+- L'identifiant d'un compte entre dans l'adresse sous forme d'`UUID` seulement ; la clé n'apparaît ni dans un
+  `repr`, ni dans les réglages sérialisés, ni dans un journal.
+
 ### 7.5 Chaîne d'approvisionnement
 
 - Versions figées (`uv.lock`, `package-lock.json`), mises à jour hebdomadaires automatiques et relues ;

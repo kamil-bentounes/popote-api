@@ -17,10 +17,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from popote_api.infra.auth_admin import AuthIndisponible, CompteDejaExistant
+
 journal = logging.getLogger(__name__)
 
 TYPE_DE_BASE = "https://notre-popote.fr/problemes/"
 MEDIA = "application/problem+json"
+CODE_AUTH_INDISPONIBLE = "auth_indisponible"
+CODE_COMPTE_EXISTANT = "compte_existant"
 TITRE_PAR_DEFAUT = "Erreur"
 CODE_PAR_DEFAUT = "erreur"
 # statut: (titre, code stable). Un statut absent prend le titre et le code par défaut.
@@ -215,6 +219,18 @@ def installe(app: FastAPI) -> None:
     @app.exception_handler(Probleme)
     async def _probleme(request: Request, exc: Probleme) -> JSONResponse:
         return reponse(request, exc.status, exc.code, exc.detail, headers=exc.headers)
+
+    @app.exception_handler(AuthIndisponible)
+    async def _auth_indisponible(request: Request, exc: AuthIndisponible) -> JSONResponse:
+        # Le texte de l'exception ne porte que le statut et le code d'Auth : il se journalise tel quel.
+        journal.warning("Auth indisponible (request_id=%s) : %s", _identifiant(request), exc, exc_info=exc)
+        return reponse(
+            request, 503, CODE_AUTH_INDISPONIBLE, "Le service des comptes ne répond pas pour l'instant."
+        )
+
+    @app.exception_handler(CompteDejaExistant)
+    async def _compte_existant(request: Request, exc: CompteDejaExistant) -> JSONResponse:
+        return reponse(request, 409, CODE_COMPTE_EXISTANT, "Un compte existe déjà pour cette adresse.")
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
