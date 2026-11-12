@@ -43,18 +43,22 @@ async def test_le_demarrage_n_attend_pas_de_connexion_et_l_arret_ferme_les_pools
             pass
 
 
-def test_sans_adresse_interne_le_demarrage_avertit_et_la_base_de_service_manque(
+async def test_sans_adresse_interne_le_demarrage_avertit_et_la_base_de_service_manque(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    app = create_app(reglages("essai"))
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
-        app = create_app(reglages("essai"))
+        async with app.router.lifespan_context(app):
+            pass
     assert "POPOTE_DATABASE_URL_INTERNAL" in caplog.text
     assert app.state.base.service_configure is False
 
 
-def test_avec_l_adresse_interne_le_demarrage_n_avertit_pas(caplog: pytest.LogCaptureFixture) -> None:
+async def test_avec_l_adresse_interne_le_demarrage_n_avertit_pas(caplog: pytest.LogCaptureFixture) -> None:
+    app = create_app(reglages("essai", database_url_internal=DSN))
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
-        app = create_app(reglages("essai", database_url_internal=DSN))
+        async with app.router.lifespan_context(app):
+            pass
     assert caplog.text == ""
     assert app.state.base.service_configure is True
 

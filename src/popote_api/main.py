@@ -27,11 +27,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.json_logs:
         journal.configure()
     base = Base.depuis_dsn(_secret(settings.database_url), _secret(settings.database_url_internal))
-    if not base.service_configure:
-        avertissements.warning("POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503).")
 
     @asynccontextmanager
     async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
+        if not base.service_configure:
+            avertissements.warning(
+                "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
+            )
         try:
             await base.ouvre()  # sans attendre de connexion : le démarrage ne dépend pas de la base
             yield
