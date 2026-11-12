@@ -8,12 +8,27 @@ Définies au § 10 de la [spec du socle](https://github.com/kamil-bentounes/popo
 
 | # | Preuve | État | Où |
 |---|---|---|---|
-| 1 | Clés historiques : travailler avec la seule clé secrète, réactiver ; suppression de la clé publiable par défaut ; coupure de la connexion par mot de passe de GoTrue sans perdre son administration | à faire | — |
-| 2 | Réveil : une requête de l'API sur `/api/readyz` garde-t-elle le projet éveillé (demande plus de 7 jours d'inactivité mesurée) | à faire | — |
+| 1 | Clés historiques : travailler avec la seule clé secrète, réactiver ; suppression de la clé publiable par défaut ; coupure de la connexion par mot de passe de GoTrue sans perdre son administration | en partie le 12/11/2026 : la clé secrète seule suffit (clés historiques encore actives) ; le reste attend un jeton de gestion avec « API Keys » et « Auth » en écriture | [Preuve 1](#preuve-1--la-clé-secrète-seule-en-partie) |
+| 2 | Réveil : une requête de l'API sur `/api/readyz` garde-t-elle le projet éveillé (demande plus de 7 jours d'inactivité mesurée) | en cours depuis le 12/11/2026 (`reveil-essai.yml`, 06:47 UTC) ; verdict le 20/11 au plus tôt | — |
 | 3 | Rôles `popote_api` et `popote_internal` par Supavisor, avec `set local role` | faite le 12/11/2026 | [Preuve 3 : Supavisor](#preuve-3--supavisor) |
-| 4 | Relais Cloudflare : cookie `__Host-`, `no-store`, en-tête secret, adresse IP lue | à faire | — |
-| 5 | Démarrage à froid du conteneur, mesuré | à faire | — |
-| 6 | Sauvegarde puis restauration complète dans un projet vide | à faire | — |
+| 4 | Relais Cloudflare : cookie `__Host-`, `no-store`, en-tête secret, adresse IP lue | faite le 12/11/2026 | [Preuve 4](#preuve-4--le-relais) |
+| 5 | Démarrage à froid du conteneur, mesuré | en cours (nuit du 12 au 13/11) | — |
+| 6 | Sauvegarde puis restauration complète dans un projet vide | faite le 12/11/2026 sur l'essai | [Preuve 6](#preuve-6--sauvegarde-et-restauration) |
+
+## Preuve 1 : la clé secrète seule (en partie)
+
+Date : 12/11/2026, sur l'essai. Clés présentes : historiques (`anon`, `service_role`), publiable, secrète.
+
+Avec la seule clé secrète (`sb_secret_…`), passée dans l'en-tête `apikey`, seule ou doublée d'un
+`Authorization: Bearer` avec la même clé, tout répond `200` :
+- Storage : liste des seaux, création d'un seau privé, dépôt d'un objet, relecture identique à l'octet près,
+  effacement de l'objet puis du seau ;
+- administration d'Auth : création d'un compte (e-mail confirmé, adresse en `example.com`), changement de son
+  mot de passe, suppression du compte.
+
+Reste à prouver, avec un jeton de gestion qui écrit les clés et les réglages d'Auth : la même chose **clés
+historiques désactivées**, puis leur réactivation ; la suppression possible ou non de la clé publiable par
+défaut ; la coupure de `/auth/v1/token?grant_type=password` sans perdre `createUser` et `updateUserById`.
 
 ## Preuve 3 : Supavisor
 
@@ -107,3 +122,27 @@ Même constat sur la base locale et sur la copie jetable.
 - **Mots de passe.** `ESSAI_PW_API` et `ESSAI_PW_INTERNAL` sont dans `secrets.env` (droits 600) ; ceux de la
   prod seront tirés à part, dans le gestionnaire de secrets, au déploiement.
 - **Région.** L'hôte du pooler de l'essai est en `eu-west-1`, et non `eu-west-3` comme dans le plan.
+
+## Preuve 4 : le relais
+
+Date : 12/11/2026 (navigateur Chromium, puis rejouée par `curl` le même soir). À travers
+`https://essai.notre-popote.fr/api/_preuves/cookie` (routes de preuve montées sur l'essai seulement) :
+
+- `POST` avec de faux `X-Popote-IP` et `X-Popote-Relais` : `200`, `Cache-Control: no-store`, `Set-Cookie:
+  __Host-popote_preuve=…; HttpOnly; Path=/; SameSite=lax; Secure`, `X-Request-Id` présent ;
+- `GET` avec le cookie : l'API le reçoit (`cookie_recu: true`) ; l'adresse vue est une adresse valide et n'est
+  pas celle du faux `X-Popote-IP` : le relais écrase les deux en-têtes ;
+- dans le navigateur, le cookie n'est pas lisible par JavaScript (`document.cookie` ne le contient pas) ;
+- appel direct de l'adresse du conteneur, sans l'en-tête du relais : `404`.
+
+Rejouer : `curl -si -X POST https://essai.notre-popote.fr/api/_preuves/cookie -H 'X-Popote-IP: 192.0.2.1'`, puis
+`curl -s https://essai.notre-popote.fr/api/_preuves/cookie -b '__Host-popote_preuve=x'`.
+
+## Preuve 6 : sauvegarde et restauration
+
+Date : 12/11/2026, sur l'essai. Lancement manuel de `sauvegarde.yml` avec `cible=essai` (run 43272774624,
+vert) : une archive chiffrée de 2,2 Mo déposée dans `popote-sauvegardes-essai/essai/`. Puis
+`restauration.yml` (run 43273148984, vert) : l'archive déchiffrée avec la clé de l'essai, rejouée sur une pile
+Supabase neuve dans le runner, fichiers des seaux redéposés, **chaque** compte de table égal à celui du
+manifeste. La sauvegarde de la prod part chaque nuit à 02:30 UTC ; sa restauration se fait à la main, chaque
+trimestre, avec la clé de Kamil (`docs/exploitation.md`).
