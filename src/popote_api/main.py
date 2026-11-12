@@ -6,8 +6,8 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response
 
 from popote_api import errors, relais
-from popote_api.api import health
-from popote_api.config import Settings
+from popote_api.api import health, preuves
+from popote_api.config import Env, Settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -28,6 +28,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return reponse
 
     app.include_router(health.router)
+    if settings.env is Env.essai:
+        app.include_router(preuves.router)
     errors.installe(app)
     return app
 
