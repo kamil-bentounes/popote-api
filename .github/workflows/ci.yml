@@ -139,3 +139,108 @@ jobs:
         with:
           persist-credentials: false
       - run: semgrep scan --config p/python --config p/typescript --config p/owasp-top-ten --error --metrics off
+  deploie-essai:
+    # Déploiement de l'essai (essai.notre-popote.fr) : seulement après un envoi sur main dont tous les contrôles sont verts.
+    needs: [python, base, image, secrets, semgrep]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: essai
+    # Un déploiement en cours n'est jamais annulé : le suivant attend son tour.
+    concurrency:
+      group: deploie-essai
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      SCW_API: https://api.scaleway.com
+      SCW_REGION: fr-par
+      SCW_REGISTRY: ${{ vars.SCW_REGISTRY }}
+      SCW_CONTAINER_ID: ${{ vars.SCW_CONTAINER_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Construire l'image
+        id: image
+        run: |
+          set -euo pipefail
+          image="$SCW_REGISTRY/api:${GITHUB_SHA::12}"
+          docker build -t "$image" .
+          echo "nom=$image" >> "$GITHUB_OUTPUT"
+      - name: Se connecter au registre et pousser l'image
+        env:
+          IMAGE: ${{ steps.image.outputs.nom }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$SCW_SECRET_KEY" | docker login "${SCW_REGISTRY%%/*}" --username nologin --password-stdin
+          docker push "$IMAGE"
+      - name: Mettre à jour le conteneur et attendre qu'il soit prêt
+        env:
+          IMAGE: ${{ steps.image.outputs.nom }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          # Le jeton passe par la configuration de curl lue sur l'entrée standard : jamais en argument.
+          scw() {
+            printf 'header = "X-Auth-Token: %s"\n' "$SCW_SECRET_KEY" \
+              | curl --silent --show-error --fail-with-body --max-time 30 --config - "$@"
+          }
+          conteneur="$SCW_API/containers/v1beta1/regions/$SCW_REGION/containers/$SCW_CONTAINER_ID"
+          corps=$(jq -n --arg image "$IMAGE" '{registry_image: $image}')
+          scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
+          scw --request POST --header 'Content-Type: application/json' --data '{}' "$conteneur/deploy" > /dev/null
+          sleep 10 # laisser le statut quitter `ready` avant de le lire
+          for _ in $(seq 1 60); do
+            statut=$(scw "$conteneur" | jq -r '.status' || echo inconnu)
+            echo "statut du conteneur : $statut"
+            case "$statut" in
+              ready) exit 0 ;;
+              error | locked) echo "::error::le conteneur est en statut $statut"; exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::le conteneur n'est pas prêt après 5 minutes"
+          exit 1
+      - name: Interroger /api/healthz jusqu'à 200
+        run: |
+          set -euo pipefail
+          fin=$((SECONDS + 180))
+          until [ "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 https://essai.notre-popote.fr/api/healthz)" = 200 ]; do
+            if [ "$SECONDS" -ge "$fin" ]; then
+              echo "::error::/api/healthz ne répond pas 200 après 3 minutes"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "/api/healthz répond 200"
+      - name: Ne garder que les 5 images les plus récentes
+        # Le déploiement est déjà vérifié : un nettoyage raté ne doit pas le rougir.
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.image.outputs.nom }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          scw() {
+            printf 'header = "X-Auth-Token: %s"\n' "$SCW_SECRET_KEY" \
+              | curl --silent --show-error --fail-with-body --max-time 30 --config - "$@"
+          }
+          registre="$SCW_API/registry/v1/regions/$SCW_REGION"
+          espace="${SCW_REGISTRY#*/}"
+          tag_courant="${IMAGE##*:}"
+          id_espace=$(scw "$registre/namespaces?name=$espace&project_id=$SCW_DEFAULT_PROJECT_ID" \
+            | jq -r --arg n "$espace" '[.namespaces[] | select(.name == $n)][0].id // empty')
+          [ -n "$id_espace" ] || { echo "::error::espace de noms $espace introuvable"; exit 1; }
+          id_image=$(scw "$registre/images?namespace_id=$id_espace&name=api" \
+            | jq -r '[.images[] | select(.name == "api")][0].id // empty')
+          [ -n "$id_image" ] || { echo "::error::image api introuvable dans $espace"; exit 1; }
+          # Les plus récentes d'abord ; on saute les 5 premières et, par prudence, le tag qu'on vient de déployer.
+          anciens=$(scw "$registre/images/$id_image/tags?order_by=created_at_desc&page_size=100" \
+            | jq -r --arg courant "$tag_courant" '.tags[5:][] | select(.name != $courant) | .id')
+          for id_tag in $anciens; do
+            scw --request DELETE "$registre/tags/$id_tag" > /dev/null
+            echo "tag supprimé : $id_tag"
+          done
