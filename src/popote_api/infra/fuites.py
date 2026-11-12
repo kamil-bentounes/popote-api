@@ -98,7 +98,8 @@ class PwnedPasswords:
 
     async def verifie(self, mot_de_passe: str) -> ResultatFuite:
         # SHA-1 n'est pas une protection ici, c'est le format de la liste : `usedforsecurity=False`
-        # le déclare (ruff S324).
+        # le déclare (ruff S324) ; semgrep, qui ne le lit pas, est écarté pour cette seule ligne.
+        # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         empreinte = hashlib.sha1(mot_de_passe.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
         plage, suffixe = empreinte[:LONGUEUR_DE_LA_PLAGE], empreinte[LONGUEUR_DE_LA_PLAGE:]
         try:
