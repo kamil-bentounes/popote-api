@@ -16,6 +16,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from popote_api import suivi
+from popote_api.journal import CONTEXTE
+
 journal = logging.getLogger(__name__)
 
 TYPE_DE_BASE = "https://notre-popote.fr/problemes/"
@@ -189,6 +192,15 @@ def installe(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _inattendue(request: Request, exc: Exception) -> JSONResponse:
-        journal.exception("Erreur inattendue (request_id=%s)", _identifiant(request), exc_info=exc)
+        identifiant = _identifiant(request)
+        # Ce gestionnaire s'exécute au-dessus de nos middlewares, qui ont déjà rendu leurs `ContextVar` :
+        # les identifiants se lisent donc dans l'état de la requête.
+        contexte = {nom: getattr(request.state, nom, None) for nom in CONTEXTE}
+        journal.exception("Erreur inattendue", exc_info=exc, extra=contexte)
         setattr(exc, DEJA_JOURNALISEE, True)
+        try:
+            suivi.signale(exc, identifiant)
+        except Exception:
+            # Un récepteur en panne ne doit pas faire échouer la réponse : on le dit, et on rend la 500.
+            journal.exception("Le suivi des erreurs a échoué", extra=contexte)
         return reponse(request, 500, "erreur_interne", "Une erreur inattendue est survenue.")
