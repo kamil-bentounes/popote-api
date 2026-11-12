@@ -11,10 +11,11 @@ import pytest
 from _client import application_de_test, client_de, cookie
 from _connexions import DSN_API, DSN_API_DISTANT
 from _fabrique import Fabrique, jeton_et_empreinte
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from popote_api.infra.db import Base, Pool, cree_pool
+from popote_api.schemas.base import Entree
 from popote_api.security.session import DEFI_D_AUTHENTIFICATION, PersonneDeLaSession
 
 pytestmark = pytest.mark.integration
@@ -35,6 +36,20 @@ async def qui(personne: PersonneDeLaSession) -> dict[str, Any]:
     ligne = await personne.curseur.fetchone()
     assert ligne is not None
     return {"personne": str(personne.id), **{k: _texte(v) for k, v in ligne.items()}}
+
+
+class Corps(Entree):
+    nombre: int
+
+
+@routeur.post("/essai/ecrit")
+async def ecrit(corps: Corps, personne: PersonneDeLaSession) -> dict[str, int]:
+    return {"nombre": corps.nombre}
+
+
+@routeur.get("/essai/absent")
+async def absent(personne: PersonneDeLaSession) -> dict[str, int]:
+    raise HTTPException(404)
 
 
 def _texte(valeur: object) -> object:
@@ -269,3 +284,16 @@ async def test_un_cookie_invente_n_ouvre_aucun_compteur_par_personne(
         reponse = await client.get(URL, headers={"Cookie": f"__Host-popote_session={jeton}"})
     assert reponse.status_code == 401
     assert app.state.debit.personne._fenetres == {}
+
+
+async def test_une_fois_la_session_validee_les_refus_de_la_route_gardent_leur_statut(
+    base: Base, monkeypatch: pytest.MonkeyPatch, fabrique: Fabrique
+) -> None:
+    """Le `401` de la fermeture (405, 404 et 422 sans session) ne couvre pas une route qui a lu la session."""
+    entetes = cookie(fabrique.session(fabrique.personne(fabrique.foyer()).id))
+    ecriture = entetes | {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+    async with client_de(application_de_test(base, monkeypatch, routeur)) as client:
+        mauvais_type = await client.post("/api/v1/essai/ecrit", json={"nombre": "x"}, headers=ecriture)
+        absent_ = await client.get("/api/v1/essai/absent", headers=entetes)
+    assert (mauvais_type.status_code, mauvais_type.json()["code"]) == (422, "donnees_invalides")
+    assert (absent_.status_code, absent_.json()["code"]) == (404, "introuvable")

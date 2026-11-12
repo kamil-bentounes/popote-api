@@ -5,7 +5,7 @@ from typing import Any, Final, LiteralString
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from popote_api.conditionnel import etag_de_contenu, repond_ou_304
+from popote_api.conditionnel import EN_TETES_CONDITIONNELS, REPONSE_304, etag_de_contenu, repond_ou_304
 from popote_api.errors import reponses_erreur
 from popote_api.schemas.moi import Moi
 from popote_api.security.session import PersonneDeLaSession
@@ -42,11 +42,12 @@ def _corps(personne: PersonneDeLaSession, ligne: dict[str, Any]) -> dict[str, An
     summary="La personne connectée",
     response_description="La personne, son adresse et son foyer.",
     response_model=Moi,
+    dependencies=[EN_TETES_CONDITIONNELS],
     responses={
         200: {
             "headers": {"ETag": {"description": "Empreinte du contenu (fort).", "schema": {"type": "string"}}}
         },
-        304: {"description": "Non modifiée : `If-None-Match` correspond à l'`ETag` actuel."},
+        304: REPONSE_304,
         **reponses_erreur(400, 412),
     },
 )

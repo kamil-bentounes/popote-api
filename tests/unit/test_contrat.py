@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from popote_api.contrat import contrat_publie, serialise
 from popote_api.errors import MEDIA, ProblemDetails, reponses_erreur
 from popote_api.main import create_app
+from popote_api.security.debit import NON_LIMITEES
 
 OPENAPI_JSON = Path(__file__).resolve().parents[2] / "openapi.json"
 
@@ -81,7 +82,8 @@ def test_chaque_operation_a_un_identifiant_et_un_resume() -> None:
 
 def test_healthz_et_readyz_declarent_leurs_erreurs() -> None:
     chemins = create_app(reglages("local")).openapi()["paths"]
-    assert set(chemins["/api/healthz"]["get"]["responses"]) == {"200", "500"}
+    # Ni limitées (pas de 429) ni sous `/api/v1/` (pas de 404) : seulement le délai et le 500.
+    assert set(chemins["/api/healthz"]["get"]["responses"]) == {"200", "500", "503"}
     assert set(chemins["/api/readyz"]["get"]["responses"]) == {"200", "500", "503"}
 
 
@@ -109,3 +111,75 @@ async def test_les_erreurs_reelles_respectent_le_schema_problem_details() -> Non
     }
     assert any(e.parameter and e.parameter.emplacement == "query" for e in champs)
     assert {"name": "page", "in": "query"} in [e.get("parameter") for e in reponses[1].json()["errors"]]
+
+
+def _operations(contrat: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    return [
+        (methode, chemin, operation)
+        for chemin, operations in contrat["paths"].items()
+        for methode, operation in operations.items()
+    ]
+
+
+def _en_tetes(operation: dict[str, Any], statut: str) -> set[str]:
+    return set(operation["responses"][statut].get("headers", {}))
+
+
+def test_toute_reponse_declare_x_request_id() -> None:
+    contrat = _application_avec_une_route().openapi()
+    reponses = _reponses_du_contrat(contrat)
+    assert len(reponses) > 5
+    assert [(o, s) for o, s, r in reponses if "X-Request-Id" not in r.get("headers", {})] == []
+
+
+def test_toute_operation_limitee_declare_son_429_et_ses_en_tetes() -> None:
+    contrat = _application_avec_une_route().openapi()
+    limitees = [(m, c, o) for m, c, o in _operations(contrat) if c not in NON_LIMITEES]
+    assert len(limitees) >= 2
+    for methode, chemin, operation in limitees:
+        assert _en_tetes(operation, "429") >= {"Retry-After", "RateLimit", "RateLimit-Policy"}, (
+            methode,
+            chemin,
+        )
+    assert all("429" not in contrat["paths"][c]["get"]["responses"] for c in NON_LIMITEES)
+
+
+def test_toute_operation_declare_le_503_du_delai_avec_retry_after() -> None:
+    for methode, chemin, operation in _operations(_application_avec_une_route().openapi()):
+        assert "Retry-After" in _en_tetes(operation, "503"), (methode, chemin)
+
+
+def test_une_ecriture_declare_origine_refusee_corps_trop_gros_et_type_refuse() -> None:
+    contrat = _application_avec_une_route().openapi()
+    ecriture = contrat["paths"]["/api/_test/ressource"]["post"]["responses"]
+    lecture = contrat["paths"]["/api/_test/oubli"]["get"]["responses"]
+    assert {"403", "413", "415"} <= set(ecriture)
+    assert not {"403", "413", "415"} & set(lecture)
+
+
+def test_les_adresses_de_v1_declarent_leur_404() -> None:
+    chemins = create_app(reglages("local")).openapi()["paths"]
+    assert "404" in chemins["/api/v1/me"]["get"]["responses"]
+    assert "404" not in chemins["/api/healthz"]["get"]["responses"]
+
+
+def test_le_304_de_me_declare_etag_et_cache_control_et_les_en_tetes_conditionnels_sont_des_parametres() -> (
+    None
+):
+    me = create_app(reglages("local")).openapi()["paths"]["/api/v1/me"]["get"]
+    assert _en_tetes(me, "304") >= {"ETag", "Cache-Control"}
+    parametres = {p["name"]: p["in"] for p in me["parameters"]}
+    assert parametres["If-None-Match"] == "header"
+    assert parametres["If-Match"] == "header"
+
+
+def test_les_erreurs_communes_ne_remplacent_pas_la_declaration_d_une_route() -> None:
+    app = create_app(reglages("local"))
+
+    @app.get("/api/_test/propre", responses={429: {"description": "Le refus de cette route"}})
+    async def propre() -> dict[str, int]:
+        return {}
+
+    reponse = app.openapi()["paths"]["/api/_test/propre"]["get"]["responses"]["429"]
+    assert reponse["description"] == "Le refus de cette route"
+    assert {"Retry-After", "RateLimit", "RateLimit-Policy"} <= set(reponse["headers"])
