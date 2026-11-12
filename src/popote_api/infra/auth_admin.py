@@ -124,8 +124,12 @@ class AuthAdmin:
         self._cle = cle
         self._transport = transport
 
+    @property
+    def configure(self) -> bool:
+        return self._url is not None and self._cle is not None
+
     def __repr__(self) -> str:
-        return f"AuthAdmin(configure={self._url is not None and self._cle is not None})"
+        return f"AuthAdmin(configure={self.configure})"
 
     async def cree_compte(self, email: str, mot_de_passe: str) -> UUID:
         """Crée un compte (e-mail confirmé, aucun message envoyé, marque `app_metadata.cree_par`).
@@ -239,14 +243,13 @@ def _chemin_du_compte(identifiant: UUID) -> str:
 
 
 def cree_auth_admin(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None) -> AuthAdmin:
-    """Le client de l'application. Non configuré : un avertissement au démarrage, 503 à chaque usage."""
+    """Le client de l'application. Non configuré (adresse ou clé absente) : 503 à chaque usage."""
     if settings.supabase_url is None or settings.supabase_secret_key is None:
-        journal.warning(
-            "Administration d'Auth non configurée (POPOTE_SUPABASE_URL, POPOTE_SUPABASE_SECRET_KEY) : "
-            "toute opération sur un compte rendra 503."
-        )
         return AuthAdmin(None, None, transport=transport)
-    return AuthAdmin(settings.supabase_url, settings.supabase_secret_key, transport=transport)
+    # `AnyHttpUrl` écrit l'adresse avec une barre finale ; les chemins du client commencent par la leur.
+    return AuthAdmin(
+        str(settings.supabase_url).rstrip("/"), settings.supabase_secret_key, transport=transport
+    )
 
 
 def auth_admin_de(request: Request) -> AuthAdmin:

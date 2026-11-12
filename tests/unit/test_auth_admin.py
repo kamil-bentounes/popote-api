@@ -506,15 +506,22 @@ async def test_une_adresse_non_transmissible_est_refusee_sans_appel_ni_recopie(e
 # --- Non configuré -----------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "reglage",
+    [{}, {"supabase_url": URL}],
+    ids=["ni-adresse-ni-cle", "adresse-seule"],
+)
 async def test_non_configure_chaque_operation_leve_auth_indisponible_sans_rien_envoyer(
-    caplog: pytest.LogCaptureFixture,
+    reglage: dict[str, str],
 ) -> None:
     def ne_doit_pas_etre_appele(_: httpx.Request) -> httpx.Response:
         raise AssertionError("aucun envoi attendu")
 
-    with caplog.at_level(logging.WARNING):
-        admin = cree_auth_admin(reglages("local"), transport=httpx.MockTransport(ne_doit_pas_etre_appele))
+    admin = cree_auth_admin(
+        reglages("local", **reglage), transport=httpx.MockTransport(ne_doit_pas_etre_appele)
+    )
 
+    assert admin.configure is False
     for operation in (
         lambda: admin.cree_compte(EMAIL, MOT_DE_PASSE),
         lambda: admin.change_mot_de_passe(IDENTIFIANT, MOT_DE_PASSE),
@@ -522,24 +529,40 @@ async def test_non_configure_chaque_operation_leve_auth_indisponible_sans_rien_e
     ):
         with pytest.raises(AuthIndisponible, match="pas configurée"):
             await operation()
-    assert "Administration d'Auth non configurée" in caplog.text
 
 
-def test_l_application_demarre_sans_la_configuration_d_auth_et_l_avertit(
+async def test_l_adresse_du_projet_est_donnee_au_client_sans_barre_finale() -> None:
+    admin, vues = client(lambda _: httpx.Response(200, json={}))
+
+    await admin.supprime_compte(IDENTIFIANT)
+
+    assert str(vues[0].url) == f"{URL}/auth/v1/admin/users/{IDENTIFIANT}"
+
+
+async def test_le_demarrage_sans_la_configuration_d_auth_avertit_et_le_client_est_la(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.WARNING):
-        app = create_app(reglages("local"))
+    app = create_app(reglages("local"))
+
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
 
     assert isinstance(app.state.auth_admin, AuthAdmin)
-    assert caplog.text.count("Administration d'Auth non configurée") == 1
+    assert caplog.text.count("POPOTE_SUPABASE_SECRET_KEY") == 1
 
 
-def test_l_application_configuree_n_avertit_pas(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING):
-        create_app(reglages("local", supabase_url=URL, supabase_secret_key=CLE))
+async def test_le_demarrage_avec_la_configuration_d_auth_n_avertit_pas_de_son_absence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(reglages("local", supabase_url=URL, supabase_secret_key=CLE))
 
-    assert "non configurée" not in caplog.text
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert "POPOTE_SUPABASE_SECRET_KEY" not in caplog.text
+    assert app.state.auth_admin.configure is True
 
 
 # --- À la frontière HTTP ----------------------------------------------------------------------------------

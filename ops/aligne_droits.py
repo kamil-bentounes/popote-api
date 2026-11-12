@@ -17,7 +17,11 @@ Usage :
     python3 ops/aligne_droits.py --cible-dsn URL # à blanc, cible lue par psql (la CI) ; jamais --appliquer
 
 Environnement : SUPABASE_ESSAI_TOKEN et ESSAI_REF (jamais affichés), sauf avec --cible-dsn
-(ou ALIGNE_CIBLE_DSN), où seule la chaîne de connexion sert.
+(ou ALIGNE_CIBLE_DSN), où la chaîne de connexion sert, avec ESSAI_REF ou ESSAI_SUPABASE_URL
+pour la liste blanche.
+Liste blanche : la cible est le projet ESSAI_REF (`--cible` ne peut que le répéter ; avec `--cible-dsn`, la
+référence du DSN doit être celle de ESSAI_REF, ou de ESSAI_SUPABASE_URL à défaut) ; la source doit être un
+hôte local. Tout le reste est refusé, la prod comprise.
 Codes de sortie : 0 aucun écart, 1 écart restant, 2 erreur d'utilisation ou d'accès.
 Le journal ne porte que des noms d'objets et de rôles, jamais une donnée ni la chaîne de connexion.
 """
@@ -31,9 +35,10 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,7 +51,10 @@ PSQL_TIMEOUT_SECONDS = 60
 # Au-delà, le journal dit « et N autres » : il reste lisible, et la sortie SQL écrite a tout.
 MAX_LISTED_DIVERGENCES = 100
 
-# La prod ne doit jamais être une cible, même par une erreur de variable d'environnement.
+# Les cibles sont une liste blanche : la référence de l'essai (ESSAI_REF) et, pour la source seulement,
+# un hôte local. La prod reste en plus refusée en dur : si ESSAI_REF la désignait par erreur, la liste
+# blanche, qui se lit dans la même variable, la laisserait passer.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 FORBIDDEN_PROJECT_REF = "mjlxfffdirlqmmjzhorg"
 PROJECT_REF_PATTERN = re.compile(r"[a-z]{20}")
 
@@ -437,6 +445,17 @@ def parse_snapshot_output(output: str) -> RawSnapshot:
     return snapshot
 
 
+def check_source_dsn(dsn: str) -> None:
+    """La source est la base locale : seule une adresse `postgresql://` vers un hôte local passe."""
+    if dsn.startswith("-"):
+        raise AlignmentError("le DSN source ne peut pas commencer par un tiret")
+    parts = urllib.parse.urlsplit(dsn)
+    if parts.scheme not in ("postgres", "postgresql") or "host" in urllib.parse.parse_qs(parts.query):
+        raise AlignmentError("le DSN source doit être une adresse postgresql:// sans paramètre host")
+    if (parts.hostname or "") not in LOCAL_HOSTS:
+        raise AlignmentError("la source doit être un hôte local")
+
+
 def check_target_dsn(dsn: str) -> None:
     """Refuse une cible vide, une option déguisée en DSN et le projet de prod."""
     if not dsn:
@@ -445,6 +464,39 @@ def check_target_dsn(dsn: str) -> None:
         raise AlignmentError("le DSN de la cible ne peut pas commencer par un tiret")
     if FORBIDDEN_PROJECT_REF in dsn:
         raise AlignmentError("la prod n'est jamais une cible")
+
+
+def project_ref_of_dsn(dsn: str) -> str | None:
+    """La référence du projet d'un DSN Supabase : `postgres.<réf>` (pooler) ou `db.<réf>.supabase.co`."""
+    parts = urllib.parse.urlsplit(dsn)
+    _, dot, from_user = (parts.username or "").partition(".")
+    if dot and PROJECT_REF_PATTERN.fullmatch(from_user):
+        return from_user
+    direct = re.fullmatch(r"db\.([a-z]{20})\.supabase\.co", parts.hostname or "")
+    return direct.group(1) if direct else None
+
+
+def allowed_refs_for_dsn() -> frozenset[str]:
+    """ESSAI_REF si elle est posée, sinon la référence de ESSAI_SUPABASE_URL (variable de l'essai en CI)."""
+    ref = os.environ.get("ESSAI_REF", "")
+    if ref:
+        return frozenset({ref})
+    url = re.fullmatch(r"https://([a-z]{20})\.supabase\.co/?", os.environ.get("ESSAI_SUPABASE_URL", ""))
+    return frozenset({url.group(1)}) if url else frozenset()
+
+
+def check_target_dsn_allowed(dsn: str, allowed_refs: Collection[str]) -> None:
+    """La cible lue par psql est la base de l'essai : hôte local, ou projet de la liste blanche."""
+    parts = urllib.parse.urlsplit(dsn)
+    if parts.scheme not in ("postgres", "postgresql"):
+        raise AlignmentError("le DSN de la cible doit être une adresse postgresql://")
+    if "host" in urllib.parse.parse_qs(parts.query):
+        raise AlignmentError("le DSN de la cible ne peut pas porter de paramètre host")
+    if (parts.hostname or "") in LOCAL_HOSTS:
+        return
+    ref = project_ref_of_dsn(dsn)
+    if ref is None or ref not in allowed_refs:
+        raise AlignmentError("la cible n'est pas dans la liste blanche (ESSAI_REF ou ESSAI_SUPABASE_URL)")
 
 
 def read_snapshot_by_psql(dsn: str, label: str) -> Snapshot:
@@ -475,11 +527,13 @@ def read_snapshot_by_psql(dsn: str, label: str) -> Snapshot:
 class ManagementApi:
     """POST /v1/projects/{ref}/database/query. Le jeton n'est ni affiché ni conservé dans repr."""
 
-    def __init__(self, project_ref: str, token: str) -> None:
+    def __init__(self, project_ref: str, token: str, allowed_refs: Collection[str]) -> None:
         if not PROJECT_REF_PATTERN.fullmatch(project_ref):
-            raise AlignmentError("ESSAI_REF n'a pas la forme d'une référence de projet")
+            raise AlignmentError("la cible n'a pas la forme d'une référence de projet")
         if project_ref == FORBIDDEN_PROJECT_REF:
             raise AlignmentError("la prod n'est jamais une cible")
+        if project_ref not in allowed_refs:
+            raise AlignmentError("la cible n'est pas dans la liste blanche (ESSAI_REF)")
         self._url = f"https://api.supabase.com/v1/projects/{project_ref}/database/query"
         self._token = token
 
@@ -562,6 +616,7 @@ def print_report(report: Report) -> None:
 def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--appliquer", action="store_true", help="envoie le SQL à la cible")
+    parser.add_argument("--cible", help="référence du projet visé ; doit être ESSAI_REF (par défaut)")
     parser.add_argument(
         "--cible-dsn",
         default=os.environ.get("ALIGNE_CIBLE_DSN"),
@@ -573,20 +628,27 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def open_target(arguments: argparse.Namespace) -> ManagementApi:
+    essai_ref = read_environment("ESSAI_REF")
+    return ManagementApi(arguments.cible or essai_ref, read_environment("SUPABASE_ESSAI_TOKEN"), {essai_ref})
+
+
 def run(arguments: argparse.Namespace) -> int:
     api: ManagementApi | None = None
     if arguments.cible_dsn is not None:
         if arguments.appliquer:
             raise AlignmentError("--cible-dsn lit seulement : appliquer passe par l'API de gestion")
         check_target_dsn(arguments.cible_dsn)
+        check_target_dsn_allowed(arguments.cible_dsn, allowed_refs_for_dsn())
     else:
-        api = ManagementApi(read_environment("ESSAI_REF"), read_environment("SUPABASE_ESSAI_TOKEN"))
+        api = open_target(arguments)
 
     def read_target() -> Snapshot:
         if api is None:
             return read_snapshot_by_psql(arguments.cible_dsn, "cible")
         return api.read_snapshot()
 
+    check_source_dsn(arguments.source_dsn)
     source = read_snapshot_by_psql(arguments.source_dsn, "source")
     report = compute_report(source, read_target())
     statements = render_sql(report.to_fix)
