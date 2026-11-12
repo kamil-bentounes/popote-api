@@ -144,3 +144,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   d'e-mail en clair).
 - `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
+  La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun
+  droit sur les tables) et lit une ligne de `public.instance_setting` : table de référence lisible sans foyer,
+  semée par la migration 0009. Une table sans ligne lisible vaut « base indisponible ». Aucune donnée n'est rendue
+  ni journalisée ; le résultat reste en cache 5 s, et connexion plus requête tiennent en 3 s.
