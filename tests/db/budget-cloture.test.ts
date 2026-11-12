@@ -141,32 +141,32 @@ describe('les trois étapes', () => {
 })
 
 describe('à deux', () => {
-  it('Thauba arrivée le 15/11 sans revenu : novembre attend ; son revenu le débloque, au prorata',
+  it('Léa arrivée le 15/11 sans revenu : novembre attend ; son revenu le débloque, au prorata',
     async () => {
       await regleLHeure('2026-12-02T10:00:00+01:00')
-      const f = await foyerSolo('clo-thauba', { revenu: 370_000 })
-      const thauba = await membre(f, 'Thauba', { arrivee: '2026-11-15' })
+      const f = await foyerSolo('clo-lea', { revenu: 310_000 })
+      const lea = await membre(f, 'Léa', { arrivee: '2026-11-15' })
       const loyer = await poseCharge(f, { libelle: 'Loyer', cents: 100_000, commun: true,
-                                          participants: [f.userId, thauba.userId] })
+                                          participants: [f.userId, lea.userId] })
       await ouvre(f, '2026-11-01')
       expect((await clore(f, { mois: '2026-11-01', mis: 0 })).error?.message)
-        .toMatch(/Thauba n'a pas encore posé son revenu : novembre attend/)
-      ou(await thauba.client.from('revenu').insert({
-        household_id: f.householdId, user_profile_id: thauba.userId,
-        net_mensuel_cents: 240_000, valid_from: '2026-12-01' }).select())
+        .toMatch(/Léa n'a pas encore posé son revenu : novembre attend/)
+      ou(await lea.client.from('revenu').insert({
+        household_id: f.householdId, user_profile_id: lea.userId,
+        net_mensuel_cents: 210_000, valid_from: '2026-12-01' }).select())
       ou(await clore(f, { mois: '2026-11-01', mis: 0 }))
       const sienne = (await ligne(loyer, '2026-11-01'))!.depense_part
         .find(p => p.user_profile_id === f.userId)!.part_cents
-      expect(sienne, 'novembre n’est pas au prorata (370 / 610)').toBeGreaterThan(60_000)
-      expect(sienne).toBeLessThan(61_000)
+      expect(sienne, 'novembre n’est pas au prorata (310 / 520)').toBeGreaterThan(59_000)
+      expect(sienne).toBeLessThan(60_000)
       await regleLHeure('2026-11-01T10:00:00+01:00')
     })
 
   it('montants impairs, deux revenus : les parts font le total au centime, le reste est celui de Kamil',
     async () => {
-      const f = await foyerSolo('clo-impairs', { revenu: 370_000 })
-      const thauba = await membre(f, 'Thauba', { revenu: 240_001 })
-      const both = [f.userId, thauba.userId]
+      const f = await foyerSolo('clo-impairs', { revenu: 310_000 })
+      const lea = await membre(f, 'Léa', { revenu: 210_001 })
+      const both = [f.userId, lea.userId]
       const loyer = await poseCharge(f, { libelle: 'Loyer', cents: 100_001, commun: true,
                                           participants: both })
       const courses = await poseCharge(f, { libelle: 'Courses', cents: 80_001, mode: 'au_fil',
@@ -178,7 +178,7 @@ describe('à deux', () => {
       }).select().single()) as { id: string }).id
       const idCourses = (await ligne(courses, '2026-10-01'))!.id
       ou(await declare(f, idCourses, '2026-10-04', 6_241))
-      ou(await declare(thauba, idCourses, '2026-10-09', 11_851))
+      ou(await declare(lea, idCourses, '2026-10-09', 11_851))
       ou(await clore(f, { poche }))
 
       const lignes = [[loyer, 100_001], [courses, 18_092], [internet, 3_701]] as const
@@ -191,26 +191,26 @@ describe('à deux', () => {
         sesParts += l.depense_part.find(p => p.user_profile_id === f.userId)!.part_cents
       }
       // Loyer : le partage se fait au point de base (0064) — 6 066 / 10 000 pour
-      // Kamil (370 000 sur 610 001), soit 60 661 sur 100 001 ; Thauba, le reste.
+      // Kamil (310 000 sur 520 001), soit 59 621 sur 100 001 ; Léa, le reste.
       const loyerParts = (await ligne(loyer, '2026-10-01'))!.depense_part
-      expect(loyerParts.find(p => p.user_profile_id === f.userId)!.part_cents).toBe(60_661)
-      expect(loyerParts.find(p => p.user_profile_id === thauba.userId)!.part_cents).toBe(39_340)
+      expect(loyerParts.find(p => p.user_profile_id === f.userId)!.part_cents).toBe(59_621)
+      expect(loyerParts.find(p => p.user_profile_id === lea.userId)!.part_cents).toBe(40_380)
       const c = await choixDe(f)
-      expect(c.reste_cents).toBe(370_000 - sesParts)
-      expect(c.mis_de_cote_cents).toBe(370_000 - sesParts)
+      expect(c.reste_cents).toBe(310_000 - sesParts)
+      expect(c.mis_de_cote_cents).toBe(310_000 - sesParts)
       const { data: v } = await admin().from('versement_epargne')
         .select('montant_cents').eq('id', c.versement_id!).single()
-      expect(v!.montant_cents).toBe(370_000 - sesParts)
+      expect(v!.montant_cents).toBe(310_000 - sesParts)
     })
 
   it('un membre parti le 03/11 : octobre se clôture le 05/11 avec les parts d’octobre', async () => {
     await regleLHeure('2026-11-05T10:00:00+01:00')
     const f = await foyerSolo('clo-depart', { revenu: 300_000 })
-    const thauba = await membre(f, 'Thauba', { revenu: 300_000 })
+    const lea = await membre(f, 'Léa', { revenu: 300_000 })
     const communes = await poseCharge(f, { libelle: 'Communes', cents: 167_853, commun: true,
-                                           participants: [f.userId, thauba.userId] })
+                                           participants: [f.userId, lea.userId] })
     await ouvre(f, '2026-10-01')
-    ou(await admin().from('user_profile').delete().eq('id', thauba.userId).select())
+    ou(await admin().from('user_profile').delete().eq('id', lea.userId).select())
     ou(await clore(f, { mis: 0 }))
     const parts = (await ligne(communes, '2026-10-01'))!.depense_part
     expect(parts, 'octobre a été repartagé sur Kamil seul').toHaveLength(2)
@@ -226,13 +226,13 @@ describe('à deux', () => {
                                       ['2026-11-01T09:00:00+01:00', 2]] as const) {
         await regleLHeure(quand)
         const f = await foyerSolo(`clo-retire-${attendu}`, { revenu: 300_000 })
-        const thauba = await membre(f, 'Thauba', { revenu: 300_000 })
+        const lea = await membre(f, 'Léa', { revenu: 300_000 })
         const loyer = await poseCharge(f, { libelle: 'Loyer', cents: 100_000, commun: true,
-                                            participants: [f.userId, thauba.userId] })
+                                            participants: [f.userId, lea.userId] })
         await ouvre(f, '2026-10-01')
         // Ce que fait « Changer qui participe » : retirer, puis refiger le mois COURANT.
         ou(await f.client.from('charge_participant').delete()
-          .eq('charge_id', loyer).eq('user_profile_id', thauba.userId).select())
+          .eq('charge_id', loyer).eq('user_profile_id', lea.userId).select())
         ou(await f.client.rpc('refige_le_mois', { le_mois: `${quand.slice(0, 7)}-01` }))
         await regleLHeure('2026-11-02T10:00:00+01:00')
         ou(await clore(f, { mis: 0 }))

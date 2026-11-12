@@ -114,7 +114,7 @@ const du = (i: number, type = 'sortir_du_congelateur', donnees?: Record<string, 
   donnees: donnees ?? {
     jour: '2030-06-12',
     plats: [{ label: 'Wrap', recipe_id: null, image_url: null, n: 2, portion_ids: [ID(1), ID(2)], restant: 1,
-      repas: [{ meal: 'diner', pour: ['Kamil', 'Thauba'] }] }],
+      repas: [{ meal: 'diner', pour: ['Kamil', 'Léa'] }] }],
   },
 })
 const erreurSmtp = (code: string, command: string, message: string) => Object.assign(new Error(message), { code, command })
@@ -320,10 +320,10 @@ describe('l’essai', () => {
   it('un autre membre a sa propre limite', async () => {
     const pris = new Set<string>()
     const a = banc({ reservationsPrises: pris })
-    const c = banc({ reservationsPrises: pris, utilisateur: { id: '00000000-0000-4000-8000-0000000000bb', email: 'thauba@exemple.test', email_confirmed_at: '2026-10-01T08:00:00Z' } })
+    const c = banc({ reservationsPrises: pris, utilisateur: { id: '00000000-0000-4000-8000-0000000000bb', email: 'lea@exemple.test', email_confirmed_at: '2026-10-01T08:00:00Z' } })
     expect((await sert(requete({ jeton: JETON, corps: { essai: 'choisir_les_repas' } }), a.dep)).status).toBe(200)
     expect((await sert(requete({ jeton: JETON, corps: { essai: 'choisir_les_repas' } }), c.dep)).status).toBe(200)
-    expect(c.envoyes[0].to).toBe('thauba@exemple.test')
+    expect(c.envoyes[0].to).toBe('lea@exemple.test')
   })
 
   it('un envoi qui échoue AVANT les données rend la clé : on peut réessayer tout de suite', async () => {

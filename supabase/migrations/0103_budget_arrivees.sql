@@ -5,7 +5,7 @@
 -- ── Le premier revenu d'un membre compte dès son arrivée ─────────────────
 /* Choix de Kamil, le 01/10. Il remonte au mois d'`entre_le`, sans passer avant
    le mois qui suit la dernière clôture du foyer — on ne réécrit pas un mois
-   clôturé. Thauba arrive le 15/11 et pose son revenu le 02/12 : il vaut dès
+   clôturé. Léa arrive le 15/11 et pose son revenu le 02/12 : il vaut dès
    novembre, et `tg_revenu_refige` repartage novembre, encore ouvert. Sans cela,
    novembre n'aurait jamais de revenu pour elle, et la clôture l'attendrait pour
    toujours. Les revenus suivants prennent effet au mois de leur saisie. */
@@ -79,9 +79,9 @@ begin
   perform public.verrou_du_foyer(new.household_id);
 
   /* Reculer son arrivée fait reculer son PREMIER revenu avec elle, comme à la pose
-     (`tg_revenu_premier`) : Thauba arrive le 01/10, pose son revenu en octobre, puis
+     (`tg_revenu_premier`) : Léa arrive le 01/10, pose son revenu en octobre, puis
      corrige son arrivée au 01/09. Sans revenu en septembre, le mois se partageait à
-     parts égales et la clôture refusait (« Thauba n'a pas encore posé son revenu »),
+     parts égales et la clôture refusait (« Léa n'a pas encore posé son revenu »),
      sans qu'aucun écran permette de le poser : l'interface ne pose un revenu qu'à
      partir du mois courant. Un revenu ne se modifie pas (`tg_revenu_date_immuable`) :
      on en ajoute un, du même montant, à la nouvelle date — jamais avant le mois qui
@@ -111,9 +111,9 @@ begin
   end if;
 
   /* Seuls les mois ENTRE l'ancienne et la nouvelle date changent de partage. Il
-     refigeait tous les mois depuis la plus ancienne : Thauba partie le 03/11,
+     refigeait tous les mois depuis la plus ancienne : Léa partie le 03/11,
      corriger le 05/11 l'« entré le » de Kamil repartageait octobre — 1 678,53 €
-     de communes sur lui seul — et effaçait les lignes perso de Thauba. */
+     de communes sur lui seul — et effaçait les lignes perso de Léa. */
   depuis := date_trunc('month', least(new.entre_le, old.entre_le))::date;
   borne  := date_trunc('month', greatest(new.entre_le, old.entre_le))::date;
   jusqua := least(borne, public.mois_courant());

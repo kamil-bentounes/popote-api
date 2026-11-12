@@ -53,17 +53,17 @@ describe('la clé de partage', () => {
   it('suit les revenus, et la somme fait exactement 100 %', async () => {
     await admin().from('revenu').insert([
       { household_id: moi.householdId, user_profile_id: moi.userId,
-        net_mensuel_cents: 370_000, valid_from: '2026-01-01' },
+        net_mensuel_cents: 310_000, valid_from: '2026-01-01' },
       { household_id: moi.householdId, user_profile_id: elle,
-        net_mensuel_cents: 240_000, valid_from: '2026-01-01' },
+        net_mensuel_cents: 210_000, valid_from: '2026-01-01' },
     ])
 
     const p = await parts(moi, '2026-03-01')
     expect(p[moi.userId], 'le plus gros revenu doit porter la plus grosse part')
       .toBeGreaterThan(p[elle])
-    // 370 000 / 610 000 = 60,65 %
-    expect(p[moi.userId]).toBeGreaterThanOrEqual(6060)
-    expect(p[moi.userId]).toBeLessThanOrEqual(6070)
+    // 310 000 / 520 000 = 59,62 %
+    expect(p[moi.userId]).toBeGreaterThanOrEqual(5955)
+    expect(p[moi.userId]).toBeLessThanOrEqual(5970)
     expect(Object.values(p).reduce((s, n) => s + n, 0),
       'la somme des parts ne recompose pas le total').toBe(10_000)
   })

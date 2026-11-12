@@ -18,7 +18,7 @@ id: foyer-inviter
 titre: Inviter quelqu'un
 ecrans: [/reglages]
 questions:
-  - Comment inviter Thauba ?
+  - Comment inviter Léa ?
   - Est-ce qu'un mail part ?
 sources:
   - src/pages/Settings.tsx
@@ -39,7 +39,7 @@ describe('lisPage', () => {
       id: 'foyer-inviter', titre: 'Inviter quelqu\'un', ecrans: ['/reglages'], sources: ['src/pages/Settings.tsx'],
       verifie_sur: '8b43c99',
     })
-    expect(p.questions).toEqual(['Comment inviter Thauba ?', 'Est-ce qu\'un mail part ?'])
+    expect(p.questions).toEqual(['Comment inviter Léa ?', 'Est-ce qu\'un mail part ?'])
     expect(p.corps).toContain('30 jours')
   })
 
@@ -71,13 +71,13 @@ describe('jetons', () => {
 
 describe('choisis', () => {
   const pages = [
-    page('foyer-inviter', { titre: 'Inviter quelqu’un', questions: ['Comment inviter Thauba ?', 'Un mail part-il ?'], corps: 'Touche Inviter, saisis son e-mail, envoie le lien.' }),
+    page('foyer-inviter', { titre: 'Inviter quelqu’un', questions: ['Comment inviter Léa ?', 'Un mail part-il ?'], corps: 'Touche Inviter, saisis son e-mail, envoie le lien.' }),
     page('budget-charges', { titre: 'Les charges', ecrans: ['/charges'], questions: ['Comment ajouter la taxe foncière ?', 'Charge commune ?'], corps: 'Une charge annuelle se met de côté chaque mois.' }),
     page('budget-cloture', { titre: 'Clôturer un mois', questions: ['Comment clôturer ?', 'Qu’est-ce que mettre de côté ?'], corps: 'La clôture fige le mois.' }),
     page('limites', { titre: 'Ce que l’appli ne fait pas', corps: 'Pas de remboursement entre vous.' }),
   ]
   it('trouve la page d’une question, et joint toujours les limites', () => {
-    const r = choisis(pages, { question: 'Comment inviter Thauba ?' })
+    const r = choisis(pages, { question: 'Comment inviter Léa ?' })
     expect(r[0].id).toBe('foyer-inviter')
     expect(r.at(-1)!.id).toBe('limites')
   })

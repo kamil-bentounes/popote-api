@@ -79,21 +79,21 @@ describe('la clôture solde les années', () => {
   it('un solde qui refuse laisse son année ouverte, et la clôture passe en la nommant', async () => {
     await regleLHeure('2027-01-05T10:00:00+01:00')
     const f = await foyerSolo('soldes-refus', { revenu: 300_000 })
-    /* Thauba arrive en septembre : son premier revenu remonte au mois de son
+    /* Léa arrive en septembre : son premier revenu remonte au mois de son
        arrivée (0103). Arrivé en janvier, il aurait porté onze mois positifs, et
        le mélange de signes qu'on éprouve n'existerait pas. */
-    const thauba = await membre(f, 'Thauba', { revenu: 300_000, arrivee: '2026-09-01' })
+    const lea = await membre(f, 'Léa', { revenu: 300_000, arrivee: '2026-09-01' })
     const entretien = await poseCharge(f, { libelle: 'Entretien auto', cents: 50_004,
-      mode: 'mis_de_cote', commun: true, participants: [f.userId, thauba.userId] })
+      mode: 'mis_de_cote', commun: true, participants: [f.userId, lea.userId] })
     await ouvreLAnnee(f, entretien, 2026)
-    /* Des parts de signes mêlés : sur l'année, Thauba a porté au total un montant
+    /* Des parts de signes mêlés : sur l'année, Léa a porté au total un montant
        NÉGATIF (−15 833 + 3 × ~2 083). La proportion n'existe pas (0069). */
     const sept = (await ligne(entretien, '2026-09-01'))!.id
     ou(await admin().from('depense_part').delete().eq('depense_id', sept).select())
     ou(await admin().from('depense_part').insert([
       { depense_id: sept, user_profile_id: f.userId, household_id: f.householdId,
         part_cents: 20_000, part_bps: 10000 },
-      { depense_id: sept, user_profile_id: thauba.userId, household_id: f.householdId,
+      { depense_id: sept, user_profile_id: lea.userId, household_id: f.householdId,
         part_cents: -15_833, part_bps: 0 },
     ]).select())
     const r = ou(await clore(f, { mois: '2026-12-01', mis: 0 })) as {

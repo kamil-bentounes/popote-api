@@ -27,7 +27,7 @@ verifie_sur: fa94f4a
 ---
 ## Ce que fait l’appli
 
-La taxe foncière du catalogue est annuelle et commune. Posée quand tu es seul, avec « Elle se partagera avec le foyer » cochée, c’est une « Mise de côté » : un douzième par mois (1 450 € : 120,83 €), une ligne par mois depuis « Elle court depuis » (jamais avant ton arrivée), à 100 % sur toi.
+La taxe foncière du catalogue est annuelle et commune. Posée quand tu es seul, avec « Elle se partagera avec le foyer » cochée, c’est une « Mise de côté » : un douzième par mois (1 200 € : 100 €), une ligne par mois depuis « Elle court depuis » (jamais avant ton arrivée), à 100 % sur toi.
 
 « Payée depuis » n’est qu’un renseignement : l’appli ignore que tu l’as déjà payée et ne débite aucun compte.
 

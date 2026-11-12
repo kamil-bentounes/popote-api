@@ -7,7 +7,7 @@ questions:
   - Comment remettre un repas à prévu ?
   - Que devient la barquette quand j’annule ?
   - Le bandeau « Noté : mangé. » a disparu, comment annuler ?
-  - Est-ce que ça change le repas de Thauba ?
+  - Est-ce que ça change le repas de Léa ?
 sources:
   - src/pages/Semaine.tsx
   - src/pages/Hub.tsx

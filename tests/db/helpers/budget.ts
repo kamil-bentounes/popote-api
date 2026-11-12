@@ -48,7 +48,7 @@ export async function foyerSolo(nom: string, o: {
 export async function membre(f: { householdId: string }, nom: string, o: {
   arrivee?: string; revenu?: number; depuis?: string
 } = {}): Promise<Actor> {
-  const email = `${nom}-${Date.now()}-${Math.random().toString(36).slice(2)}@test.local`
+  const email = `${nom.normalize('NFD').replace(/\p{M}/gu, '')}-${Date.now()}-${Math.random().toString(36).slice(2)}@test.local`
   const mdp = 'test-password-12345'
   const u = ou(await admin().auth.admin.createUser({ email, password: mdp, email_confirm: true }))
   ou(await admin().from('user_profile').insert({
@@ -174,7 +174,7 @@ export async function ajustementEnAdmin(f: { householdId: string; userId: string
 
 /**
  * Le foyer de Kamil en octobre 2026, une ligne de chaque façon, et sa poche
- * d'urgence. Prévu d'octobre pour lui : 3 700 + 5 000 + 80 000 + 40 000
+ * d'urgence. Prévu d'octobre pour lui : 37 € d'Internet (3_700) + 5 000 + 80 000 + 40 000
  * + 10 000 + 4 167 = 142 867.
  */
 export async function foyerDOctobre(nom: string, o: { revenu?: number } = {}) {

@@ -109,13 +109,13 @@ cas('taxe', 'taxe foncière payée seul, mise en commune',
   { question: 'J’ai payé la taxe foncière tout seul. Si je la mets en charge commune, ça a du sens ?', ecran: '/charges' },
   { savoir: ['oui', 'partiel'], page: 'budget-taxe-fonciere-payee-seul' })
 cas('taxe', 'rembourser ce qu’on a payé seul',
-  { question: 'Est-ce que l’appli peut me faire rembourser par Thauba ce que j’ai déjà payé ?' },
+  { question: 'Est-ce que l’appli peut me faire rembourser par Léa ce que j’ai déjà payé ?' },
   { savoir: ['oui', 'partiel', 'non'], dit: [/rembours|n.existe pas|pas trouv|pas de/i] })
-cas('inviter', 'inviter Thauba',
-  { question: 'Comment inviter Thauba ?' },
+cas('inviter', 'inviter Léa',
+  { question: 'Comment inviter Léa ?' },
   { savoir: ['oui'], page: 'foyer-inviter', dit: [/Inviter quelqu/i, /lien/i], porte: 'inviter' })
 cas('inviter', 'un mail part-il',
-  { question: 'Est-ce que Thauba va recevoir un mail ?' },
+  { question: 'Est-ce que Léa va recevoir un mail ?' },
   { savoir: ['oui'], page: 'foyer-inviter', dit: [/aucun (e.?)?mail|pas de (e.?)?mail|ne part pas|toi-même|toi même/i] })
 cas('inviter', 'durée du lien',
   { question: 'Combien de temps le lien d’invitation est valable ?' },

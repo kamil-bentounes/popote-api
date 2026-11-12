@@ -2,8 +2,8 @@
  * Les gestes du frigo (migration 0122) : manger SA part, jeter ou retirer sans laisser un repas pointé sur
  * une part disparue, et deux membres qui mangent la dernière part libre en même temps.
  *
- * Revue du frigo américain : « En manger une maintenant » ignorait `for_user_id` (la part de Thauba
- * pouvait être mangée avec les calories de Thauba), « Jeter » laissait la case du repas pointée sur la
+ * Revue du frigo américain : « En manger une maintenant » ignorait `for_user_id` (la part de Léa
+ * pouvait être mangée avec les calories de Léa), « Jeter » laissait la case du repas pointée sur la
  * part jetée — que « Je l'ai mangé » ressuscitait en « mangée » —, et le geste tenait en trois requêtes.
  */
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -12,7 +12,7 @@ import { admin, makeActor, type Actor } from './helpers/db'
 import { attends, commeLui, connexion, suivie } from './helpers/pg'
 
 let kamil: Actor
-let thauba: { client: ReturnType<typeof createClient>; userId: string }
+let lea: { client: ReturnType<typeof createClient>; userId: string }
 const db = admin()
 
 /* « Aujourd'hui » du test : une case est unique par personne, jour et repas, donc chaque test vit un autre jour
@@ -26,21 +26,21 @@ const nouveauPlat = () => `Plat ${Date.now()}-${++plat}`
 
 beforeAll(async () => {
   kamil = await makeActor('frigo-kamil')
-  const email = `frigo-thauba-${Date.now()}@test.local`
+  const email = `frigo-lea-${Date.now()}@test.local`
   const { data: u, error } = await db.auth.admin.createUser({ email, password: 'test-password-12345', email_confirm: true })
   expect(error).toBeNull()
   const { error: pe } = await db.from('user_profile')
-    .insert({ id: u!.user.id, household_id: kamil.householdId, display_name: 'Thauba' })
+    .insert({ id: u!.user.id, household_id: kamil.householdId, display_name: 'Léa' })
   expect(pe).toBeNull()
   const client = createClient(process.env.VITE_SUPABASE_URL!, process.env.VITE_SUPABASE_ANON_KEY!, { auth: { persistSession: false } })
   expect((await client.auth.signInWithPassword({ email, password: 'test-password-12345' })).error).toBeNull()
-  thauba = { client, userId: u!.user.id }
+  lea = { client, userId: u!.user.id }
 })
 
-async function parts(label: string, specs: { pour?: 'kamil' | 'thauba' | null; expire?: number }[]) {
+async function parts(label: string, specs: { pour?: 'kamil' | 'lea' | null; expire?: number }[]) {
   const { data, error } = await db.from('portion').insert(specs.map(s => ({
     household_id: kamil.householdId, label, grams: 500, kcal: 600, protein_g: 40, fiber_g: 5, carb_g: 60, fat_g: 20,
-    location: 'frigo', for_user_id: s.pour === 'kamil' ? kamil.userId : s.pour === 'thauba' ? thauba.userId : null,
+    location: 'frigo', for_user_id: s.pour === 'kamil' ? kamil.userId : s.pour === 'lea' ? lea.userId : null,
     expires_at: new Date(Date.now() + (s.expire ?? 2) * 86_400_000).toISOString(),
   }))).select()
   expect(error).toBeNull()
@@ -53,7 +53,7 @@ async function pose(portionId: string, qui: string, jour: string, meal: string) 
   expect(error).toBeNull()
   return data!
 }
-const mange = (c: Actor['client'] | typeof thauba.client, label: string, meal: string, jour = aujourdhui()) =>
+const mange = (c: Actor['client'] | typeof lea.client, label: string, meal: string, jour = aujourdhui()) =>
   c.rpc('mange_une_part', {
     p_recipe: null, p_label: label, p_location: 'frigo', p_state: 'au_frais',
     p_day: jour, p_meal: meal, p_eaten_at: new Date().toISOString(),
@@ -63,23 +63,23 @@ const etatDe = async (id: string) => (await db.from('portion').select('state').e
 describe('« En manger une maintenant » : la part de QUI la mange', () => {
   it('la mienne d’abord, puis celle de personne, celle d’un autre en dernier recours', async () => {
     const label = nouveauPlat()
-    // Celle de Thauba est la plus pressée, puis celle de personne, puis la mienne : l'ordre de péremption ne décide pas.
-    const [deThauba, deTous, demoi] = await parts(label, [{ pour: 'thauba', expire: 1 }, { pour: null, expire: 2 }, { pour: 'kamil', expire: 3 }])
+    // Celle de Léa est la plus pressée, puis celle de personne, puis la mienne : l'ordre de péremption ne décide pas.
+    const [deLea, deTous, demoi] = await parts(label, [{ pour: 'lea', expire: 1 }, { pour: null, expire: 2 }, { pour: 'kamil', expire: 3 }])
     const a = await mange(kamil.client, label, 'petit_dejeuner')
     expect(a.error).toBeNull()
     expect(a.data.portion_id, 'Kamil a mangé la part d’un autre alors que la sienne était là').toBe(demoi.id)
     const b = await mange(kamil.client, label, 'dejeuner')
     expect(b.data.portion_id, 'puis celle qui est pour tout le monde').toBe(deTous.id)
     const c = await mange(kamil.client, label, 'diner')
-    expect(c.data.portion_id, 'celle de Thauba en dernier recours').toBe(deThauba.id)
-    for (const p of [demoi, deTous, deThauba]) expect(await etatDe(p.id)).toBe('mangee')
+    expect(c.data.portion_id, 'celle de Léa en dernier recours').toBe(deLea.id)
+    for (const p of [demoi, deTous, deLea]) expect(await etatDe(p.id)).toBe('mangee')
     expect((await mange(kamil.client, label, 'collation')).error?.message).toMatch(/plus de part/)
   })
 
   it('une part libre avant une réclamée ; la réclamée, le repas qui la réclamait la lâche et on le dit', async () => {
     const label = nouveauPlat()
     const [reclamee, libre] = await parts(label, [{ expire: 1 }, { expire: 3 }])
-    const dinerDeThauba = await pose(reclamee.id, thauba.userId, jourDans(2), 'diner')
+    const dinerDeLea = await pose(reclamee.id, lea.userId, jourDans(2), 'diner')
 
     const un = await mange(kamil.client, label, 'dejeuner')
     expect(un.data.portion_id, 'une part réclamée prise alors qu’une libre était là').toBe(libre.id)
@@ -88,8 +88,8 @@ describe('« En manger une maintenant » : la part de QUI la mange', () => {
     const deux = await mange(kamil.client, label, 'diner')
     expect(deux.error).toBeNull()
     expect(deux.data.portion_id).toBe(reclamee.id)
-    expect(deux.data.libere).toEqual([{ day: jourDans(2), meal: 'diner', user_profile_id: thauba.userId }])
-    const { data: lache } = await db.from('meal_slot').select('portion_id, state').eq('id', dinerDeThauba.id).single()
+    expect(deux.data.libere).toEqual([{ day: jourDans(2), meal: 'diner', user_profile_id: lea.userId }])
+    const { data: lache } = await db.from('meal_slot').select('portion_id, state').eq('id', dinerDeLea.id).single()
     expect(lache).toEqual({ portion_id: null, state: 'prevu' })
     const { data: ma } = await db.from('meal_slot').select('state, portion_id, eaten_at')
       .eq('user_profile_id', kamil.userId).eq('day', aujourdhui()).eq('meal', 'diner').single()
@@ -101,7 +101,7 @@ describe('« En manger une maintenant » : la part de QUI la mange', () => {
   it('une réclamation d’un jour PASSÉ n’est pas une réservation', async () => {
     const label = nouveauPlat()
     const [vieille, neuve] = await parts(label, [{ expire: 1 }, { expire: 3 }])
-    await pose(vieille.id, thauba.userId, jourDans(-3), 'diner')
+    await pose(vieille.id, lea.userId, jourDans(-3), 'diner')
     const r = await mange(kamil.client, label, 'dejeuner')
     expect(r.data.portion_id, 'la vieille réclamation compte encore comme réservée').toBe(vieille.id)
     expect(r.data.libere, 'un repas passé n’est pas « libéré »').toEqual([])
@@ -143,7 +143,7 @@ describe('« En manger une maintenant » : la part de QUI la mange', () => {
       const premier = (await a.query(sql, [label, aujourdhui()])).rows[0].r
       expect(premier.portion_id).toBe(seule.id)
 
-      await commeLui(b, thauba.userId)
+      await commeLui(b, lea.userId)
       const second = suivie(b.query(sql, [label, aujourdhui()]).catch(e => e as Error))
       await attends(500)
       expect(second.fini, 'le second n’a pas attendu le verrou de la part').toBe(false)
@@ -163,7 +163,7 @@ describe('« En manger une maintenant » : la part de QUI la mange', () => {
   it('DEUX membres, DEUX parts libres : chacun la sienne, jamais la même', async () => {
     const label = nouveauPlat()
     await parts(label, [{}, {}])
-    const [x, y] = await Promise.all([mange(kamil.client, label, 'diner'), mange(thauba.client, label, 'diner')])
+    const [x, y] = await Promise.all([mange(kamil.client, label, 'diner'), mange(lea.client, label, 'diner')])
     expect(x.error).toBeNull()
     expect(y.error).toBeNull()
     expect(x.data.portion_id).not.toBe(y.data.portion_id)
@@ -176,10 +176,10 @@ describe('jeter ou retirer : les repas lâchent leur part', () => {
 
   it('jeter : la part passe à « jetée » et le repas qui la réclamait la lâche', async () => {
     const [p] = await parts(nouveauPlat(), [{}])
-    const repas = await pose(p.id, thauba.userId, jourDans(1), 'diner')
+    const repas = await pose(p.id, lea.userId, jourDans(1), 'diner')
     const r = await ecarte(kamil.client, [p.id], 'jeter')
     expect(r.error).toBeNull()
-    expect(r.data).toEqual({ n: 1, libere: [{ day: jourDans(1), meal: 'diner', user_profile_id: thauba.userId }] })
+    expect(r.data).toEqual({ n: 1, libere: [{ day: jourDans(1), meal: 'diner', user_profile_id: lea.userId }] })
     expect(await etatDe(p.id)).toBe('jetee')
     expect((await db.from('meal_slot').select('portion_id').eq('id', repas.id).single()).data!.portion_id).toBeNull()
   })
@@ -210,7 +210,7 @@ describe('jeter ou retirer : les repas lâchent leur part', () => {
 
   it('une réclamation d’un jour passé lâche aussi, sans être annoncée', async () => {
     const [p] = await parts(nouveauPlat(), [{}])
-    const vieux = await pose(p.id, thauba.userId, jourDans(-2), 'diner')
+    const vieux = await pose(p.id, lea.userId, jourDans(-2), 'diner')
     const r = await ecarte(kamil.client, [p.id], 'jeter')
     expect(r.data.libere).toEqual([])
     expect((await db.from('meal_slot').select('portion_id').eq('id', vieux.id).single()).data!.portion_id).toBeNull()

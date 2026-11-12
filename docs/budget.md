@@ -41,8 +41,8 @@ qui font 10,26.
 
 ### D61 — une charge annuelle s'engendre mensuellement, on ne proratise jamais
 
-La taxe foncière de 1 450 € n'est pas « une dépense en octobre » : c'est
-**120,83 € tous les mois**, de janvier à décembre. Quelqu'un qui entre dans le
+La taxe foncière de 1 500 € n'est pas « une dépense en octobre » : c'est
+**125,00 € tous les mois**, de janvier à décembre. Quelqu'un qui entre dans le
 foyer en octobre se retrouve sur les lignes d'octobre à décembre et sur aucune
 autre.
 
@@ -82,8 +82,8 @@ revenu et ses comptes perso aussi. Voir `delete_my_account` (0112).
 
 ### D64 — l'épargne commune se suit en cumul par personne
 
-Une dépense est consommée ; une épargne persiste. Si l'un verse 61 % et l'autre
-39 % pendant trois ans, le pot se rend dans ces proportions, pas en deux.
+Une dépense est consommée ; une épargne persiste. Si l'un verse 60 % et l'autre
+40 % pendant trois ans, le pot se rend dans ces proportions, pas en deux.
 
 **Aggravant :** un livret bancaire joint est juridiquement présumé
 **moitié-moitié**. Sans le registre des versements, c'est la présomption qui
@@ -157,9 +157,7 @@ remplissable à tout moment, avec un rappel discret tant qu'il est vide.
 
 ### D74 à D80 — l'écran refait (01/10/2026)
 
-Spec : [`superpowers/specs/2026-10-01-ecran-budget-design.md`](superpowers/specs/2026-10-01-ecran-budget-design.md) (§ 2).
-Plan : `superpowers/plans/2026-10-19-budget.md`. La base porte tout l'argent, en
-centimes entiers.
+La base porte tout l'argent, en centimes entiers.
 
 **D74 — l'écran ouvre sur ce qui reste.** Les gestes, ce qui reste du mois,
 l'épargne, puis les charges rangées par catégorie. La catégorie appartient à la
@@ -200,11 +198,13 @@ ne veut pas dire la payer.
 
 ## 2 · Le partage retenu pour ce foyer
 
+> Les montants de cette section sont fictifs : ils illustrent la règle, pas un foyer réel.
+
 Une mensualité de prêt a deux moitiés. Les intérêts sont le prix du toit ; le
 capital enrichit le propriétaire. Faire participer l'autre au capital, c'est lui
 faire acheter un patrimoine qui ne sera pas le sien.
 
-**Décision du foyer :** Kamil porte seul l'intégralité de la mensualité (580 €),
+**Décision du foyer :** Kamil porte seul l'intégralité de la mensualité (600 €),
 capital *et* intérêts. Tout le reste du logement est commun, au prorata des
 revenus nets après impôt.
 
@@ -213,38 +213,38 @@ comptable — reste **entièrement personnel**, et ses loyers aussi. Il n'est pa
 déduit du revenu avant le calcul du prorata : c'est un choix de patrimoine, pas
 une charge subie, et l'en déduire ferait financer l'investissement par l'autre.
 
-### Les chiffres au 22 septembre 2026
+### Un exemple chiffré (valeurs fictives)
 
 | | €/mois | Source |
 |---|---|---|
 | Copropriété | 100,00 | 300 € le trimestre |
-| Taxe foncière | 120,83 | 1 450 €/an, connue |
-| Assurance habitation | 10,70 | relevé |
+| Taxe foncière | 125,00 | 1 500 €/an, connue |
+| Assurance habitation | 10,00 | relevé |
 | Énergie | 50,00 | **variable**, à la consommation |
-| Internet | 37,00 | relevé |
-| **Sous-total — le toit** | **318,53** | ce que coûte le logement, hors mensualité |
-| Courses | 800,00 | plafond de départ |
-| Restaurant | 400,00 | enveloppe |
+| Internet | 40,00 | relevé |
+| **Sous-total — le toit** | **325,00** | ce que coûte le logement, hors mensualité |
+| Courses | 700,00 | plafond de départ |
+| Restaurant | 300,00 | enveloppe |
 | Culture | 100,00 | enveloppe |
-| **Total commun** | **1 618,53** | |
+| **Total commun** | **1 425,00** | |
 
-Revenus nets mensuels après impôt : **3 700 €** (Kamil, estimé sur 70 k brut)
-et **2 400 €** (Thauba, provisoire — elle le saisira elle-même à l'onboarding).
-Prorata : **61 / 39**.
+Revenus nets mensuels après impôt : **3 000 €** (Kamil)
+et **2 000 €** (Léa, provisoire — elle le saisira elle-même à l'onboarding).
+Prorata : **60 / 40**.
 
-| | Kamil (61 %) | Thauba (39 %) |
+| | Kamil (60 %) | Léa (40 %) |
 |---|---|---|
-| Charges communes | 987 € | 631 € |
-| Épargne | 183 € | 117 € |
-| **À verser** | **1 170 €** | **748 €** |
-| Reste à vivre | 1 950 € | 1 652 € |
+| Charges communes | 855 € | 570 € |
+| Épargne | 180 € | 120 € |
+| **À verser** | **1 035 €** | **690 €** |
+| Reste à vivre | 1 365 € | 1 310 € |
 
-Le reste à vivre de Kamil s'entend après sa mensualité de 580 €, et hors
+Le reste à vivre de Kamil s'entend après sa mensualité de 600 €, et hors
 locatif.
 
 **Épargne :** 250 €/mois vers l'urgence, 50 € vers les voyages, au prorata. La
 cible d'urgence est de **quatre mois de ce qui est nécessaire** — le toit plus
-les courses, soit 1 119 € — donc **4 500 €**, atteints en dix-huit mois.
+les courses, soit 1 025 € — donc **4 100 €**, atteints en dix-sept mois.
 Restaurant et culture sont exclus de la cible : ce sont précisément les postes
 qu'on coupe quand l'urgence arrive.
 
@@ -259,7 +259,7 @@ anniversaires et Noël, 40 à 80 €/mois une fois lissés.
 
 **Cas particulier déjà tranché :** le second conducteur sur l'assurance auto.
 La prime de base serait payée de toute façon ; seul le **delta** facturé par
-l'assureur est en jeu. Il entre comme une charge à `participants = {Thauba}`,
+l'assureur est en jeu. Il entre comme une charge à `participants = {Léa}`,
 clé 100 %, `payé depuis = compte Kamil`. Aucun concept nouveau — ce qui est bon
 signe pour le schéma.
 
@@ -271,7 +271,7 @@ Un `compte` par vrai compte bancaire : le principal de chacun, le commun, celui
 du locatif. Chaque charge porte le compte qui la paie.
 
 La sortie mensuelle n'est donc pas un solde abstrait mais **des virements à
-faire** : « Thauba → compte commun : 748 € ». C'est ce qui rend l'outil
+faire** : « Léa → compte commun : 690 € ». C'est ce qui rend l'outil
 utilisable, et c'est aussi la maille sur laquelle l'agrégateur bancaire viendra
 se brancher — un agrégat par compte.
 
@@ -284,10 +284,10 @@ communes. C'est au-dessus de lui que se pose la question de D65.
 
 Le lien suffit (décision du 19/10/2026) :
 
-1. Kamil saisit l'adresse de Thauba dans les réglages. La fonction `invite`
+1. Kamil saisit l'adresse de Léa dans les réglages. La fonction `invite`
    rend le lien `/invite/<jeton>` — trente jours, usage unique — sans envoyer
    de mail ni créer de compte. Il le lui envoie lui-même (« Partager »).
-2. Thauba l'ouvre, sans compte. L'écran `Rejoindre` lit, par
+2. Léa l'ouvre, sans compte. L'écran `Rejoindre` lit, par
    `invitation_par_jeton`, qui l'invite et pour quelle adresse.
 3. Elle choisit son mot de passe. `accept-invite` crée son compte (adresse de
    l'invitation, tenue pour confirmée), consomme le jeton et la rattache au

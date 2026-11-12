@@ -47,7 +47,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [foyer, setFoyer] = useState<string | null>(null)
   /* Quelqu'un qui vient d'accepter une invitation — ou de créer son foyer
-     (0091) — n'a PAS de prénom : on ne le fabrique plus depuis son adresse — `thauba-1790147184836` finissait
+     (0091) — n'a PAS de prénom : on ne le fabrique plus depuis son adresse — `lea-1790147184836` finissait
      pré-rempli, validé sans regarder, puis lu sur chaque ligne de charge. Mais
      un prénom vide ne peut pas rester : c'est ce que l'autre lit. On mène donc
      au profil, une fois, avant le reste. */

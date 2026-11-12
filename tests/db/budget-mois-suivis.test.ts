@@ -14,8 +14,8 @@ let elle: Actor
 beforeAll(async () => {
   c = await connexion()
   f = await foyerSolo('suivis')
-  deux = await foyerSolo('suivis-deux', { revenu: 370_000, depuis: '2026-01-01' })
-  elle = await membre(deux, 'Elle', { revenu: 240_000, depuis: '2026-01-01' })
+  deux = await foyerSolo('suivis-deux', { revenu: 310_000, depuis: '2026-01-01' })
+  elle = await membre(deux, 'Elle', { revenu: 210_000, depuis: '2026-01-01' })
 })
 afterAll(async () => { await c.end() })
 

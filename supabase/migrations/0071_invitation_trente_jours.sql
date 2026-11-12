@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 0071 · L'invitation tient trente jours, et n'invente plus de prénom
 --
--- Mesuré sur le parcours : le lien expire au bout de SEPT jours. Thauba
+-- Mesuré sur le parcours : le lien expire au bout de SEPT jours. Léa
 -- emménage dans dix. Elle clique, obtient « Invitation expirée », se retrouve
 -- authentifiée sans foyer — et jusqu'à 0070 on lui proposait de créer le sien.
 --

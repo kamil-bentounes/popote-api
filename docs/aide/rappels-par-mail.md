@@ -4,7 +4,7 @@ titre: Les rappels par mail
 ecrans: [/rappels]
 questions:
   - Comment activer un rappel par mail ?
-  - Thauba voit-elle mes rappels ?
+  - Léa voit-elle mes rappels ?
   - Pourquoi je ne reçois pas de mail de rappel ?
   - Comment tester le mail avant de l’activer ?
   - Où sont les rappels par mail ?
@@ -29,7 +29,7 @@ Elle t’envoie des mails de la part de « Popote », à l’adresse avec laquel
 
 ## Chacun les siens
 
-Tes réglages sont à toi seul. L’autre personne du foyer ne voit pas les tiens, tu ne vois ni ne règles les siens. Thauba ne reçoit donc rien tant qu’elle n’a rien activé elle-même.
+Tes réglages sont à toi seul. L’autre personne du foyer ne voit pas les tiens, tu ne vois ni ne règles les siens. Léa ne reçoit donc rien tant qu’elle n’a rien activé elle-même.
 
 ## Tester
 

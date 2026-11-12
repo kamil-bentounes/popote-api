@@ -42,13 +42,13 @@ describe('le plancher de l’épargne', () => {
 
   it('l’argent d’un autre n’est pas le sien, et la clé de service n’y échappe pas', async () => {
     const f = await foyerSolo('plancher-duo')
-    const thauba = await membre(f, 'Thauba', { revenu: 200_000 })
+    const lea = await membre(f, 'Léa', { revenu: 200_000 })
     const poche = await unePoche(f.householdId)
     ou(await ecrit(f, f.userId, poche, 38_000, 'mensuel').select())
-    // Kamil a versé 380 € : Thauba, qui n'a rien versé, ne retire rien.
-    const sienne = await ecrit({ client: thauba.client, householdId: f.householdId },
-                               thauba.userId, poche, -100, 'retrait')
-    expect(sienne.error, 'Thauba a retiré l’argent de Kamil').not.toBeNull()
+    // Kamil a versé 380 € : Léa, qui n'a rien versé, ne retire rien.
+    const sienne = await ecrit({ client: lea.client, householdId: f.householdId },
+                               lea.userId, poche, -100, 'retrait')
+    expect(sienne.error, 'Léa a retiré l’argent de Kamil').not.toBeNull()
     const service = await admin().from('versement_epargne').insert({
       household_id: f.householdId, poche_id: poche, user_profile_id: f.userId,
       montant_cents: -10_000_000, motif: 'retrait' })

@@ -22,7 +22,7 @@
 --     barquette »). Un `p_today` forgé lâchait les repas de la semaine. Il est borné à ±1 jour de la date de
 --     Paris de la base (`aujourdhui()`, 0093), sinon refusé ; et les réclamations lâchées sont rendues
 --     (`lachees`).
---  5. L2 · « Thauba et Kamil a déjà mangé » : « ont » au pluriel, les prénoms dans un ordre stable
+--  5. L2 · « Léa et Kamil a déjà mangé » : « ont » au pluriel, les prénoms dans un ordre stable
 --     (alphabétique, puis l'identifiant).
 --
 -- Rend { poses: { <personne>: <barquette> },
@@ -173,7 +173,7 @@ begin
   where s.household_id = foyer and s.day = p_day and s.meal = p_meal and s.user_profile_id = any(users)
   order by s.id for update;
 
-  -- Un repas déjà noté mangé ne se change pas : « Kamil a déjà mangé », « Kamil et Thauba ont déjà mangé ».
+  -- Un repas déjà noté mangé ne se change pas : « Kamil a déjà mangé », « Kamil et Léa ont déjà mangé ».
   select array_agg(coalesce(nullif(btrim(up.display_name), ''), 'Quelqu’un')
                    order by coalesce(nullif(btrim(up.display_name), ''), 'Quelqu’un'), up.id)
   into noms

@@ -140,7 +140,7 @@ begin
   where s.household_id = foyer and s.day = p_day and s.meal = p_meal and s.user_profile_id = any(users)
   order by s.id for update;
 
-  -- Un repas déjà noté mangé ne se change pas : « Kamil a déjà mangé », « Kamil et Thauba ont déjà mangé ».
+  -- Un repas déjà noté mangé ne se change pas : « Kamil a déjà mangé », « Kamil et Léa ont déjà mangé ».
   select array_agg(coalesce(nullif(btrim(up.display_name), ''), 'Quelqu’un')
                    order by coalesce(nullif(btrim(up.display_name), ''), 'Quelqu’un'), up.id)
   into noms

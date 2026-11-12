@@ -33,7 +33,7 @@ export function moisDe(d: Date = maintenant()): string {
   return moisCourantDeParis(d)
 }
 
-/** Des centimes vers « 1 618,53 € ». Jamais l'inverse ailleurs qu'ici. */
+/** Des centimes vers « 1 425,50 € ». Jamais l'inverse ailleurs qu'ici. */
 export function euros(cents: number, avecUnite = true): string {
   const s = (cents / 100).toLocaleString('fr-FR',
     { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -227,8 +227,8 @@ export function useCharges(actif = true) {
         mode: c.mode as Mode, categorie: c.categorie as Categorie,
         cle: c.cle as Charge['cle'],
         /* ⚠️ TRIÉS. Sans ordre, PostgREST rend les participants dans celui de
-           la base : on lisait « Thauba et Kamil » sur une ligne et « Kamil et
-           Thauba » sur la suivante, du même écran. Deux façons d'écrire la même
+           la base : on lisait « Léa et Kamil » sur une ligne et « Kamil et
+           Léa » sur la suivante, du même écran. Deux façons d'écrire la même
            chose se lisent comme deux choses. */
         participants: (c.charge_participant ?? [])
           .map(p => p.user_profile_id).sort(),

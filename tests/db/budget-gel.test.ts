@@ -13,15 +13,15 @@ import { clos, declare, foyerSolo, ligne, membre, ou, ouvre, poseCharge, type Fo
 import { regleLHeure, remetLHeure } from './helpers/horloge'
 
 let f: Foyer
-let thauba: Actor
+let lea: Actor
 let loyer: string
 
 beforeAll(async () => {
   await regleLHeure('2026-10-15T12:00:00+02:00')
-  f = await foyerSolo('gel', { revenu: 370_000, depuis: '2026-01-01' })
-  thauba = await membre(f, 'Thauba', { revenu: 240_000, depuis: '2026-01-01' })
+  f = await foyerSolo('gel', { revenu: 310_000, depuis: '2026-01-01' })
+  lea = await membre(f, 'Léa', { revenu: 210_000, depuis: '2026-01-01' })
   loyer = await poseCharge(f, { libelle: 'Loyer', cents: 100_000, commun: true,
-                                participants: [f.userId, thauba.userId] })
+                                participants: [f.userId, lea.userId] })
 })
 afterAll(remetLHeure)
 
@@ -44,7 +44,7 @@ describe('un mois clôturé ne bouge plus', () => {
     const septembre = await parts(loyer, '2026-09-01')
     const octobre = await parts(loyer, '2026-10-01')
     ou(await admin().from('revenu').insert({
-      household_id: f.householdId, user_profile_id: thauba.userId,
+      household_id: f.householdId, user_profile_id: lea.userId,
       net_mensuel_cents: 380_000, valid_from: '2026-09-01' }).select())
     expect(await parts(loyer, '2026-09-01'), 'septembre clôturé a été repartagé')
       .toEqual(septembre)
@@ -64,7 +64,7 @@ describe('un mois clôturé ne bouge plus', () => {
   })
 
   it('rattrape_les_mois rend le nombre de mois ouverts, sans compter le mois clôturé', async () => {
-    const g = await foyerSolo('gel-compte', { revenu: 370_000, depuis: '2026-01-01' })
+    const g = await foyerSolo('gel-compte', { revenu: 310_000, depuis: '2026-01-01' })
     await poseCharge(g, { libelle: 'Loyer', cents: 100_000 })
     await clos(g, '2026-03-01')
     // Janvier à octobre, moins mars : la garde se lit au compteur, pas à la ligne (ouvre_le_mois la saute aussi).
@@ -74,7 +74,7 @@ describe('un mois clôturé ne bouge plus', () => {
   })
 
   it('repartit_les_lignes ne donne pas de part à une ligne d’un mois clôturé', async () => {
-    const g = await foyerSolo('gel-repartit', { revenu: 370_000, depuis: '2026-01-01' })
+    const g = await foyerSolo('gel-repartit', { revenu: 310_000, depuis: '2026-01-01' })
     const charge = await poseCharge(g, { libelle: 'Loyer', cents: 100_000 })
     const sansPart = async (mois: string) => ou(await admin().from('depense').insert({
       household_id: g.householdId, charge_id: charge, mois, libelle: 'Loyer',
@@ -99,7 +99,7 @@ describe('un mois clôturé ne bouge plus', () => {
 
   it('provisions_a_venir ne compte pas un mois clôturé', async () => {
     const taxe = await poseCharge(f, { libelle: 'Taxe', cents: 120_000, mode: 'mis_de_cote',
-                                       commun: true, participants: [f.userId, thauba.userId] })
+                                       commun: true, participants: [f.userId, lea.userId] })
     const avant = Number(ou(await f.client.rpc('provisions_a_venir',
       { la_charge: taxe, annee: 2026 })))
     expect(avant).toBe(30_000)   // octobre, novembre, décembre
@@ -110,12 +110,12 @@ describe('un mois clôturé ne bouge plus', () => {
   })
 
   it('le refige épargne une ligne orpheline qui a des saisies', async () => {
-    const courses = await poseCharge(f, { libelle: 'Courses de Thauba', cents: 20_000,
-      mode: 'au_fil', participants: [thauba.userId] })
+    const courses = await poseCharge(f, { libelle: 'Courses de Léa', cents: 20_000,
+      mode: 'au_fil', participants: [lea.userId] })
     const pharmacie = await poseCharge(f, { libelle: 'Pharmacie', cents: 2_000,
-      mode: 'au_fil', participants: [thauba.userId] })
+      mode: 'au_fil', participants: [lea.userId] })
     await ouvre(f, '2026-10-01')
-    ou(await declare(thauba, (await ligne(courses, '2026-10-01'))!.id, '2026-10-02', 4_500))
+    ou(await declare(lea, (await ligne(courses, '2026-10-01'))!.id, '2026-10-02', 4_500))
     ou(await admin().from('charge_participant').delete()
       .in('charge_id', [courses, pharmacie]).select())
     ou(await f.client.rpc('refige_le_mois', { le_mois: '2026-10-01' }))

@@ -6,7 +6,7 @@
 --
 --  1. CHACUN RÈGLE LES SIENS. `rappel_reglage` ne se lit ni ne s'écrit qu'à son nom (`user_id = auth.uid()`) :
 --     personne ne voit ce que l'autre a activé, personne ne le change à sa place.
---  2. COUPÉ PAR DÉFAUT. Pas de ligne, pas de mail. On n'envoie rien à qui ne l'a pas demandé : Thauba ne reçoit
+--  2. COUPÉ PAR DÉFAUT. Pas de ligne, pas de mail. On n'envoie rien à qui ne l'a pas demandé : Léa ne reçoit
 --     rien tant qu'elle n'a rien activé.
 --  3. JAMAIS DEUX FOIS. `rappel_envoye` garde (membre, type, clé), unique. La fonction `rappels` réserve la ligne
 --     AVANT d'envoyer : l'insertion unique fait office de verrou. Elle ne la rend que si l'échec est sûrement

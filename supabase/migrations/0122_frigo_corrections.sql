@@ -13,8 +13,8 @@
 --     compte comme gaspillée.
 --  3. « En manger une maintenant » lisait, libérait un autre repas, puis écrivait le sien : trois
 --     requêtes. Deux membres qui mangeaient la dernière part libre en même temps pouvaient la réserver
---     deux fois ; et rien ne regardait POUR QUI est la part (`for_user_id`) — celle de Thauba pouvait
---     être mangée par Kamil, avec les calories de Thauba.
+--     deux fois ; et rien ne regardait POUR QUI est la part (`for_user_id`) — celle de Léa pouvait
+--     être mangée par Kamil, avec les calories de Léa.
 --
 -- Trois remèdes, dans une base qui est seule à pouvoir verrouiller : le trigger ne consomme que ce qui
 -- est encore là, et deux fonctions font chacune leur geste en UNE transaction.

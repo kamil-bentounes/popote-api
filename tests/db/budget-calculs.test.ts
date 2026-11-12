@@ -12,7 +12,7 @@ import { virements, euros, eurosRonds, enCentimes, effortMensuel, diffParticipan
   from './front-fige/lib/donnees/budget.ts'
 
 const MOI = 'moi', ELLE = 'elle'
-const prenoms = new Map([[MOI, 'Kamil'], [ELLE, 'Thauba']])
+const prenoms = new Map([[MOI, 'Kamil'], [ELLE, 'Léa']])
 
 const compte = (o: Partial<Compte> & { id: string }): Compte => ({
   nom: 'Commun', genre: 'commun', titulaire_id: null, matelas_cents: 0, ...o,
@@ -62,7 +62,7 @@ describe('euros', () => {
        lui-même entre espace fine insécable, espace insécable et espace
        ordinaire, et ce choix a déjà changé d'une version de Node à l'autre. */
     const sansEspaces = (s: string) => s.replace(/[\s\u00A0\u202F]/g, '')
-    expect(sansEspaces(euros(161_853))).toBe('1618,53€')
+    expect(sansEspaces(euros(142_550))).toBe('1425,50€')
     expect(euros(5)).toContain('0,05')
     expect(euros(0)).toContain('0,00')
     expect(sansEspaces(eurosRonds(161_853))).toBe('1619€')

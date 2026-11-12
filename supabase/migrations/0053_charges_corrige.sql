@@ -234,7 +234,7 @@ grant   execute on function public.provision_mensuelle(integer, text) to authent
 --    partage entre eux à parts égales ;
 --  · il fige le bps RENORMALISÉ, celui qui explique vraiment la part en
 --    centimes. Il figeait celui du foyer : un payeur unique avait 100 % des
---    centimes et 6066 points de base, ce qui rendait la trace inutilisable ;
+--    centimes et 5962 points de base, ce qui rendait la trace inutilisable ;
 --  · il rend le nombre de DÉPENSES, pas de parts. `get diagnostics` suivait le
 --    dernier `insert` : quatre dépenses annonçaient douze.
 create or replace function public.ouvre_le_mois(le_mois date, le_foyer uuid default null)

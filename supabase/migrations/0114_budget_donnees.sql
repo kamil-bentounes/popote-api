@@ -203,8 +203,8 @@ begin
       where k.household_id = e.household_id and k.genre = 'perso' and k.archive_le is null
       having count(*) = 1;
       /* À un seul membre, « tout le foyer » c'est lui. À plusieurs, sans titulaire
-         certain (Thauba a ouvert son compte personnel avant le déploiement : deux
-         comptes personnels actifs), la charge de Kamil irait aussi à Thauba. */
+         certain (Léa a ouvert son compte personnel avant le déploiement : deux
+         comptes personnels actifs), la charge de Kamil irait aussi à Léa. */
       if titulaire is null and (select count(*) from public.user_profile up
                                 where up.household_id = e.household_id) > 1 then
         raise exception 'Migration arrêtée : l''enveloppe personnelle « % » n''a pas de titulaire certain (il n''y a pas un seul compte personnel actif). Donne-lui sa charge à la main, ou archive cette enveloppe, avant de relancer.', e.libelle;

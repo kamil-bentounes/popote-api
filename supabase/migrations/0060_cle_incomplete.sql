@@ -6,7 +6,7 @@
 -- à la GÉNÉRATION, c'est-à-dire à la première ouverture de l'écran — ce qui
 -- produisait un piège fragile :
 --
---   Thauba arrive en octobre, quelqu'un ouvre le budget avant qu'elle ait saisi
+--   Léa arrive en octobre, quelqu'un ouvre le budget avant qu'elle ait saisi
 --   son revenu, `parts_du_foyer` partage à parts égales faute de mieux, et
 --   octobre reste à 50/50 pour toujours. Il aurait fallu se souvenir de saisir
 --   les revenus AVANT de regarder l'écran.

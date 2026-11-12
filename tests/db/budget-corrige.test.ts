@@ -113,16 +113,16 @@ describe('les mois', () => {
 
 describe('les saisies suivent la ligne refaite', () => {
   let f: Actor
-  let thauba: Actor
+  let lea: Actor
   let courses: string
   beforeAll(async () => {
-    f = await foyerSolo('corr-saisies', { revenu: 370_000 })
-    thauba = await membre(f, 'Thauba', { revenu: 240_000 })
+    f = await foyerSolo('corr-saisies', { revenu: 310_000 })
+    lea = await membre(f, 'Léa', { revenu: 210_000 })
     courses = await poseCharge(f, { libelle: 'Courses', cents: 80_000, mode: 'au_fil',
-                                    commun: true, participants: [f.userId, thauba.userId] })
+                                    commun: true, participants: [f.userId, lea.userId] })
     await ouvre(f, '2026-09-01')
     await ouvre(f, '2026-10-01')
-    ou(await declare(thauba, (await ligne(courses, '2026-10-01'))!.id, '2026-10-04', 30_000))
+    ou(await declare(lea, (await ligne(courses, '2026-10-01'))!.id, '2026-10-04', 30_000))
     ou(await declare(f, (await ligne(courses, '2026-10-01'))!.id, '2026-10-09', 13_000))
   })
 

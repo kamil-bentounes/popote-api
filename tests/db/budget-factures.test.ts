@@ -254,11 +254,11 @@ describe('les parts d’un ajustement, à deux', () => {
   })
 
   it('à deux, le dépassement se répartit selon ce que chacun a porté sur l’année', async () => {
-    const f = await foyerSolo('fac-porte', { revenu: 370_000 })
-    const thauba = await membre(f, 'Thauba', { arrivee: '2026-11-01', revenu: 240_000,
+    const f = await foyerSolo('fac-porte', { revenu: 310_000 })
+    const lea = await membre(f, 'Léa', { arrivee: '2026-11-01', revenu: 210_000,
                                                depuis: '2026-11-01' })
     const e = await poseCharge(f, { libelle: 'Entretien auto', cents: 50_004, mode: 'mis_de_cote',
-      commun: true, participants: [f.userId, thauba.userId] })
+      commun: true, participants: [f.userId, lea.userId] })
     await ouvreLAnnee(f, e, 2026)
     const porte = await portes(e)
     const total = [...porte.values()].reduce((s, x) => s + x, 0)
@@ -267,12 +267,12 @@ describe('les parts d’un ajustement, à deux', () => {
     expect(aj.montant_cents).toBe(15_332)
     const parts = await partsDe(aj.id)
     expect(parts.reduce((s, p) => s + p.part_cents, 0)).toBe(15_332)
-    const sienne = parts.find(p => p.user_profile_id === thauba.userId)!.part_cents
+    const sienne = parts.find(p => p.user_profile_id === lea.userId)!.part_cents
     // Elle n'a porté que novembre et décembre, au prorata : bien moins d'un quart.
     expect(sienne).toBeGreaterThan(0)
     expect(sienne).toBeLessThan(15_332 / 4)
     // Et au centime près ce qu'elle a porté sur l'année, pas une clé fraîche du jour.
-    expect(Math.abs(sienne - 15_332 * porte.get(thauba.userId)! / total)).toBeLessThan(1)
+    expect(Math.abs(sienne - 15_332 * porte.get(lea.userId)! / total)).toBeLessThan(1)
   })
 
   it('l’état de l’année suit : ce qui est posé vaut le dépassement', async () => {

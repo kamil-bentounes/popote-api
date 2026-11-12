@@ -696,7 +696,7 @@ export function soustitreDuCongelo(parts: number, plusTard: Date | null): string
 // ── Pour qui ────────────────────────────────────────────────────────────────
 
 /**
- * « vous deux », « toi », « Thauba », « Kamil et Thauba » : pour qui un repas est posé, vu de `moi`.
+ * « vous deux », « toi », « Léa », « Kamil et Léa » : pour qui un repas est posé, vu de `moi`.
  * Tout le foyer (à plusieurs) se dit comme `pourLeFoyer`.
  */
 export function pourQui(

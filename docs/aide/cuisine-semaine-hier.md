@@ -27,8 +27,8 @@ Les deux points sous chaque jour restent : **creux**, c’est un repas pas noté
 
 ## Noter un repas passé
 
-- Un repas vide dit **« + Noter ce que j’ai mangé ce midi »** (ou « ce soir »). Pour une seule personne : « + Noter ce que Thauba a mangé ce soir ». Touche-le : la feuille de choix s’ouvre **sur toi** (« Pour » : Kamil), avec « Un jour passé : ce que tu choisis est noté mangé… ». Pour noter aussi l’autre personne, touche « Vous deux » ou son prénom : rien n’est noté à sa place sans ce choix. Choisis une barquette, un aliment à nous, un repère, ou **« On saute ce repas »**.
-- Un repas déjà posé mais pas marqué mangé dit **« … · pas encore noté »**. **« Je l’ai mangé »** note ta part ; « Changer » ouvre la même feuille. Quand une seule personne l’a mangé : « Kamil l’a mangé, pas encore noté pour Thauba ».
+- Un repas vide dit **« + Noter ce que j’ai mangé ce midi »** (ou « ce soir »). Pour une seule personne : « + Noter ce que Léa a mangé ce soir ». Touche-le : la feuille de choix s’ouvre **sur toi** (« Pour » : Kamil), avec « Un jour passé : ce que tu choisis est noté mangé… ». Pour noter aussi l’autre personne, touche « Vous deux » ou son prénom : rien n’est noté à sa place sans ce choix. Choisis une barquette, un aliment à nous, un repère, ou **« On saute ce repas »**.
+- Un repas déjà posé mais pas marqué mangé dit **« … · pas encore noté »**. **« Je l’ai mangé »** note ta part ; « Changer » ouvre la même feuille. Quand une seule personne l’a mangé : « Kamil l’a mangé, pas encore noté pour Léa ».
 - **Ce que tu choisis est mangé**, puisque le repas a eu lieu : la barquette quitte le frigo ou le congélateur, comme avec « Je l’ai mangé ». La case est notée à l’heure habituelle du repas (8 h, 12 h, 16 h ou 19 h). « On saute ce repas » reste « sauté ».
 - Un repas noté mangé par erreur se remet à « prévu » avec **« Pas mangé ? Annuler »** (voir « cuisine-semaine-annuler »).
 - Sous un plat, **« + ce que j’ai mangé en plus »** note un dessert (voir « cuisine-semaine-en-plus »).

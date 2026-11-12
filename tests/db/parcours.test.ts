@@ -16,7 +16,7 @@ import { planifie } from './front-fige/lib/plan/ordonnance.ts'
 import { organise } from './front-fige/lib/liste.ts'
 
 let kamil: Actor
-let thauba: Actor
+let lea: Actor
 let dahl: string
 let basquaise: string
 
@@ -51,25 +51,25 @@ async function amorceRecettes() {
 
 beforeAll(async () => {
   kamil = await makeActor('parcours-kamil')
-  // Thauba partage le foyer de Kamil : c'est le cas réel de l'app.
+  // Léa partage le foyer de Kamil : c'est le cas réel de l'app.
   const { error } = await admin().from('user_profile').insert({
     id: (await admin().auth.admin.createUser({
-      email: `thauba-${Date.now()}@test.local`, password: 'test-password-12345', email_confirm: true,
+      email: `lea-${Date.now()}@test.local`, password: 'test-password-12345', email_confirm: true,
     })).data.user!.id,
     household_id: kamil.householdId,
-    display_name: 'Thauba',
+    display_name: 'Léa',
   })
   expect(error).toBeNull()
 
   const { data: profils } = await admin().from('user_profile')
     .select('id, display_name').eq('household_id', kamil.householdId)
-  thauba = { ...kamil, userId: profils!.find(p => p.display_name === 'Thauba')!.id }
+  lea = { ...kamil, userId: profils!.find(p => p.display_name === 'Léa')!.id }
 
   for (const p of profils!) {
     await admin().from('nutrition_target').insert({
       user_profile_id: p.id, household_id: kamil.householdId,
-      kcal: p.display_name === 'Thauba' ? 1700 : 2000,
-      protein_g: p.display_name === 'Thauba' ? 120 : 140,
+      kcal: p.display_name === 'Léa' ? 1700 : 2000,
+      protein_g: p.display_name === 'Léa' ? 120 : 140,
       fiber_g: 30, carb_g: 200, fat_g: 60,
     })
   }
@@ -214,7 +214,7 @@ describe('le parcours complet', () => {
   it('dimanche : le dressage produit des barquettes datées', async () => {
     const lots = [
       ...Array.from({ length: 4 }, () => ({ pour: kamil.userId, grammes: 380 })),
-      ...Array.from({ length: 4 }, () => ({ pour: thauba.userId, grammes: 320 })),
+      ...Array.from({ length: 4 }, () => ({ pour: lea.userId, grammes: 320 })),
     ]
     const { error } = await kamil.client.from('portion').insert(lots.map((l, i) => ({
       household_id: kamil.householdId, cycle_id: cycle,
@@ -245,7 +245,7 @@ describe('le parcours complet', () => {
 
     /* Plus de distribution automatique (chantier 3) : chacun pose ses barquettes sur ses dîners, comme `choisir_un_repas`. */
     const jourDe = (i: number) => `2029-01-${String(8 + i).padStart(2, '0')}`
-    const cases = [kamil.userId, thauba.userId].flatMap(u =>
+    const cases = [kamil.userId, lea.userId].flatMap(u =>
       barquettes!.filter(b => b.for_user_id === u).map((b, i) => (
         { userId: u, jour: jourDe(i), repas: 'diner', portionId: b.id })))
     expect(cases).toHaveLength(8)
@@ -263,7 +263,7 @@ describe('le parcours complet', () => {
     const parQui = new Map<string, number>()
     for (const s of semaine!) parQui.set(s.user_profile_id, (parQui.get(s.user_profile_id) ?? 0) + 1)
     expect(parQui.get(kamil.userId), 'Kamil n’a rien à manger').toBe(4)
-    expect(parQui.get(thauba.userId), 'Thauba n’a rien à manger').toBe(4)
+    expect(parQui.get(lea.userId), 'Léa n’a rien à manger').toBe(4)
   })
 
   it('la semaine : manger est UN geste, et il consomme la barquette', async () => {

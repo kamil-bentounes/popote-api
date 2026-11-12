@@ -28,7 +28,7 @@
 --   · pour chaque personne, dans cet ordre : la barquette que sa case porte déjà, puis une barquette POUR
 --     ELLE (`for_user_id`), puis une pour personne (`for_user_id` nul), puis celle d'un autre en dernier
 --     recours ; à égalité, la plus pressée d'abord. Les passes se font toutes personnes confondues : la
---     barquette de Thauba ne part pas chez Kamil tant qu'il en reste une pour Kamil ;
+--     barquette de Léa ne part pas chez Kamil tant qu'il en reste une pour Kamil ;
 --   · pas assez de barquettes libres pour tout le monde : rien n'est écrit, on le dit ;
 --   · l'ancienne barquette d'une case qu'on change est LÂCHÉE (la case ne la porte plus : elle est libre pour
 --     un autre jour) et rendue à l'écran, qui dit où elle retourne (frigo : « libre pour un autre jour »,
