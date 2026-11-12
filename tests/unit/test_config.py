@@ -76,3 +76,15 @@ def test_le_module_ne_cree_pas_d_application_a_l_import() -> None:
 def test_un_secret_non_ascii_echoue_au_demarrage(env: str, secret: str) -> None:
     with pytest.raises(ValidationError, match="ASCII"):
         Settings.model_validate({"env": env, "relay_secret": secret, "database_url": DSN})
+
+
+def test_la_version_est_lue_dans_l_environnement_de_l_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POPOTE_ENV", "local")
+    monkeypatch.setenv("POPOTE_VERSION", "a" * 40)
+    assert Settings().version == "a" * 40
+
+
+@pytest.mark.parametrize("valeur", ["", "a b", "x" * 65, '"; drop', "é"])
+def test_une_version_mal_formee_echoue(valeur: str) -> None:
+    with pytest.raises(ValidationError, match="version"):
+        Settings.model_validate({"env": "local", "version": valeur})

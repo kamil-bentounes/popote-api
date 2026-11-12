@@ -6,8 +6,8 @@ router = APIRouter(prefix="/api", tags=["santé"])
 
 
 @router.get("/healthz")
-async def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+async def healthz(request: Request) -> dict[str, str]:
+    return {"status": "ok", "version": request.app.state.settings.version}
 
 
 @router.get("/readyz")

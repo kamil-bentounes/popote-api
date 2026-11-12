@@ -130,5 +130,5 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - En-tête `traceparent` (W3C Trace Context) accepté et propagé ; journaux JSON sur la sortie standard, avec
   l'identifiant de trace ; aucune donnée personnelle dans les journaux (pas de montant, pas de prénom, pas
   d'e-mail en clair).
-- `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
+- `/api/healthz` (le processus vit ; rend aussi `version`, le SHA du commit de l'image) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.

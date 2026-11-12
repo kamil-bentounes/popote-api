@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     env: Env
     database_url: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.
+    version: str = Field("inconnue", pattern=r"^[A-Za-z0-9._-]{1,64}$")
 
     @property
     def relais_exige(self) -> bool:
