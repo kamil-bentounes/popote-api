@@ -32,3 +32,4 @@ __pycache__/
 # Le SQL écrit à blanc par ops/aligne_droits.py : un résultat de travail, jamais versionné.
 aligne_droits.sql
 .pytest_cache/
+.hypothesis/
