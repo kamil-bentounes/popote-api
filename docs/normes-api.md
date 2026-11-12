@@ -128,11 +128,38 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.6 Limites
 
-- **Débit** (brouillon IETF `RateLimit` ; `429` : RFC 6585) : lecture 120/min et écriture 30/min par session,
-  comptées en mémoire par instance (approximatif, suffisant pour un foyer) ; les limites qui protègent un
-  compte sont comptées en base, donc justes quelle que soit l'instance : connexion 5 essais par compte et
-  20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure et par compte, invitations
-  10 par jour. En-têtes `RateLimit-Policy` et `RateLimit` ; `429` avec `Retry-After`.
+- **Débit** (`security/debit.py` ; `429` : RFC 6585 § 4), en mémoire par instance (approximatif, suffisant
+  pour un foyer). Fenêtre fixe de 60 s, ouverte à la première requête de la clé : une rafale à cheval sur
+  deux fenêtres peut doubler le plafond un instant. Écriture : toute méthode qui n'est pas `GET`, `HEAD` ou
+  `OPTIONS`.
+  - **Par adresse : 600 lectures et 120 écritures par minute**, par un **middleware ASGI pur** placé après la
+    garde du relais et avant la lecture du corps. C'est l'exception assumée à la règle « le débit est une
+    dépendance » : un refus doit coûter le moins possible (une `429` ne lit ni ne décode un corps de 1 Mio), et
+    la limite doit compter aussi ce qu'une dépendance ne voit pas : routes inconnues (`404`), méthodes
+    refusées (`405`), JSON invalides (`422`). Il rend `reponse(...)` et ne lève jamais. L'adresse est celle que
+    le relais a vue (`ip_de`), regroupée : une adresse IPv6 par préfixe /64 (une seule personne en possède des
+    milliards), une adresse IPv4 telle quelle. Sans adresse valable, la clé est commune (`sans-ip`). Aucun
+    cookie n'est lu à ce niveau : un cookie inventé n'ouvre jamais un compteur neuf. Le plafond est plus large
+    que celui de la personne : deux téléphones d'un foyer partagent une adresse et relisent la session toutes
+    les 3 s. Les websockets ne sont pas comptés.
+  - **Par personne : 120 lectures et 30 écritures par minute**, une dépendance FastAPI appelée par la
+    dépendance de session (T6) avec l'identifiant validé en base :
+    `limite_par_personne(request, response, personne)`. L'état est distinct de celui de l'adresse ; ses
+    en-têtes `RateLimit*` priment sur ceux de l'adresse.
+  - **Mémoire bornée** (10 000 clés par limiteur) sans jamais oublier un compteur actif : on retire d'abord
+    les fenêtres expirées ; s'il n'y en a pas, la requête d'une clé *nouvelle* est refusée (`503
+    limiteur_sature` + `Retry-After`) et l'événement est journalisé (au plus une fois par minute, sans adresse).
+  - **Non limités** : `/api/healthz` et `/api/readyz`, quelle que soit la méthode.
+  - **En-têtes** (brouillon IETF `draft-ietf-httpapi-ratelimit-headers`, **version -11 du 23/05/2026**, toujours
+    un brouillon : un client ne doit pas en dépendre) : champs structurés (RFC 9651), listes d'éléments dont la
+    valeur est une chaîne. `RateLimit-Policy: "read";q=600;w=60` (`q` quota, `w` fenêtre en secondes) ;
+    `RateLimit: "read";r=57;t=30` (`r` restant, `t` secondes avant le renouvellement). Le nom du quota est
+    `read` ou `write`. Posés sur chaque réponse limitée (`404`, `405` et `422` compris), `429` comprise. Sur la `429`, `Retry-After` est un
+    nombre entier de secondes (RFC 9110, `delay-seconds`) égal à `t` : le brouillon demande qu'il ne soit
+    pas antérieur à la fin de la fenêtre.
+  Les limites qui protègent un compte sont comptées en base, donc justes quelle que soit l'instance :
+  connexion 5 essais par compte et 20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure
+  et par compte, invitations 10 par jour.
 - **Modèles** : quotas par foyer et par usage, décomptés de façon atomique en base
   (`update … where appels < quota returning …`) AVANT l'appel ; plafond en euros appliqué.
 - **Tailles, types et délais** (`src/popote_api/limites.py`, middlewares ASGI qui rendent leur réponse sans
