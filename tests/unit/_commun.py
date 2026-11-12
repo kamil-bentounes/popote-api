@@ -60,3 +60,32 @@ async def appeler(app: FastAPI, methode: str, chemin: str, en_tetes: dict[str, s
         {k.decode().lower(): v.decode() for k, v in debut["headers"]},
         corps,
     )
+
+
+async def appeler_websocket(
+    app: FastAPI, chemin: str, en_tetes: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """Ouvre un websocket en ASGI brut et rend les messages que l'application a envoyés."""
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "scheme": "ws",
+        "path": chemin,
+        "raw_path": chemin.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in (en_tetes or {}).items()],
+        "client": ("127.0.0.1", 123),
+        "server": ("test", 80),
+        "subprotocols": [],
+    }
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "websocket.connect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await app(scope, receive, send)  # type: ignore[arg-type]
+    return messages
