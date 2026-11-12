@@ -1,13 +1,24 @@
 """La fabrique de l'application. Lancement : `uvicorn --factory popote_api.main:create_app`."""
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 from popote_api import contrat, errors, journal, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
-from popote_api.infra.db import SondeBase
+from popote_api.infra.db import Base, SondeBase
 from popote_api.trace import Trace
+
+avertissements = logging.getLogger(__name__)
+
+
+def _secret(valeur: SecretStr | None) -> str | None:
+    return valeur.get_secret_value() if valeur else None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -15,9 +26,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()  # type: ignore[call-arg]
     if settings.json_logs:
         journal.configure()
+    base = Base.depuis_dsn(_secret(settings.database_url), _secret(settings.database_url_internal))
+
+    @asynccontextmanager
+    async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
+        if not base.service_configure:
+            avertissements.warning(
+                "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
+            )
+        try:
+            await base.ouvre()  # sans attendre de connexion : le démarrage ne dépend pas de la base
+            yield
+        finally:
+            await base.ferme()
+
     # Le contrat n'est publié ni en prod, ni sous une forme interactive. Pas de redirection de
     # barre finale : `/api/x/` n'est pas `/api/x`, et une redirection révélerait la route.
     app = FastAPI(
+        lifespan=cycle_de_vie,
         title="Popote",
         version="0.1.0",
         docs_url=None,
@@ -26,8 +52,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redirect_slashes=False,
     )
     app.state.settings = settings
-    dsn = settings.database_url.get_secret_value() if settings.database_url else None
-    app.state.sonde = SondeBase(dsn)
+    app.state.base = base
+    app.state.sonde = SondeBase(base.repond if settings.database_url else None)
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
     # `Trace`, `Acces`, `Garde`. Le refus de la garde porte donc son identifiant et sa trace, et sa ligne

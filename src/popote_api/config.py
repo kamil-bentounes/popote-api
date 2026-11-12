@@ -20,7 +20,11 @@ class Settings(BaseSettings):
     # Pas de valeur par défaut : une faute dans le nom de POPOTE_ENV doit empêcher de démarrer,
     # pas démarrer en `local`, qui n'exige pas le relais.
     env: Env
+    # Rôle `popote_api` (contexte personne), exigé hors local.
     database_url: SecretStr | None = None
+    # Rôle `popote_internal` (contexte service). Facultatif tant que le conteneur d'essai ne l'a pas : sans
+    # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
+    database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
     # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
     json_logs: bool = True
