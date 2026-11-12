@@ -139,9 +139,117 @@ jobs:
         with:
           persist-credentials: false
       - run: semgrep scan --config p/python --config p/typescript --config p/owasp-top-ten --error --metrics off
-  deploie-essai:
-    # Déploiement de l'essai (essai.notre-popote.fr) : seulement après un envoi sur main dont tous les contrôles sont verts.
+  migre-essai:
+    # Le schéma de l'essai (essai.notre-popote.fr) passe avant le code : `deploie-essai` en dépend, donc un
+    # échec ici (migration refusée, droits divergents) arrête le déploiement. Une migration doit rester
+    # compatible avec l'appli qui tourne encore (expand puis contract, AGENTS.md).
     needs: [python, base, image, secrets, semgrep]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: essai
+    # Même groupe que le déploiement : jamais deux écritures sur l'essai à la fois, et jamais annulé
+    # en cours de route. Un job encore en attente peut être remplacé par le suivant, qui porte les mêmes
+    # migrations et davantage.
+    concurrency:
+      group: deploie-essai
+      cancel-in-progress: false
+    env:
+      # public.ecr.aws limite les tirages anonymes depuis les runners partagés (toomanyrequests).
+      SUPABASE_INTERNAL_IMAGE_REGISTRY: ghcr.io
+    permissions:
+      contents: read
+    steps:
+      # Aucune variable ni aucun secret de l'environnement avant l'étape « Préparer la connexion » : GitHub
+      # imprime en clair le bloc `env:` d'une étape dans le journal (un dépôt public), variables comprises, et
+      # le masque ne vaut que pour ce qui suit. Les installations de paquets, qui exécutent du code tiers,
+      # passent donc avant que le mot de passe existe sur le disque.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # `ops/aligne_droits.py` lit la base de référence et l'essai avec `psql`.
+      - name: S'assurer que psql est là
+        run: |
+          command -v psql > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends postgresql-client; }
+          psql --version
+      # La base de référence des droits : une pile locale neuve, que `supabase start` remplit avec les
+      # migrations de ce commit et les privilèges par défaut classiques (comme le job `base`).
+      - name: Démarrer la pile Supabase locale (3 essais)
+        run: |
+          for essai in 1 2 3; do
+            npx supabase start -x studio,imgproxy,logflare,vector,supavisor && exit 0
+            echo "essai $essai échoué, nouvel essai dans 20 s"; npx supabase stop --no-backup || true; sleep 20
+          done
+          exit 1
+      # Seule étape qui lit l'environnement `essai`. Hôte et utilisateur (donc la référence du projet) sont
+      # des variables : leur valeur apparaît dans l'en-tête de cette étape, une fois, et nulle part ensuite,
+      # parce qu'on les masque ici avant tout usage. Seul un secret (`ESSAI_PGPASSWORD`) n'apparaît jamais.
+      # L'URL de connexion va dans un fichier 0600, jamais dans une variable d'environnement ni en sortie.
+      - name: Préparer la connexion
+        env:
+          PGHOST: ${{ vars.ESSAI_PGHOST }}
+          PGUSER: ${{ vars.ESSAI_PGUSER }}
+          PGPASSWORD: ${{ secrets.ESSAI_PGPASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for valeur in "$PGHOST" "$PGUSER" "${PGUSER#*.}"; do
+            [ -z "$valeur" ] || echo "::add-mask::$valeur"
+          done
+          manque=()
+          for nom in PGHOST PGUSER PGPASSWORD; do
+            [ -n "${!nom}" ] || manque+=("$nom")
+          done
+          if [ ${#manque[@]} -gt 0 ]; then
+            echo "::error::valeurs manquantes dans l'environnement essai : ${manque[*]} (variables ESSAI_PGHOST, ESSAI_PGUSER ; secret ESSAI_PGPASSWORD)"
+            exit 1
+          fi
+          case "$PGUSER" in
+            postgres.?*) ;;
+            *) echo "::error::ESSAI_PGUSER doit avoir la forme postgres.<référence> (pooler Supavisor)"; exit 1 ;;
+          esac
+          # Le mot de passe est encodé : `--db-url` veut une URL dont les caractères spéciaux sont échappés.
+          encode=$(jq -rn 'env.PGPASSWORD | @uri')
+          echo "::add-mask::$encode"
+          # Pooler Supavisor en mode SESSION (port 5432, comme la sauvegarde), pas en mode transaction (6543).
+          url="postgresql://${PGUSER}:${encode}@${PGHOST}:5432/postgres"
+          echo "::add-mask::$url"
+          printf '%s' "$url" > "$RUNNER_TEMP/essai.url"
+          # Refuse la prod avant tout envoi, avec la liste noire de l'outil de droits.
+          python3 -I -c 'import sys; sys.path.insert(0, "ops"); import aligne_droits; aligne_droits.check_target_dsn(open(sys.argv[1]).read())' "$RUNNER_TEMP/essai.url"
+          echo "connexion préparée"
+      - name: Lister les migrations à appliquer (à blanc)
+        run: |
+          set -euo pipefail
+          npx supabase db push --db-url "$(cat "$RUNNER_TEMP/essai.url")" --dry-run --skip-vault
+      - name: Appliquer les migrations sur l'essai
+        run: |
+          set -euo pipefail
+          # `--yes` : la confirmation ne dépend pas de ce que l'entrée standard d'un job renvoie.
+          npx supabase db push --db-url "$(cat "$RUNNER_TEMP/essai.url")" --skip-vault --yes
+      # Après l'envoi, même quand il n'y avait rien à appliquer : un projet hébergé neuf ne pose pas les
+      # privilèges par défaut de la pile locale, et une migration sans grant explicite y naît sans droits.
+      # À blanc, en lecture seule ; le journal nomme les objets divergents, jamais une donnée.
+      - name: Comparer les droits de l'essai à ceux de la référence
+        run: |
+          set -uo pipefail
+          ALIGNE_CIBLE_DSN="$(cat "$RUNNER_TEMP/essai.url")" python3 -I ops/aligne_droits.py --sortie "$RUNNER_TEMP/aligne_droits.sql"
+          code=$?
+          case "$code" in
+            0) ;;
+            1) echo "::error::les droits de l'essai diffèrent de la référence (objets listés ci-dessus). Corriger avec une migration qui pose ses grant et revoke, ou avec ops/aligne_droits.py --appliquer, puis relancer le job (docs/exploitation.md)" ;;
+            *) echo "::error::contrôle des droits impossible (code $code)" ;;
+          esac
+          exit "$code"
+  deploie-essai:
+    # Déploiement de l'essai (essai.notre-popote.fr) : seulement après un envoi sur main dont tous les contrôles
+    # sont verts et dont les migrations sont appliquées sur l'essai, droits compris.
+    needs: [python, base, image, secrets, semgrep, migre-essai]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
