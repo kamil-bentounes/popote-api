@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
     database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans
+    # `internal_secret`, toute route interne répond 404 (fermé par défaut) et le démarrage avertit.
+    # `internal_secret_precedent` sert la rotation : le nouveau secret va en `internal_secret`, l'ancien ici,
+    # puis on retire l'ancien.
+    internal_secret: SecretStr | None = None
+    internal_secret_precedent: SecretStr | None = None
     # Sous-domaine `workers.dev` du compte Cloudflare, pour reconnaître les aperçus de fusion du front.
     # Essai seulement : la prod n'a pas d'aperçu.
     apercu_compte: str | None = None
@@ -102,6 +108,12 @@ class Settings(BaseSettings):
     def emetteur_des_jetons(self) -> str | None:
         """La revendication `iss` que PostgREST pose pour une personne connectée : `<projet>/auth/v1`."""
         return f"{str(self.supabase_url).rstrip('/')}/auth/v1" if self.supabase_url else None
+
+    @property
+    def secrets_internes(self) -> tuple[bytes, ...]:
+        """Les secrets qui signent les routes internes, le courant d'abord ; vide : routes fermées."""
+        secrets = (self.internal_secret, self.internal_secret_precedent)
+        return tuple(s.get_secret_value().encode("ascii") for s in secrets if s and s.get_secret_value())
 
     @property
     def relais_exige(self) -> bool:
@@ -143,6 +155,25 @@ class Settings(BaseSettings):
             raise ValueError("apercu_compte : réservé à l'essai, la prod et le local n'ont pas d'aperçu.")
         if not SOUS_DOMAINE_WORKERS.fullmatch(self.apercu_compte):
             raise ValueError("apercu_compte : un sous-domaine workers.dev (minuscules, chiffres, tirets).")
+        return self
+
+    @model_validator(mode="after")
+    def _controle_les_secrets_internes(self) -> Self:
+        # Une variable posée à vide vaut « absente » ; un secret posé doit être sûr, dans tout environnement.
+        for nom in ("internal_secret", "internal_secret_precedent"):
+            valeur = getattr(self, nom)
+            secret = valeur.get_secret_value() if valeur else ""
+            if secret and not secret.isascii():
+                raise ValueError(f"{nom} : caractères ASCII uniquement.")
+            if secret and len(secret) < LONGUEUR_MINIMALE_DU_SECRET:
+                raise ValueError(f"{nom} : {LONGUEUR_MINIMALE_DU_SECRET} caractères au moins.")
+        secrets = self.secrets_internes
+        relais = self.relay_secret.get_secret_value().encode() if self.relay_secret else b""
+        if len(set(secrets)) < len(secrets) or (relais and relais in secrets):
+            # Le Worker du relais connaît `relay_secret` : égal à la clé interne, il pourrait signer.
+            raise ValueError("Les secrets internes et celui du relais doivent être trois valeurs distinctes.")
+        if len(self.secrets_internes) == 1 and self.internal_secret_precedent:
+            raise ValueError("internal_secret_precedent sans internal_secret : la rotation pose les deux.")
         return self
 
     @model_validator(mode="after")

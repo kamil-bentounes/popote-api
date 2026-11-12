@@ -340,7 +340,7 @@ def app_journalisee(env: str = "local") -> FastAPI:
 
     @app.get("/api/_test/boom")
     async def boom() -> None:
-        raise RuntimeError("interne")
+        raise RuntimeError("texte-du-message")
 
     return app
 
@@ -434,7 +434,7 @@ async def test_une_500_produit_une_ligne_d_erreur_et_une_ligne_d_acces_avec_les_
     assert erreurs[0]["trace_id"] == TRACE_ID
     assert re.fullmatch(r"[0-9a-f]{16}", erreurs[0]["span_id"])
     assert erreurs[0]["exception"][0]["type"] == "builtins.RuntimeError"
-    assert "interne" not in json.dumps(erreurs[0])
+    assert "texte-du-message" not in json.dumps(erreurs[0])
     (acces,) = [ligne for ligne in toutes if ligne["logger"] == "popote_api.acces"]
     assert (acces["status"], acces["route"]) == (500, "/api/_test/boom")
     assert acces["request_id"] == erreurs[0]["request_id"]
