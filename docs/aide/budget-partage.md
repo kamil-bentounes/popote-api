@@ -34,7 +34,7 @@ Sans choix enregistré, c’est « Au prorata ». Le changement vaut à partir d
 
 Au prorata, ta part = ton net ÷ la somme des nets des personnes présentes ce mois-là. Pour un mois, on prend le revenu le plus récent daté d’avant la fin du mois.
 
-Exemple : loyer de 800 €, nets de 2 400 € et 1 600 €. Total 4 000 €, donc 60 % et 40 % : 480 € et 320 €. En moitié-moitié : 400 € chacun.
+Exemple : loyer de 800 €, nets de 3 000 € et 2 000 €. Total 5 000 €, donc 60 % et 40 % : 480 € et 320 €. En moitié-moitié : 400 € chacun.
 
 Sur une charge, seuls les participants se partagent le montant, dans les proportions du foyer. Une seule personne : 100 % pour elle. Seul dans le foyer : tout est à toi, la règle ne change rien. Les parts sont arrondies au centime, leur somme fait toujours le montant exact.
 

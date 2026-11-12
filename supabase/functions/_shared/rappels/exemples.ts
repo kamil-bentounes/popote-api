@@ -24,8 +24,8 @@ export function exemple(type: TypeDeRappel, maintenant: Date, prenom: string, ba
         plats: [{
           label: 'Wraps poulet', recipe_id: null, image_url: null, n: 4, portion_ids: [], restant: 16,
           repas: [
-            { meal: 'dejeuner', pour: [prenom, 'Thauba'] },
-            { meal: 'diner', pour: [prenom, 'Thauba'] },
+            { meal: 'dejeuner', pour: [prenom, 'Léa'] },
+            { meal: 'diner', pour: [prenom, 'Léa'] },
           ],
         }],
       }

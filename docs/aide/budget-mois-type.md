@@ -41,7 +41,7 @@ Tes charges **telles qu’elles sont posées**, ramenées au mois, et ce que cha
 
 - **« Le foyer »** ou un prénom : le sélecteur recompte l’anneau et les catégories sur la part de cette personne.
 - **L’anneau** : une couleur par catégorie, le total au centre. Touche un arc ou sa légende : le centre montre la catégorie et sa part du mois ; retouche-la, le total revient.
-- **Une jauge par personne** (sur « Le foyer ») : la part du revenu que ses charges prennent, son total, « Commun » et « À soi », puis « Il reste 420 € sur 2 400 € » ou « Il manque… ». Sans revenu : un tiret dans la jauge et « Revenu pas encore posé ».
+- **Une jauge par personne** (sur « Le foyer ») : la part du revenu que ses charges prennent, son total, « Commun » et « À soi », puis « Il reste 420 € sur 2 500 € » ou « Il manque… ». Sans revenu : un tiret dans la jauge et « Revenu pas encore posé ».
 - **« Par catégorie »** : une carte par catégorie, avec son total et ce que paie chacun. Elle ouvre ses lignes ; « Toutes les lignes » ouvre tout.
 - Si « Autre » pèse au moins 20 % du mois, un encart propose « Ranger mes charges ».
 

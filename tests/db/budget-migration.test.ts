@@ -183,7 +183,7 @@ ouvre('variante-releve-sans-auteur', b => {
 })
 
 ouvre('variante-deux-membres', b => {
-  it('Thauba est arrivée avant : deux membres, et les charges nées des enveloppes la comptent', async () => {
+  it('Léa est arrivée avant : deux membres, et les charges nées des enveloppes la comptent', async () => {
     const [{ n }] = await b().un(`select count(*)::int as n from public.user_profile
       where household_id = $1`, [b().foyer])
     expect(n).toBe(2)
@@ -194,7 +194,7 @@ ouvre('variante-deux-membres', b => {
         and c.libelle in ('Droguerie et hygiène', 'Coiffeur et soins', 'Pharmacie')
       group by c.libelle, c.commun order by c.libelle`, [b().foyer, b().kamil])
     /* Commune : les deux. Personnelle : Kamil seul, titulaire du seul compte
-       personnel actif — pas Thauba, pas tout le foyer. */
+       personnel actif — pas Léa, pas tout le foyer. */
     expect(nouvelles.map(r => [r.libelle, r.commun, r.dont_kamil.length])).toEqual([
       ['Coiffeur et soins', false, 1],
       ['Droguerie et hygiène', true, 2],

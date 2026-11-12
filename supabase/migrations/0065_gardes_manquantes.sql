@@ -34,7 +34,7 @@ create trigger z_user_profile_id_meme_foyer
 
 -- ── 2 · Un versement d'épargne ne se pose qu'à son propre nom ─────────────
 --
--- Éprouvé : Kamil posait un versement de −499,99 € au nom de Thauba, et
+-- Éprouvé : Kamil posait un versement de −499,99 € au nom de Léa, et
 -- supprimait les siens. `tg_versement_ancre` ne gardait que l'UPDATE, et rien
 -- n'oblige à passer par un UPDATE. Comme le revenu, un versement se pose et se
 -- retire par son titulaire ; le foyer le lit.

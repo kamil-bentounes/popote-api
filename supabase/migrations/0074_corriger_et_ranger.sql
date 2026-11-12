@@ -6,7 +6,7 @@
 
 -- ── 1 · Qui a touché la charge, et quand ───────────────────────────────────
 --
--- Le foyer partage tout : Thauba peut corriger et archiver les charges perso de
+-- Le foyer partage tout : Léa peut corriger et archiver les charges perso de
 -- Kamil, et c'est voulu — deux personnes, pas un conseil d'administration. Mais
 -- une correction silencieuse sur la ligne de quelqu'un d'autre est une
 -- surprise. On ne verrouille pas, on TRACE : l'écran dit qui a touché en

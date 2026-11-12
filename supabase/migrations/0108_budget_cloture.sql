@@ -83,7 +83,7 @@ begin
      parts. Sans cela, octobre clôturé juste après la migration, sans avoir
      ouvert /budget, gardait 22 lignes et 3 898,20 € au lieu de 25 et
      4 008,20 € : 110 € de reste en trop. On ne refait PAS les parts des lignes
-     existantes : un mois passé ne se repartage pas. À deux, Thauba partie le
+     existantes : un mois passé ne se repartage pas. À deux, Léa partie le
      03/11, refiger octobre le 05/11 mettait 1 678,53 € de communes sur Kamil
      seul. ── */
   perform public.ouvre_le_mois(m);

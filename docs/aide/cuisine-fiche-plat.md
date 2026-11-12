@@ -32,7 +32,7 @@ Dans le frigo, touche la carte d’un plat : sa fiche s’ouvre en bas de l’é
 
 Lieu, nom, nombre de parts, ce que pèse une part, les repas où il est posé (« Prévues pour vous deux », « Prévues pour Kamil », ou « Pas encore » ; un repas d’avant aujourd’hui n’y est plus), les dates.
 
-- **Une part est pour quelqu’un** : si toutes sont pareilles, une phrase (« 784 g, 682 kcal et 56 g de protéines la part »). Sinon une ligne par personne (« Kamil : 784 g, 682 kcal, 56 g de protéines », « Thauba : … »), jamais une moyenne qui ne serait la part de personne.
+- **Une part est pour quelqu’un** : si toutes sont pareilles, une phrase (« 784 g, 682 kcal et 56 g de protéines la part »). Sinon une ligne par personne (« Kamil : 784 g, 682 kcal, 56 g de protéines », « Léa : … »), jamais une moyenne qui ne serait la part de personne.
 - **Dates** : « Au frigo depuis » ou « Congelés le » (pas dans le futur) recalcule « À manger avant » : **4 jours** (96 heures pleines) au frigo, **90 jours** au congélateur. Une part décongelée se mange dans les **24 heures** : pas de « depuis » pour elle. « À manger avant », saisie à la main, prime (jusqu’à 23 h 59 ce jour-là). Enregistrer sans changer la date n’écrit rien ; une date changée ne réécrit que les parts qu’elle change.
 
 Mots d’urgence au frigo : « encore N jours », « demain dernier délai », « à manger aujourd'hui », « périmée ». Au congélateur : « N j au congélateur », puis « à sortir sous N j ». Sur la carte, une part périmée dit « périmée » (« 1 périmée » si une seule l’est), et un plat dont les repas tombent après sa péremption dit son mot d’urgence, ou « périme avant mar. soir ».

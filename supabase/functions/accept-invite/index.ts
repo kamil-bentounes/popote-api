@@ -148,7 +148,7 @@ async function rends(admin: Admin, id: string) {
 /**
  * Le profil, dans le foyer de l'invitation.
  *
- * ⚠️ PAS de prénom fabriqué depuis l'adresse : `thauba-1790147184836` finissait
+ * ⚠️ PAS de prénom fabriqué depuis l'adresse : `lea-1790147184836` finissait
  *    pré-rempli, validé sans regarder, puis lu sur chaque ligne de charge. Le
  *    profil, où elle atterrit, le lui demande.
  *

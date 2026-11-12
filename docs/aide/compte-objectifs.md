@@ -6,7 +6,7 @@ questions:
   - Comment régler mes objectifs de calories et de protéines ?
   - Pourquoi mes barquettes sont-elles dressées à parts égales ?
   - Qu’est-ce que « Fixe tes objectifs » ?
-  - Est-ce que Thauba voit mes objectifs ?
+  - Est-ce que Léa voit mes objectifs ?
   - Comment changer mes objectifs ?
   - À quoi servent les objectifs dans l’appli ?
   - Quelles sont les valeurs par défaut des objectifs ?

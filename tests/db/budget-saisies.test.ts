@@ -12,7 +12,7 @@ import { clos, declare, foyerSolo, ligne, membre, ou, ouvre, poseCharge, type Fo
   from './helpers/budget'
 
 let f: Foyer
-let thauba: Actor
+let lea: Actor
 let voisin: Foyer
 let courses: string
 let internet: string
@@ -20,10 +20,10 @@ const lignes: Record<string, string> = {}
 
 beforeAll(async () => {
   f = await foyerSolo('saisies')
-  thauba = await membre(f, 'Thauba')
+  lea = await membre(f, 'Léa')
   voisin = await foyerSolo('saisies-voisin')
   courses = await poseCharge(f, { libelle: 'Courses', cents: 80_000, mode: 'au_fil',
-                                  commun: true, participants: [f.userId, thauba.userId] })
+                                  commun: true, participants: [f.userId, lea.userId] })
   internet = await poseCharge(f, { libelle: 'Internet', cents: 3_700 })
   for (const m of ['2026-07-01', '2026-08-01', '2026-09-01', '2026-10-01', '2026-11-01']) {
     await ouvre(f, m)
@@ -79,7 +79,7 @@ describe('la garde des saisies', () => {
 
   it('l’auteur ne se change pas, et ne s’efface pas tant que son compte existe', async () => {
     const id = randomUUID()
-    ou(await declare(thauba, lignes['2026-10-01'], '2026-10-04', 1_200, id))
+    ou(await declare(lea, lignes['2026-10-01'], '2026-10-04', 1_200, id))
     for (const auteur of [null, f.userId]) {
       const { error } = await f.client.from('saisie').update({ saisi_par: auteur })
         .eq('id', id).select()
@@ -87,7 +87,7 @@ describe('la garde des saisies', () => {
     }
     // D80 : le foyer voit tout, et qui l'a saisie.
     const { data } = await f.client.from('saisie').select('saisi_par').eq('id', id).single()
-    expect(data!.saisi_par).toBe(thauba.userId)
+    expect(data!.saisi_par).toBe(lea.userId)
   })
 
   it('le total d’une ligne ne dépasse pas 1 000 000 €', async () => {

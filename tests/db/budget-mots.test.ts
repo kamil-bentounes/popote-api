@@ -26,7 +26,7 @@ describe('les mots de la base', () => {
   })
 
   it('prend le prénom, et ne laisse jamais un trou', async () => {
-    expect(await un(`select public.prenom_de('Thauba Benali') as v`)).toEqual({ v: 'Thauba' })
+    expect(await un(`select public.prenom_de('Léa Benali') as v`)).toEqual({ v: 'Léa' })
     expect(await un(`select public.prenom_de('  ') as v`)).toEqual({ v: "Quelqu'un" })
     expect(await un(`select public.prenom_de(null) as v`)).toEqual({ v: "Quelqu'un" })
   })

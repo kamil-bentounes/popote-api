@@ -21,9 +21,9 @@ describe('le solde d’une année à deux', () => {
   it('se répartit selon ce que chacun a porté sur l’année, pas selon les parts de décembre', async () => {
     await regleLHeure('2027-01-05T10:00:00+01:00')
     const f = await foyerSolo('solde-part', { revenu: 300_000 })
-    const thauba = await membre(f, 'Thauba', { revenu: 300_000, arrivee: '2026-11-01', depuis: '2026-11-01' })
+    const lea = await membre(f, 'Léa', { revenu: 300_000, arrivee: '2026-11-01', depuis: '2026-11-01' })
     const entretien = await poseCharge(f, { libelle: 'Entretien auto', cents: 50_004,
-      mode: 'mis_de_cote', commun: true, participants: [f.userId, thauba.userId] })
+      mode: 'mis_de_cote', commun: true, participants: [f.userId, lea.userId] })
     await ouvreLAnnee(f, entretien, 2026)
     await ouvre(f, '2026-12-01')
 
@@ -34,17 +34,17 @@ describe('le solde d’une année à deux', () => {
     const total = apercu[0].cents
 
     /* Ce que l'écran calculait : le prorata des parts de la ligne de décembre. */
-    const sommeDec = decembre[f.userId] + decembre[thauba.userId]
+    const sommeDec = decembre[f.userId] + decembre[lea.userId]
     const prorataKamil = Math.round(total * decembre[f.userId] / sommeDec)
 
     ou(await clore(f, { mois: '2026-12-01', mis: 0 }))
     const [solde] = await ajustements(entretien)
     const posees = await partsDe(solde.id)
-    expect(posees[f.userId] + posees[thauba.userId]).toBe(total)
+    expect(posees[f.userId] + posees[lea.userId]).toBe(total)
 
-    /* Thauba n'arrive qu'en novembre : Kamil a porté septembre et octobre seul, donc environ
+    /* Léa n'arrive qu'en novembre : Kamil a porté septembre et octobre seul, donc environ
        75 % de l'année. Sa part du solde dépasse de beaucoup les 50 % de décembre. */
-    expect(Math.abs(decembre[f.userId] - decembre[thauba.userId]), 'décembre est partagé à parts égales')
+    expect(Math.abs(decembre[f.userId] - decembre[lea.userId]), 'décembre est partagé à parts égales')
       .toBeLessThanOrEqual(1)
     expect(Math.abs(posees[f.userId] - prorataKamil), 'l’écart entre la base et le prorata de décembre')
       .toBeGreaterThan(2_000)

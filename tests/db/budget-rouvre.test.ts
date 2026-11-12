@@ -67,27 +67,27 @@ describe('revenir sur un mois', () => {
 
   it('le versement d’un membre parti reste dans la poche, et son choix disparaît', async () => {
     const { f, poche } = await foyerDOctobre('rouvre-parti')
-    const thauba = await membre(f, 'Thauba', { revenu: 240_000 })
+    const lea = await membre(f, 'Léa', { revenu: 210_000 })
     const r = ou(await clore(f, { poche })) as { cloture: string }
     // Son choix, tel que le lot 4 le posera : un versement à son nom.
     const v = ou(await admin().from('versement_epargne').insert({
-      household_id: f.householdId, poche_id: poche, user_profile_id: thauba.userId,
+      household_id: f.householdId, poche_id: poche, user_profile_id: lea.userId,
       montant_cents: 20_000, motif: 'balayage' }).select().single()) as { id: string }
     ou(await admin().from('cloture_choix').insert({
-      cloture_id: r.cloture, household_id: f.householdId, user_profile_id: thauba.userId,
+      cloture_id: r.cloture, household_id: f.householdId, user_profile_id: lea.userId,
       reste_cents: 20_000, mis_de_cote_cents: 20_000, poche_id: poche, versement_id: v.id,
     }).select())
-    ou(await admin().from('user_profile').delete().eq('id', thauba.userId).select())
+    ou(await admin().from('user_profile').delete().eq('id', lea.userId).select())
 
-    // Thauba a rejoint le foyer avant la clôture : il partage les communes, la
+    // Léa a rejoint le foyer avant la clôture : il partage les communes, la
     // part de Kamil baisse, son reste monte. Le reste de Kamil est donc lu, pas recalculé ici.
     const miens = (await choixDe(f)).mis_de_cote_cents
     expect(miens).toBeGreaterThan(432_500 - 142_867)
     expect(await dansLaPoche(poche)).toBe(miens + 20_000)
     ou(await f.client.rpc('rouvre_le_mois', { le_mois: '2026-10-01' }))
     expect((await admin().from('versement_epargne').select('id').eq('id', v.id)).data,
-      'l’argent de Thauba est sorti de la poche').toHaveLength(1)
-    expect(await dansLaPoche(poche), 'seul le versement de Thauba reste, à 200 €').toBe(20_000)
+      'l’argent de Léa est sorti de la poche').toHaveLength(1)
+    expect(await dansLaPoche(poche), 'seul le versement de Léa reste, à 200 €').toBe(20_000)
     expect((await admin().from('cloture_choix').select('user_profile_id')
       .eq('cloture_id', r.cloture)).data).toEqual([])
   })

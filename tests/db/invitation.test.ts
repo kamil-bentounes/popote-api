@@ -296,7 +296,7 @@ describe('le lien suffit', () => {
   })
 
   it('elle choisit son mot de passe, son compte naît, elle est dans le foyer', async () => {
-    const email = `thauba-${Date.now()}@fumee.test`
+    const email = `lea-${Date.now()}@fumee.test`
     const inv = await inviteChez(hote, email)
 
     const res = await creeSonCompte(inv.token, MDP)

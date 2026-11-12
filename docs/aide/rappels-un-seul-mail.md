@@ -34,7 +34,7 @@ Plusieurs charges annuelles qui tombent le même jour : un seul mail, qui les li
 
 ## Clôturer le mois
 
-Le mail du dernier jour du mois te prévient que tu pourras clôturer le lendemain. La clôture est refusée tant qu’une autre personne du foyer n’a pas posé son revenu de ce mois : le mail le dit alors (« Thauba doit encore poser son revenu de novembre ») au lieu de promettre la clôture.
+Le mail du dernier jour du mois te prévient que tu pourras clôturer le lendemain. La clôture est refusée tant qu’une autre personne du foyer n’a pas posé son revenu de ce mois : le mail le dit alors (« Léa doit encore poser son revenu de novembre ») au lieu de promettre la clôture.
 
 ## Les exemples
 

@@ -3,7 +3,7 @@
  *
  * Ce n'est pas l'écran du mois. Le mois vit de LIGNES que la base fait naître et fige (§ 4.1) ; le mois type
  * se calcule sur les CHARGES telles qu'elles sont posées, pour un mois donné — y compris celui qui n'a pas
- * encore commencé (Kamil et Thauba ont tout posé en octobre pour un budget qui part en novembre, et l'écran ne
+ * encore commencé (Kamil et Léa ont tout posé en octobre pour un budget qui part en novembre, et l'écran ne
  * leur disait que « Pas encore »).
  *
  * Le partage est celui de la base : les parts du foyer viennent de `parts_du_foyer` (prorata des revenus,

@@ -2,7 +2,7 @@
 -- L'ARRIVÉE DU SECOND MEMBRE, CORRIGÉE
 --
 -- Une revue a rejoué le scénario réel — Kamil configure seul en septembre,
--- Thauba s'inscrit le 1er octobre — et a trouvé quatre défauts en base. Tous
+-- Léa s'inscrit le 1er octobre — et a trouvé quatre défauts en base. Tous
 -- portent sur le même moment : celui où quelqu'un entre.
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -11,7 +11,7 @@
 -- Il disait : « commune si plus d'un participant, OU si le foyer ne compte
 -- qu'une personne ». Or un foyer solo est précisément le cas de Kamil : ses
 -- trois charges perso — mensualité de prêt, forfait mobile, salle de sport —
--- devenaient communes, et Thauba y serait entrée à son inscription.
+-- devenaient communes, et Léa y serait entrée à son inscription.
 --
 -- La production n'avait aucune charge au moment où c'est passé, donc rien à
 -- réparer ; mais la règle, elle, doit être juste : ce qui dit « commune »,
@@ -25,7 +25,7 @@ where commun
 
 -- ── 2 · Le refige ne touchait QUE le mois courant ─────────────────────────
 --
--- Kamil ouvre septembre ET octobre le 22 septembre ; Thauba s'inscrit. Le
+-- Kamil ouvre septembre ET octobre le 22 septembre ; Léa s'inscrit. Le
 -- trigger refigeait septembre — et laissait octobre à 100 % Kamil, loyer
 -- compris, définitivement. Rien ne le rattrapait, sauf si elle saisissait un
 -- revenu par hasard.

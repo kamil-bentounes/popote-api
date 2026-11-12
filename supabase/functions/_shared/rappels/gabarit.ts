@@ -168,7 +168,7 @@ export function html(c: Contenu): string {
 ${carte(c)}
 <tr><td class="pad" style="padding:26px 24px 0;font-family:${SANS};font-size:13px;line-height:20px;color:${DOUX}">
   ${echappe(c.raison)} <a href="${echappe(c.reglages)}" style="color:${HERBE};font-weight:600;white-space:nowrap">Régler mes rappels</a><br>
-  Popote, la cuisine et le budget de Kamil et Thauba.
+  Popote, la cuisine et le budget de Kamil et Léa.
 </td></tr>
 </table></td></tr></table></body></html>`)
 }
@@ -194,7 +194,7 @@ export function texte(c: Contenu): string {
     c.carte.note ? `\n${c.carte.note}` : '',
     '',
     `${c.raison} Régler mes rappels : ${c.reglages}`,
-    'Popote, la cuisine et le budget de Kamil et Thauba.',
+    'Popote, la cuisine et le budget de Kamil et Léa.',
   ].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n').trim() + '\n'
 }
 

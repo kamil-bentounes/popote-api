@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 0070 · Un foyer existe : on n'en crée plus un second par mégarde
 --
--- Capturé : une personne authentifiée SANS foyer — Thauba qui se connecte sans
+-- Capturé : une personne authentifiée SANS foyer — Léa qui se connecte sans
 -- ouvrir son lien d'invitation, ou après l'avoir laissé expirer — obtient
 -- « Créer le foyer » en bouton PRINCIPAL, vert, pleine largeur. L'avertissement
 -- « si quelqu'un t'a déjà invitée, ouvre plutôt le lien reçu par e-mail » est en

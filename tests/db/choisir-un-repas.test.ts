@@ -9,7 +9,7 @@ import { admin, makeActor, type Actor } from './helpers/db'
 
 let kamil: Actor
 let autre: Actor
-let thauba: { client: ReturnType<typeof createClient>; userId: string }
+let lea: { client: ReturnType<typeof createClient>; userId: string }
 const db = admin()
 
 /* Les jours sont les vrais : `p_today` est borné à ±1 jour de la date de Paris de la base (0125). Une case est unique
@@ -27,18 +27,18 @@ const nouveauPlat = () => `Plat ${Date.now()}-${++plat}`
 beforeAll(async () => {
   kamil = await makeActor('choix-kamil')
   autre = await makeActor('choix-autre')
-  const email = `choix-thauba-${Date.now()}@test.local`
+  const email = `choix-lea-${Date.now()}@test.local`
   const { data: u, error } = await db.auth.admin.createUser({ email, password: 'test-password-12345', email_confirm: true })
   expect(error).toBeNull()
   const { error: pe } = await db.from('user_profile')
-    .insert({ id: u!.user.id, household_id: kamil.householdId, display_name: 'Thauba' })
+    .insert({ id: u!.user.id, household_id: kamil.householdId, display_name: 'Léa' })
   expect(pe).toBeNull()
   const client = createClient(process.env.VITE_SUPABASE_URL!, process.env.VITE_SUPABASE_ANON_KEY!, { auth: { persistSession: false } })
   expect((await client.auth.signInWithPassword({ email, password: 'test-password-12345' })).error).toBeNull()
-  thauba = { client, userId: u!.user.id }
+  lea = { client, userId: u!.user.id }
 })
 
-type Spec = { pour?: 'kamil' | 'thauba' | null; expire?: number; expireLe?: string; lieu?: 'frigo' | 'congelateur'; etat?: string }
+type Spec = { pour?: 'kamil' | 'lea' | null; expire?: number; expireLe?: string; lieu?: 'frigo' | 'congelateur'; etat?: string }
 async function parts(label: string, specs: Spec[], foyer = kamil.householdId) {
   const { data, error } = await db.from('portion').insert(specs.map(s => {
     const froid = s.lieu === 'congelateur'
@@ -46,7 +46,7 @@ async function parts(label: string, specs: Spec[], foyer = kamil.householdId) {
       household_id: foyer, label, grams: 500, kcal: 600, protein_g: 40, fiber_g: 5, carb_g: 60, fat_g: 20,
       location: s.lieu ?? 'frigo', state: s.etat ?? 'au_frais',
       frozen_at: froid ? new Date().toISOString() : null,
-      for_user_id: s.pour === 'kamil' ? kamil.userId : s.pour === 'thauba' ? thauba.userId : null,
+      for_user_id: s.pour === 'kamil' ? kamil.userId : s.pour === 'lea' ? lea.userId : null,
       expires_at: s.expireLe ?? new Date(Date.now() + (s.expire ?? 2) * 86_400_000).toISOString(),
     }
   })).select()
@@ -63,9 +63,9 @@ async function pose(portionId: string | null, qui: string, jour: string, meal: s
 }
 const lePlat = (label: string, lieu = 'frigo', etat = 'au_frais') =>
   ({ type: 'plat', recipe_id: null, label, location: lieu, state: etat })
-const choisit = (c: Actor['client'] | typeof thauba.client, jour: string, meal: string, users: string[], choix: object, today = aujourdhui()) =>
+const choisit = (c: Actor['client'] | typeof lea.client, jour: string, meal: string, users: string[], choix: object, today = aujourdhui()) =>
   c.rpc('choisir_un_repas', { p_day: jour, p_meal: meal, p_users: users, p_today: today, p_choix: choix })
-const deux = () => [kamil.userId, thauba.userId]
+const deux = () => [kamil.userId, lea.userId]
 const caseDe = async (qui: string, jour: string, meal: string) =>
   (await db.from('meal_slot').select('*').eq('user_profile_id', qui).eq('day', jour).eq('meal', meal).maybeSingle()).data
 const extrasDe = async (slotId: string) => (await db.from('meal_extra').select('*').eq('meal_slot_id', slotId)).data!
@@ -73,42 +73,42 @@ const extrasDe = async (slotId: string) => (await db.from('meal_extra').select('
 describe('choisir un plat pour deux', () => {
   it('une barquette par personne, la plus pressée d’abord, la sienne avant celle de personne', async () => {
     const label = nouveauPlat()
-    const [tard, deThauba, deTous, deKamil] = await parts(label, [
-      { expire: 9 }, { pour: 'thauba', expire: 5 }, { pour: null, expire: 3 }, { pour: 'kamil', expire: 7 },
+    const [tard, deLea, deTous, deKamil] = await parts(label, [
+      { expire: 9 }, { pour: 'lea', expire: 5 }, { pour: null, expire: 3 }, { pour: 'kamil', expire: 7 },
     ])
     const r = await choisit(kamil.client, aujourdhui(), 'diner', deux(), lePlat(label))
     expect(r.error).toBeNull()
     expect(r.data.poses[kamil.userId], 'Kamil n’a pas reçu SA barquette').toBe(deKamil.id)
-    expect(r.data.poses[thauba.userId], 'Thauba n’a pas reçu SA barquette').toBe(deThauba.id)
+    expect(r.data.poses[lea.userId], 'Léa n’a pas reçu SA barquette').toBe(deLea.id)
     expect((await caseDe(kamil.userId, aujourdhui(), 'diner'))!.portion_id).toBe(deKamil.id)
-    expect((await caseDe(thauba.userId, aujourdhui(), 'diner'))!.portion_id).toBe(deThauba.id)
+    expect((await caseDe(lea.userId, aujourdhui(), 'diner'))!.portion_id).toBe(deLea.id)
     /* Il reste deux barquettes pour personne : la plus pressée part la première (celle de 1 jour, pas celle de 5). */
     const suite = await choisit(kamil.client, jourDans(1), 'dejeuner', [kamil.userId], lePlat(label))
     expect(suite.data.poses[kamil.userId], 'la moins pressée est partie avant la plus pressée').toBe(deTous.id)
-    const apres = await choisit(thauba.client, jourDans(2), 'dejeuner', [thauba.userId], lePlat(label))
-    expect(apres.data.poses[thauba.userId]).toBe(tard.id)
+    const apres = await choisit(lea.client, jourDans(2), 'dejeuner', [lea.userId], lePlat(label))
+    expect(apres.data.poses[lea.userId]).toBe(tard.id)
   })
 
   it('celle de personne ensuite, la plus pressée d’abord ; celle d’un autre seulement s’il n’y a rien d’autre', async () => {
     const label = nouveauPlat()
-    const [tard, tot, deThauba] = await parts(label, [{ pour: null, expire: 5 }, { pour: null, expire: 1 }, { pour: 'thauba', expire: 1 }])
-    // Kamil seul : celle de personne la plus pressée, jamais celle de Thauba.
+    const [tard, tot, deLea] = await parts(label, [{ pour: null, expire: 5 }, { pour: null, expire: 1 }, { pour: 'lea', expire: 1 }])
+    // Kamil seul : celle de personne la plus pressée, jamais celle de Léa.
     const a = await choisit(kamil.client, aujourdhui(), 'dejeuner', [kamil.userId], lePlat(label))
     expect(a.data.poses[kamil.userId]).toBe(tot.id)
     const b = await choisit(kamil.client, aujourdhui(), 'diner', [kamil.userId], lePlat(label))
     expect(b.data.poses[kamil.userId]).toBe(tard.id)
-    // Plus rien pour personne : celle de Thauba en dernier recours.
+    // Plus rien pour personne : celle de Léa en dernier recours.
     const c = await choisit(kamil.client, jourDans(1), 'diner', [kamil.userId], lePlat(label))
-    expect(c.data.poses[kamil.userId]).toBe(deThauba.id)
+    expect(c.data.poses[kamil.userId]).toBe(deLea.id)
   })
 
-  it('toutes personnes confondues : la barquette de Thauba ne part pas chez Kamil tant qu’il en reste une pour Kamil', async () => {
+  it('toutes personnes confondues : la barquette de Léa ne part pas chez Kamil tant qu’il en reste une pour Kamil', async () => {
     const label = nouveauPlat()
-    // Celle de Thauba est la plus pressée ; deux pour personne, une pour Kamil.
-    const [deThauba, , deKamil] = await parts(label, [{ pour: 'thauba', expire: 1 }, { pour: null, expire: 2 }, { pour: 'kamil', expire: 3 }])
-    // Thauba passe EN PREMIER dans la demande : sa part, pas celle de Kamil.
-    const r = await choisit(kamil.client, aujourdhui(), 'diner', [thauba.userId, kamil.userId], lePlat(label))
-    expect(r.data.poses[thauba.userId]).toBe(deThauba.id)
+    // Celle de Léa est la plus pressée ; deux pour personne, une pour Kamil.
+    const [deLea, , deKamil] = await parts(label, [{ pour: 'lea', expire: 1 }, { pour: null, expire: 2 }, { pour: 'kamil', expire: 3 }])
+    // Léa passe EN PREMIER dans la demande : sa part, pas celle de Kamil.
+    const r = await choisit(kamil.client, aujourdhui(), 'diner', [lea.userId, kamil.userId], lePlat(label))
+    expect(r.data.poses[lea.userId]).toBe(deLea.id)
     expect(r.data.poses[kamil.userId]).toBe(deKamil.id)
   })
 
@@ -116,7 +116,7 @@ describe('choisir un plat pour deux', () => {
     const label = nouveauPlat()
     const [reclamee, vieille, libre] = await parts(label, [{ expire: 1 }, { expire: 2 }, { expire: 3 }])
     await pose(reclamee.id, kamil.userId, jourDans(3), 'diner')
-    const passee = await pose(vieille.id, thauba.userId, jourDans(-4), 'diner')
+    const passee = await pose(vieille.id, lea.userId, jourDans(-4), 'diner')
     const r = await choisit(kamil.client, jourDans(1), 'dejeuner', deux(), lePlat(label))
     expect(r.error).toBeNull()
     expect(Object.values(r.data.poses).sort()).toEqual([vieille.id, libre.id].sort())
@@ -135,7 +135,7 @@ describe('choisir un plat pour deux', () => {
     const r = await choisit(kamil.client, jourDans(1), 'diner', deux(), lePlat(label))
     expect(r.error?.message).toMatch(/pas assez de parts libres/)
     expect(await caseDe(kamil.userId, jourDans(1), 'diner')).toBeNull()
-    expect(await caseDe(thauba.userId, jourDans(1), 'diner')).toBeNull()
+    expect(await caseDe(lea.userId, jourDans(1), 'diner')).toBeNull()
     // La seule libre reste libre pour une seule personne.
     const un = await choisit(kamil.client, jourDans(1), 'diner', [kamil.userId], lePlat(label))
     expect(un.data.poses[kamil.userId]).toBe(a.id)
@@ -192,12 +192,12 @@ describe('changer un repas', () => {
     await parts(a, [{ expire: 1 }, { expire: 2 }])
     await parts(b, [{ expire: 1 }])
     await choisit(kamil.client, jourDans(2), 'diner', deux(), lePlat(a))
-    const avantThauba = (await caseDe(thauba.userId, jourDans(2), 'diner'))!
+    const avantLea = (await caseDe(lea.userId, jourDans(2), 'diner'))!
     const r = await choisit(kamil.client, jourDans(2), 'diner', [kamil.userId], lePlat(b))
     expect(r.error).toBeNull()
     expect(r.data.liberees).toHaveLength(1)
-    expect((await caseDe(thauba.userId, jourDans(2), 'diner'))!.portion_id).toBe(avantThauba.portion_id)
-    expect((await caseDe(kamil.userId, jourDans(2), 'diner'))!.portion_id).not.toBe(avantThauba.portion_id)
+    expect((await caseDe(lea.userId, jourDans(2), 'diner'))!.portion_id).toBe(avantLea.portion_id)
+    expect((await caseDe(kamil.userId, jourDans(2), 'diner'))!.portion_id).not.toBe(avantLea.portion_id)
   })
 
   it('on peut changer le jour même', async () => {
@@ -216,13 +216,13 @@ describe('changer un repas', () => {
     const b = nouveauPlat()
     const [pa] = await parts(a, [{ expire: 1 }])
     await parts(b, [{ expire: 1 }, { expire: 2 }])
-    await pose(pa.id, thauba.userId, aujourdhui(), 'diner', 'mange')
+    await pose(pa.id, lea.userId, aujourdhui(), 'diner', 'mange')
     const r = await choisit(kamil.client, aujourdhui(), 'diner', deux(), lePlat(b))
-    expect(r.error?.message).toMatch(/Thauba a déjà mangé/)
+    expect(r.error?.message).toMatch(/Léa a déjà mangé/)
     expect(await caseDe(kamil.userId, aujourdhui(), 'diner')).toBeNull()
     const s = await choisit(kamil.client, aujourdhui(), 'diner', deux(), { type: 'saute' })
     expect(s.error?.message).toMatch(/déjà mangé/)
-    expect((await caseDe(thauba.userId, aujourdhui(), 'diner'))!.state).toBe('mange')
+    expect((await caseDe(lea.userId, aujourdhui(), 'diner'))!.state).toBe('mange')
   })
 
   it('un repas de plus de sept jours en arrière ne se note plus (hier se note : tests/semaine-hier.test.ts)', async () => {
@@ -237,7 +237,7 @@ describe('refus : barquette prise, mangée, jetée, d’un autre foyer', () => {
   it('toutes les barquettes sont réclamées : refusé, rien n’est écrit', async () => {
     const label = nouveauPlat()
     const [a] = await parts(label, [{ expire: 1 }])
-    await pose(a.id, thauba.userId, jourDans(4), 'diner')
+    await pose(a.id, lea.userId, jourDans(4), 'diner')
     const r = await choisit(kamil.client, jourDans(1), 'diner', [kamil.userId], lePlat(label))
     expect(r.error?.message).toMatch(/pas assez de parts libres/)
     expect(await caseDe(kamil.userId, jourDans(1), 'diner')).toBeNull()
@@ -281,7 +281,7 @@ describe('refus : barquette prise, mangée, jetée, d’un autre foyer', () => {
     const [seule] = await parts(label, [{ expire: 1 }])
     const [a, b] = await Promise.all([
       choisit(kamil.client, jourDans(1), 'dejeuner', [kamil.userId], lePlat(label)),
-      choisit(thauba.client, jourDans(1), 'diner', [thauba.userId], lePlat(label)),
+      choisit(lea.client, jourDans(1), 'diner', [lea.userId], lePlat(label)),
     ])
     expect([a.error, b.error].filter(Boolean), 'exactement un refus').toHaveLength(1)
     const { data } = await db.from('meal_slot').select('user_profile_id').eq('portion_id', seule.id)
@@ -410,10 +410,10 @@ describe('la péremption : on préfère ce qui sera encore bon, et on dit le res
 
   it('on le dit pour chacun : seules les barquettes qui périment sont nommées', async () => {
     const label = nouveauPlat()
-    const [bonne, perime] = await parts(label, [{ pour: 'kamil', expire: 20 }, { pour: 'thauba', expire: 2 }])
+    const [bonne, perime] = await parts(label, [{ pour: 'kamil', expire: 20 }, { pour: 'lea', expire: 2 }])
     const r = await choisit(kamil.client, jourDans(10), 'diner', deux(), lePlat(label))
     expect(r.data.poses[kamil.userId]).toBe(bonne.id)
-    expect(r.data.perime_avant).toEqual([{ user_profile_id: thauba.userId, portion_id: perime.id, expires_at: expect.any(String) }])
+    expect(r.data.perime_avant).toEqual([{ user_profile_id: lea.userId, portion_id: perime.id, expires_at: expect.any(String) }])
   })
 })
 
@@ -421,7 +421,7 @@ describe('p_today vient du client : borné à un jour de la date de Paris', () =
   it('un p_today forgé est refusé et ne lâche aucune réclamation', async () => {
     const label = nouveauPlat()
     const [a] = await parts(label, [{ expire: 30 }, { expire: 31 }])
-    const reclamation = await pose(a.id, thauba.userId, jourDans(3), 'diner')
+    const reclamation = await pose(a.id, lea.userId, jourDans(3), 'diner')
     for (const forge of [jourDans(10), jourDans(-5), jourDans(2), jourDans(-2)]) {
       const r = await choisit(kamil.client, jourDans(forge < aujourdhui() ? 1 : 12), 'dejeuner', [kamil.userId], lePlat(label), forge)
       expect(r.error?.message, forge).toMatch(/date de l’appareil/)
@@ -443,11 +443,11 @@ describe('p_today vient du client : borné à un jour de la date de Paris', () =
   it('les réclamations qu’un jour passé lâche sont rendues', async () => {
     const label = nouveauPlat()
     const [a] = await parts(label, [{ expire: 30 }])
-    await pose(a.id, thauba.userId, jourDans(-4), 'diner')
+    await pose(a.id, lea.userId, jourDans(-4), 'diner')
     const r = await choisit(kamil.client, jourDans(1), 'dejeuner', [kamil.userId], lePlat(label))
     expect(r.error).toBeNull()
     expect(r.data.poses[kamil.userId]).toBe(a.id)
-    expect(r.data.lachees).toEqual([{ day: jourDans(-4), meal: 'diner', user_profile_id: thauba.userId }])
+    expect(r.data.lachees).toEqual([{ day: jourDans(-4), meal: 'diner', user_profile_id: lea.userId }])
     const rien = await choisit(kamil.client, jourDans(2), 'dejeuner', [kamil.userId], { type: 'saute' })
     expect(rien.data.lachees).toEqual([])
   })
@@ -465,7 +465,7 @@ describe('des personnes en double, et la grammaire', () => {
     /* Quatre noms, deux personnes : deux barquettes, ni plus ni moins. */
     const autre = nouveauPlat()
     await parts(autre, [{ expire: 20 }, { expire: 21 }])
-    const q = await choisit(kamil.client, jourDans(11), 'diner', [thauba.userId, kamil.userId, thauba.userId, kamil.userId], lePlat(autre))
+    const q = await choisit(kamil.client, jourDans(11), 'diner', [lea.userId, kamil.userId, lea.userId, kamil.userId], lePlat(autre))
     expect(q.error).toBeNull()
     expect(Object.keys(q.data.poses).sort()).toEqual(deux().sort())
   })
@@ -477,11 +477,11 @@ describe('des personnes en double, et la grammaire', () => {
     await pose(pa.id, kamil.userId, aujourdhui(), 'diner', 'mange')
     const un = await choisit(kamil.client, aujourdhui(), 'diner', deux(), lePlat(b))
     expect(un.error?.message).toMatch(/^[^,]+ a déjà mangé ce repas : on ne le change plus\.$/)
-    await pose(pb.id, thauba.userId, aujourdhui(), 'diner', 'mange')
+    await pose(pb.id, lea.userId, aujourdhui(), 'diner', 'mange')
     const ab = await choisit(kamil.client, aujourdhui(), 'diner', deux(), lePlat(b))
     const ba = await choisit(kamil.client, aujourdhui(), 'diner', deux().reverse(), lePlat(b))
     expect(ab.error?.message).toMatch(/ et .+ ont déjà mangé ce repas : on ne le change plus\.$/)
-    expect(ab.error?.message).toContain('Thauba')
+    expect(ab.error?.message).toContain('Léa')
     expect(ab.error?.message).not.toMatch(/ a déjà mangé/)
     expect(ba.error?.message, 'l’ordre des prénoms dépend de la demande').toBe(ab.error?.message)
   })

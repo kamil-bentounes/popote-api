@@ -13,7 +13,7 @@ import { bilanDuJour } from './front-fige/lib/semaine.ts'
 
 let kamil: Actor
 let autre: Actor
-let thauba: { client: ReturnType<typeof createClient>; userId: string }
+let lea: { client: ReturnType<typeof createClient>; userId: string }
 const db = admin()
 
 const parisAujourdhui = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' })
@@ -26,13 +26,13 @@ const nouveauPlat = () => `Annuler ${Date.now()}-${++plat}`
 beforeAll(async () => {
   kamil = await makeActor('annule-kamil')
   autre = await makeActor('annule-autre')
-  const email = `annule-thauba-${Date.now()}@test.local`
+  const email = `annule-lea-${Date.now()}@test.local`
   const { data: u, error } = await db.auth.admin.createUser({ email, password: 'test-password-12345', email_confirm: true })
   expect(error).toBeNull()
-  expect((await db.from('user_profile').insert({ id: u!.user.id, household_id: kamil.householdId, display_name: 'Thauba' })).error).toBeNull()
+  expect((await db.from('user_profile').insert({ id: u!.user.id, household_id: kamil.householdId, display_name: 'Léa' })).error).toBeNull()
   const client = createClient(process.env.VITE_SUPABASE_URL!, process.env.VITE_SUPABASE_ANON_KEY!, { auth: { persistSession: false } })
   expect((await client.auth.signInWithPassword({ email, password: 'test-password-12345' })).error).toBeNull()
-  thauba = { client, userId: u!.user.id }
+  lea = { client, userId: u!.user.id }
 })
 beforeEach(async () => {
   expect((await db.from('meal_slot').delete().eq('household_id', kamil.householdId)).error).toBeNull()
@@ -76,7 +76,7 @@ const mange = (c: { rpc: Actor['client']['rpc'] }, label: string, jour: string, 
     p_recipe: null as unknown as string, p_label: label, p_location: lieu, p_state: etat,
     p_day: jour, p_meal: meal, p_eaten_at: new Date().toISOString(),
   })
-const annule = (c: Actor['client'] | typeof thauba.client, id: string) => c.rpc('annule_mange', { p_case: id })
+const annule = (c: Actor['client'] | typeof lea.client, id: string) => c.rpc('annule_mange', { p_case: id })
 const caseDe = async (qui: string, jour: string, meal: string) =>
   (await db.from('meal_slot').select('*').eq('user_profile_id', qui).eq('day', jour).eq('meal', meal).maybeSingle()).data
 const part = async (id: string) => (await db.from('portion').select('*').eq('id', id).single()).data!
@@ -181,16 +181,16 @@ describe('annuler « mangé »', () => {
     const label = nouveauPlat()
     await parts(label, 4)
     expect((await mange(kamil.client, label, aujourdhui(), 'dejeuner')).error).toBeNull()
-    expect((await mange(thauba.client, label, aujourdhui(), 'dejeuner')).error).toBeNull()
+    expect((await mange(lea.client, label, aujourdhui(), 'dejeuner')).error).toBeNull()
     expect(await auFrigo(label)).toBe(2)
     const maCase = (await caseDe(kamil.userId, aujourdhui(), 'dejeuner'))!
-    const laSienne = (await caseDe(thauba.userId, aujourdhui(), 'dejeuner'))!
-    const refus = await annule(thauba.client, maCase.id)
+    const laSienne = (await caseDe(lea.userId, aujourdhui(), 'dejeuner'))!
+    const refus = await annule(lea.client, maCase.id)
     expect(refus.error?.message).toMatch(/Ce n’est pas ton repas/)
     expect((await caseDe(kamil.userId, aujourdhui(), 'dejeuner'))!.state).toBe('mange')
     expect(await auFrigo(label)).toBe(2)
     expect((await annule(kamil.client, maCase.id)).error).toBeNull()
-    const sienne = (await caseDe(thauba.userId, aujourdhui(), 'dejeuner'))!
+    const sienne = (await caseDe(lea.userId, aujourdhui(), 'dejeuner'))!
     expect(sienne.state).toBe('mange')
     expect(sienne.eaten_at).toBe(laSienne.eaten_at)
     expect((await part(laSienne.portion_id!)).state).toBe('mangee')
@@ -299,15 +299,15 @@ describe('annuler « mangé » : ce que la base garde', () => {
     const label = nouveauPlat()
     const [p] = await parts(label, 1)
     const a = await caseMangee(kamil.userId, aujourdhui(), 'dejeuner', p.id)
-    const b = await caseMangee(thauba.userId, aujourdhui(), 'dejeuner', p.id)
+    const b = await caseMangee(lea.userId, aujourdhui(), 'dejeuner', p.id)
     await db.from('portion').update({ state: 'mangee' }).eq('id', p.id)
     const r1 = await annule(kamil.client, a.id)
     expect(r1.error).toBeNull()
     expect(r1.data).toMatchObject({ rendue: false })
     expect((await part(p.id)).state, 'l’autre personne l’a notée : elle reste mangée').toBe('mangee')
     expect((await caseDe(kamil.userId, aujourdhui(), 'dejeuner'))!.state).toBe('prevu')
-    expect((await caseDe(thauba.userId, aujourdhui(), 'dejeuner'))!.state).toBe('mange')
-    const r2 = await annule(thauba.client, b.id)
+    expect((await caseDe(lea.userId, aujourdhui(), 'dejeuner'))!.state).toBe('mange')
+    const r2 = await annule(lea.client, b.id)
     expect(r2.data).toMatchObject({ rendue: true, state: 'au_frais' })
     expect((await part(p.id)).state).toBe('au_frais')
   })

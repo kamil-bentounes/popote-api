@@ -28,7 +28,7 @@ Ton profil donne à l’appli ton prénom, ton revenu et ta date d’entrée dan
 ## Les trois champs
 
 - **« Ton prénom »** : 40 caractères au plus. Les autres le lisent sur chaque ligne de charge. Vide, il s’affiche « Sans prénom ».
-- **« Ton revenu net mensuel (€) »** : après impôt (2 400 ou 2 400,50). Il ne sert qu’à calculer votre partage du budget, et **le foyer le voit**. Sous 100 € par mois, l’appli demande « Tu déclares 0,50 € par mois. C’est bien ça ? » (avec ton montant) : « Oui, c’est ça » ou « Non, je corrige ». Zéro est refusé.
+- **« Ton revenu net mensuel (€) »** : après impôt (2 500 ou 2 500,50). Il ne sert qu’à calculer votre partage du budget, et **le foyer le voit**. Sous 100 € par mois, l’appli demande « Tu déclares 0,50 € par mois. C’est bien ça ? » (avec ton montant) : « Oui, c’est ça » ou « Non, je corrige ». Zéro est refusé.
 - **« Ton arrivée dans le foyer »** : le jour à partir duquel tu habites là. C’est elle qui décide des mois que tu partages. Au plus deux ans à l’avance (au-delà, la base refuse).
 
 « Enregistrer » ne s’allume que quand les trois champs sont remplis.

@@ -37,10 +37,10 @@ async function active(userId: string, type: string, actif = true) {
 }
 
 type Duo = { k: Foyer; t: Actor }
-/** Un foyer de deux : Kamil (revenu posé) et Thauba (sans revenu, sauf demande). */
-async function duo(o: { revenuThauba?: number } = {}): Promise<Duo> {
-  const k = await foyerSolo('Kamil', { revenu: 370_000 })
-  const t = await membre(k, 'Thauba', o.revenuThauba ? { revenu: o.revenuThauba } : {})
+/** Un foyer de deux : Kamil (revenu posé) et Léa (sans revenu, sauf demande). */
+async function duo(o: { revenuLea?: number } = {}): Promise<Duo> {
+  const k = await foyerSolo('Kamil', { revenu: 310_000 })
+  const t = await membre(k, 'Léa', o.revenuLea ? { revenu: o.revenuLea } : {})
   return { k, t }
 }
 
@@ -78,13 +78,13 @@ describe('les réglages : chacun les siens', () => {
 
     const kamil = ou(await d.k.client.from('rappel_reglage').select('user_id, type, actif'))
     expect(kamil).toEqual([{ user_id: d.k.userId, type: 'sortir_du_congelateur', actif: true }])
-    const thauba = ou(await d.t.client.from('rappel_reglage').select('user_id, type, actif'))
-    expect(thauba).toEqual([{ user_id: d.t.userId, type: 'choisir_les_repas', actif: true }])
+    const lea = ou(await d.t.client.from('rappel_reglage').select('user_id, type, actif'))
+    expect(lea).toEqual([{ user_id: d.t.userId, type: 'choisir_les_repas', actif: true }])
   })
 
   it('un membre n’écrit pas pour l’autre (même foyer)', async () => {
     const r = await d.k.client.from('rappel_reglage').insert({ user_id: d.t.userId, type: 'noter_les_depenses', actif: true })
-    expect(r.error, 'Kamil a écrit un réglage pour Thauba').not.toBeNull()
+    expect(r.error, 'Kamil a écrit un réglage pour Léa').not.toBeNull()
 
     /* Mettre à jour ou supprimer la ligne de l'autre : la RLS la lui cache, rien n'est touché. */
     const maj = ou(await d.k.client.from('rappel_reglage').update({ actif: false })
@@ -215,8 +215,8 @@ describe('sortir_du_congelateur : la veille à 19 h', () => {
       expect(w.n, 'quatre wraps, regroupés en un plat').toBe(4)
       expect([...w.portion_ids].sort()).toEqual([wraps[0].id, wraps[1].id, wraps[2].id, wraps[3].id].sort())
       expect(w.repas).toEqual([
-        { meal: 'dejeuner', pour: ['Kamil', 'Thauba'] },
-        { meal: 'diner', pour: ['Kamil', 'Thauba'] },
+        { meal: 'dejeuner', pour: ['Kamil', 'Léa'] },
+        { meal: 'diner', pour: ['Kamil', 'Léa'] },
       ])
       expect(w.restant, 'il en restera trois au congélateur').toBe(3)
     }
@@ -442,7 +442,7 @@ describe('choisir_les_repas : le dimanche à 18 h, s’il reste des dîners vide
     const plat = await portion(f, { label: 'Pizza' })
     for (const j of jours) await repas(f, d.k.userId, j, 'diner', null, 'saute')
     void plat
-    // Kamil a tout répondu, Thauba rien : seule Thauba est relancée.
+    // Kamil a tout répondu, Léa rien : seule Léa est relancée.
     const dus = await du(DIM_18H, [d.k.userId, d.t.userId])
     expect(dus.map(x => x.user_id)).toEqual([d.t.userId])
     expect(dus[0].donnees.vides).toBe(7)
@@ -519,7 +519,7 @@ describe('noter_les_depenses : le dimanche à 20 h, si rien n’est noté depuis
     await active(d.k.userId, 'noter_les_depenses')
     await active(d.t.userId, 'noter_les_depenses')
     const dus = await du(DIM_20H, [d.k.userId, d.t.userId])
-    expect(dus.map(x => x.user_id), 'Thauba ne porte aucune ligne « au fil »').toEqual([d.k.userId])
+    expect(dus.map(x => x.user_id), 'Léa ne porte aucune ligne « au fil »').toEqual([d.k.userId])
     expect(await du('2030-06-08T18:00:00Z', [d.k.userId]), 'samedi').toEqual([])
   })
 
@@ -549,11 +549,11 @@ describe('confirmer_les_charges : le 1er à 9 h, les lignes du mois fini à conf
     const dus = await du(PREMIER_9H, ids)
     expect(dus.map(x => x.user_id).sort()).toEqual([...ids].sort())
     const kamil = dus.find(x => x.user_id === d.k.userId)!
-    const thauba = dus.find(x => x.user_id === d.t.userId)!
+    const lea = dus.find(x => x.user_id === d.t.userId)!
     expect(kamil.cle).toBe('2030-06')
     expect(kamil.donnees.n).toBe(2)
     expect((kamil.donnees.lignes as any[]).map(l => l.libelle)).toEqual(['Électricité', 'Internet'])
-    expect(thauba.donnees.n, 'Thauba ne porte que la moitié d’Internet').toBe(1)
+    expect(lea.donnees.n, 'Léa ne porte que la moitié d’Internet').toBe(1)
     expect(await du('2030-07-02T07:00:00Z', ids), 'le 2, ce n’est plus le jour').toEqual([])
   })
 
@@ -578,7 +578,7 @@ describe('confirmer_les_charges : le 1er à 9 h, les lignes du mois fini à conf
 describe('cloturer_le_mois : le dernier jour à 19 h, si le mois n’est pas clos', () => {
   const FIN_19H = '2030-06-30T17:00:00Z'
   it('dû pour qui a un revenu, une part et un mois ouvert', async () => {
-    const d = await duo()          // Thauba n'a pas de revenu
+    const d = await duo()          // Léa n'a pas de revenu
     await ligneDuMois(d, { libelle: 'Électricité', mois: '2030-06-01', facon: 'facture', parts: [d.k, d.t] })
     await ligneDuMois(d, { libelle: 'Loyer', mois: '2030-06-01', facon: 'fixe', parts: [d.k, d.t] })
     await active(d.k.userId, 'cloturer_le_mois')
@@ -587,7 +587,7 @@ describe('cloturer_le_mois : le dernier jour à 19 h, si le mois n’est pas clo
 
     expect(await du('2030-06-30T16:59:00Z', ids), '18 h 59').toEqual([])
     const dus = await du(FIN_19H, ids)
-    expect(dus.map(x => x.user_id), 'Thauba n’a pas posé de revenu : on ne lui parle pas de clôture').toEqual([d.k.userId])
+    expect(dus.map(x => x.user_id), 'Léa n’a pas posé de revenu : on ne lui parle pas de clôture').toEqual([d.k.userId])
     expect(dus[0].cle).toBe('2030-06')
     expect(dus[0].donnees.lignes).toBe(2)
     expect(dus[0].donnees.a_confirmer).toBe(1)
@@ -977,7 +977,7 @@ describe('L7 : les prénoms, normalisés partout', () => {
     expect(x.prenom).toBe('toi')
     // Lui-même, dans « pour qui », porte le prénom que le mail lui donne.
     const pour = ((x.donnees.plats as any[])[0].repas as any[])[0].pour as string[]
-    expect(pour.sort()).toEqual(['Thauba', 'toi'].sort())
+    expect(pour.sort()).toEqual(['Léa', 'toi'].sort())
   })
 
   it('l’AUTRE membre : un nom piégé arrive tel quel (premier mot), vide → « Quelqu’un » — l’échappement est celui du gabarit', async () => {
@@ -1002,41 +1002,41 @@ describe('L7 : les prénoms, normalisés partout', () => {
 
 describe('L8 : clôturer — le revenu d’un autre membre', () => {
   const FIN_19H = '2030-06-30T17:00:00Z'
-  async function leMois(o: { revenuThauba?: boolean; arriveeThauba?: string } = {}) {
+  async function leMois(o: { revenuLea?: boolean; arriveeLea?: string } = {}) {
     const d = await duo()
     await ligneDuMois(d, { libelle: 'Loyer', mois: '2030-06-01', facon: 'fixe', parts: [d.k, d.t] })
     await active(d.k.userId, 'cloturer_le_mois')
-    if (o.revenuThauba) {
+    if (o.revenuLea) {
       ou(await db.from('revenu').insert({
         household_id: d.k.householdId, user_profile_id: d.t.userId, net_mensuel_cents: 250_000, valid_from: '2030-01-01',
       }).select())
     }
-    if (o.arriveeThauba) ou(await db.from('user_profile').update({ entre_le: o.arriveeThauba }).eq('id', d.t.userId).select())
+    if (o.arriveeLea) ou(await db.from('user_profile').update({ entre_le: o.arriveeLea }).eq('id', d.t.userId).select())
     return d
   }
 
-  it('Thauba n’a pas posé son revenu : le mail le sait (« absent »), comme la clôture le refusera', async () => {
+  it('Léa n’a pas posé son revenu : le mail le sait (« absent »), comme la clôture le refusera', async () => {
     const d = await leMois()
     const [x] = await du(FIN_19H, [d.k.userId])
-    expect(x.donnees.absent).toBe('Thauba')
-    // C'est la garde de `cloture_le_mois` (0108) : « Thauba n'a pas encore posé son revenu : juin attend. »
+    expect(x.donnees.absent).toBe('Léa')
+    // C'est la garde de `cloture_le_mois` (0108) : « Léa n'a pas encore posé son revenu : juin attend. »
     const garde = readFileSync(new URL('../../supabase/migrations/0108_budget_cloture.sql', import.meta.url), 'utf8')
     expect(garde).toContain("n''a pas encore posé son revenu")
   })
 
   it('son revenu posé, plus d’absent', async () => {
-    const d = await leMois({ revenuThauba: true })
+    const d = await leMois({ revenuLea: true })
     const [x] = await du(FIN_19H, [d.k.userId])
     expect(x.donnees.absent).toBeNull()
   })
 
   it('arrivée après la fin du mois : elle ne compte pas', async () => {
-    // Un mois fini avant l'arrivée de Thauba (la base borne les arrivées à l'avenir proche : on joue en septembre 2026).
+    // Un mois fini avant l'arrivée de Léa (la base borne les arrivées à l'avenir proche : on joue en septembre 2026).
     const d = await duo()
     await ligneDuMois(d, { libelle: 'Loyer', mois: '2026-09-01', facon: 'fixe', parts: [d.k] })
     await active(d.k.userId, 'cloturer_le_mois')
     const fin = '2026-09-30T17:00:00Z'
-    expect((await du(fin, [d.k.userId]))[0].donnees.absent, 'elle est là en septembre').toBe('Thauba')
+    expect((await du(fin, [d.k.userId]))[0].donnees.absent, 'elle est là en septembre').toBe('Léa')
     ou(await db.from('user_profile').update({ entre_le: '2026-10-15' }).eq('id', d.t.userId).select())
     expect((await du(fin, [d.k.userId]))[0].donnees.absent, 'elle arrive en octobre').toBeNull()
   })

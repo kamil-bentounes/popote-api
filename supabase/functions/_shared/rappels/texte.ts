@@ -179,7 +179,7 @@ export function euros(cents: number): string {
   }).format(v)
 }
 
-/** « Kamil et Thauba », « vous deux », « toi » : pour qui, vu du destinataire. */
+/** « Kamil et Léa », « vous deux », « toi » : pour qui, vu du destinataire. */
 export function pourDit(pour: string[], destinataire: string): string {
   const noms = [...new Set(pour)]
   if (noms.length === 0) return ''

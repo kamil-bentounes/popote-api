@@ -35,13 +35,13 @@ const tient = (c: pg.Client, qui: Actor) =>
 /** Un compte d'authentification sans profil : l'arrivée viendra après. */
 async function compte(nom: string) {
   const u = ou(await admin().auth.admin.createUser({
-    email: `${nom}-${randomUUID()}@test.local`, password: 'test-password-12345',
+    email: `${nom.normalize('NFD').replace(/\p{M}/gu, '')}-${randomUUID()}@test.local`, password: 'test-password-12345',
     email_confirm: true }))
   return u.user!.id
 }
 /** L'arrivée d'un membre comme l'invitation la fait : par la clé de service. */
 const arrive = (f: Foyer, uid: string) => admin().from('user_profile').insert({
-  id: uid, household_id: f.householdId, display_name: 'Thauba', entre_le: '2026-01-01' }).select()
+  id: uid, household_id: f.householdId, display_name: 'Léa', entre_le: '2026-01-01' }).select()
 
 async function avecEntretien(nom: string) {
   const f = await foyerSolo(nom)
@@ -174,11 +174,11 @@ describe('un compte supprimé', () => {
   // Mutation : retirer `perform verrou_du_foyer(v_hh)` de delete_my_account (0112).
   it('pendant un « Revenir dessus » : pas d’interblocage', async () => {
     const { f, poche } = await foyerDOctobre('ib-rouvre')
-    const thauba = await membre(f, 'Thauba', { revenu: 240_000 })
+    const lea = await membre(f, 'Léa', { revenu: 210_000 })
     ou(await clore(f, { poche }))
     const s1 = await session(f)
     await s1.query(`select public.rouvre_le_mois('2026-10-01')`)
-    const dep = suivie(thauba.client.rpc('delete_my_account'))
+    const dep = suivie(lea.client.rpc('delete_my_account'))
     await attends(800)
     expect(dep.fini).toBe(false)
     await s1.query('commit')
@@ -187,10 +187,10 @@ describe('un compte supprimé', () => {
 
   it('pendant une ouverture du mois : pas d’interblocage', async () => {
     const { f } = await foyerDOctobre('ib-ouverture')
-    const thauba = await membre(f, 'Thauba', { revenu: 240_000 })
+    const lea = await membre(f, 'Léa', { revenu: 210_000 })
     const s1 = await session(f)
     await s1.query(`select public.ouvre_le_mois('2026-11-01')`)
-    const dep = suivie(thauba.client.rpc('delete_my_account'))
+    const dep = suivie(lea.client.rpc('delete_my_account'))
     await attends(800)
     expect(dep.fini).toBe(false)
     await s1.query('commit')

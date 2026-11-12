@@ -1,8 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- QUE PERSONNE NE SOIT DÉSAVANTAGÉ
 --
--- Un audit arithmétique a simulé douze mois avec les vrais revenus du foyer —
--- 3 700 € et 2 400 €, quinze charges, 181 dépenses, 32 298 € — et mesuré ce
+-- Un audit arithmétique a simulé douze mois avec des revenus d'exemple —
+-- 3 000 € et 2 000 €, quinze charges, 181 dépenses, 32 000 € — et mesuré ce
 -- qu'on redoutait : le centime de l'arrondi tombe TOUJOURS du même côté.
 -- 104,52 centimes sur l'année, sur 157 lignes partagées, sans une seule
 -- exception. Plus deux défauts durs. Cette migration règle les quatre.

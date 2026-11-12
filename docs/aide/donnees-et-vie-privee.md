@@ -3,7 +3,7 @@ id: donnees-et-vie-privee
 titre: Tes données et ta vie privée
 ecrans: [/reglages]
 questions:
-  - Thauba voit-elle mon revenu ?
+  - Léa voit-elle mon revenu ?
   - Que voit l’intelligence artificielle de mes données ?
   - L’IA voit-elle mes revenus ?
   - Comment exporter mes données ?

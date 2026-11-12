@@ -9,7 +9,7 @@ beforeAll(async () => { alice = await makeActor('alice-aide'); bob = await makeA
 
 const signal = (a: Actor, o: Partial<Record<string, unknown>> = {}) => ({
   household_id: a.householdId, user_profile_id: a.userId,
-  question: 'Comment inviter Thauba ?', reponse: 'Sur l’accueil, touche « Inviter quelqu’un ».',
+  question: 'Comment inviter Léa ?', reponse: 'Sur l’accueil, touche « Inviter quelqu’un ».',
   pages: ['foyer-inviter'], ...o,
 })
 
@@ -18,7 +18,7 @@ describe('aide_signalement', () => {
     const { error } = await alice.client.from('aide_signalement').insert(signal(alice))
     expect(error).toBeNull()
     const { data } = await alice.client.from('aide_signalement').select('question, pages')
-    expect(data).toEqual([{ question: 'Comment inviter Thauba ?', pages: ['foyer-inviter'] }])
+    expect(data).toEqual([{ question: 'Comment inviter Léa ?', pages: ['foyer-inviter'] }])
   })
 
   it('un autre foyer ne voit rien', async () => {
@@ -41,7 +41,7 @@ describe('aide_signalement', () => {
     await alice.client.from('aide_signalement').update({ question: 'autre' }).eq('id', id)
     await alice.client.from('aide_signalement').delete().eq('id', id)
     const { data } = await admin().from('aide_signalement').select('question').eq('id', id).single()
-    expect(data?.question).toBe('Comment inviter Thauba ?')
+    expect(data?.question).toBe('Comment inviter Léa ?')
   })
 
   it('refuse le vide et le roman', async () => {

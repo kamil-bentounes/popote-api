@@ -27,7 +27,7 @@ Une charge est une dépense qui revient (loyer, assurance, taxe foncière). Le b
 ## Comment faire
 
 1. Dans « Ou une par une », cherche (champ « Chercher : « assurance », « mobile »… ») ou ouvre une rubrique (Logement, Auto, Abonnements…), puis touche la ligne. Rien ne correspond ? Touche « Autre chose », sous les rubriques.
-2. Remplis « Quoi » (80 caractères au plus) et « Combien (€) », au-dessus de 0 € et au plus 1 000 000 €. C’est le montant de la période : 1 450 € pour une taxe foncière annuelle, pas 120 €.
+2. Remplis « Quoi » (80 caractères au plus) et « Combien (€) », au-dessus de 0 € et au plus 1 000 000 €. C’est le montant de la période : 1 200 € pour une taxe foncière annuelle, pas 100 €.
 3. Choisis « Catégorie » : Vie courante, Maison, Crédits, Auto, Abonnements, Santé, Impôts ou Autre. Le catalogue la propose selon la section.
 4. Choisis « Comment elle se paie » :
    - « Fixe » : le même montant chaque mois (un loyer).

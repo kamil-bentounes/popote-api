@@ -182,7 +182,7 @@ export function estLaCeMois(m: { entre_le?: string | null }, mois: string): bool
 /**
  * Le mois où un revenu posé AUJOURD'HUI prend effet : le courant, ou le mois d'arrivée quand elle est à
  * venir. Daté du mois courant, le revenu de qui n'arrive qu'en novembre donnait à octobre un reste plein
- * (« Il te reste 2 400 € ») et un « Octobre est à clôturer » sur un mois qui n'est pas le sien.
+ * (« Il te reste 2 100 € ») et un « Octobre est à clôturer » sur un mois qui n'est pas le sien.
  */
 export function moisDeDepart(entreLe: string | null | undefined, courant: string): string {
   const arrivee = entreLe ? `${entreLe.slice(0, 7)}-01` : null
@@ -478,7 +478,7 @@ export function ligneDuHub(o: { aCloturer: string | null; aDire: number; noms?: 
  * Seul au foyer, tout le solde est le mien. À deux, elle n'est PAS lisible : l'aperçu ne rend
  * que le total de la charge, et la base répartit l'ajustement selon ce que chacun a porté sur
  * l'année (`recale_l_annee`, `porte_par`) — pas selon les parts de la ligne du mois. Au prorata
- * de décembre, Kamil lisait −83,34 € là où la base lui posait −125 € (Thauba arrivée en
+ * de décembre, Kamil lisait −83,34 € là où la base lui posait −125 € (Léa arrivée en
  * novembre : `tests/budget-solde-part.test.ts`). Plutôt qu'un faux chiffre, on n'en donne pas :
  * `incertain` dit que le reste est « avant les soldes ». Foyer pas lu : on ne sait pas si l'on
  * est seul, donc incertain aussi. Sans solde, rien à répartir : sûr.

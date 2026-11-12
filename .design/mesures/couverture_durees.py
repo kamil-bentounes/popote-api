@@ -124,7 +124,7 @@ def verbes_de(texte):
     return trouves
 
 urls = [l.strip().split('|')[1:] for l in open(
-    '/tmp/claude-1000/-home-kamil-PERSO-smart-receipe-scheduler/fd0290f1-2535-4343-888a-b55a0915f60d/scratchpad/sm.out')
+    'sm.out')
     if l.startswith('URL|')]
 
 lignes, freq, non_couvertes, ecartees = [], collections.Counter(), [], []

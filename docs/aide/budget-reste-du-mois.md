@@ -34,16 +34,16 @@ Ce que pèse une ligne :
 
 ## Exemple
 
-Revenu : 2 400 €. Tes parts de charges prévues : 1 750 €. Il te reste **650 €**. Parmi elles, « Courses » : 500 € prévus, dont ta part est de 60 %, soit 300 €.
+Revenu : 2 500 €. Tes parts de charges prévues : 1 750 €. Il te reste **750 €**. Parmi elles, « Courses » : 500 € prévus, dont ta part est de 60 %, soit 300 €.
 
-- Tu déclares 350 € de courses : rien ne bouge, 650 €. La ligne compte toujours ses 500 € prévus.
-- Tu déclares 650 € : la ligne compte 650 €, ta part passe à 390 € (+ 90 €). Il te reste **560 €**.
+- Tu déclares 350 € de courses : rien ne bouge, 750 €. La ligne compte toujours ses 500 € prévus.
+- Tu déclares 650 € : la ligne compte 650 €, ta part passe à 390 € (+ 90 €). Il te reste **660 €**.
 
 Le chiffre ne baisse donc que si tu dépasses le prévu. Si tu dépenses moins, la différence ne te revient qu'à la clôture.
 
 ## Ce que montre la carte
 
-- « sur 2 400 € de revenus » et « après 1 750 € de charges prévues » : c'est la somme de **tes** parts. Seul, c'est le total du foyer ; à deux, non.
+- « sur 2 500 € de revenus » et « après 1 750 € de charges prévues » : c'est la somme de **tes** parts. Seul, c'est le total du foyer ; à deux, non.
 - **« Il te manque »** quand le total dépasse ton revenu. Le chiffre est montré sans signe.
 - **La barre** : tes parts par catégorie, et un morceau « Reste », en pourcentages entiers qui font 100. Quand il te manque de l'argent, il n'y a pas de morceau « Reste ».
 

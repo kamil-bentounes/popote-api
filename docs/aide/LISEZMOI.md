@@ -10,7 +10,7 @@ contredit le code est fausse, pas le code.
 id: budget-charges            # identique au nom du fichier, sans .md ; minuscules, chiffres, tirets
 titre: Les charges            # court, tel qu'on le dirait à voix haute
 ecrans: [/charges]            # les routes de l'appli où cette page sert (voir src/App.tsx), peut être vide
-questions:                    # 3 à 6 questions comme Kamil ou Thauba les poseraient, avec leurs mots à eux
+questions:                    # 3 à 6 questions comme Kamil ou Léa les poseraient, avec leurs mots à eux
   - Comment ajouter la taxe foncière ?
 sources:                      # TOUS les fichiers dont dépend une affirmation de la page (code, migrations)
   - src/pages/Charges.tsx
@@ -33,7 +33,7 @@ que le code confirme), **ce que l'appli ne fait pas**.
 4. Un chiffre (30 jours, 20 dictées par mois…) vient du code, pas de la mémoire.
 5. Une négation (« l'appli ne sait pas… ») ne s'écrit que si on a cherché et qu'on n'a rien trouvé : le dire dans la
    page, par exemple « Il n'existe pas aujourd'hui de… ».
-6. Pas de secret, pas de clé, pas d'adresse d'API, pas de donnée réelle de Kamil ou de Thauba.
+6. Pas de secret, pas de clé, pas d'adresse d'API, pas de donnée réelle de Kamil ou de Léa.
 
 ## La péremption
 

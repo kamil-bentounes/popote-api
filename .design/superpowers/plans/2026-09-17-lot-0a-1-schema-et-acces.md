@@ -58,7 +58,7 @@
 - [ ] **Step 1 : Échafauder hors du dépôt racine, puis déplacer**
 
 ```bash
-cd /home/kamil/PERSO/smart-receipe-scheduler
+cd <racine du dépôt>
 npm create vite@latest .scaffold -- --template react-ts
 cp -r .scaffold/. .
 rm -rf .scaffold

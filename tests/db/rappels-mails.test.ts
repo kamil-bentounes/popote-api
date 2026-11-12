@@ -34,7 +34,7 @@ function donneesDe(type: TypeDeRappel): Record<string, unknown> {
         jour: '2030-06-12',
         plats: [{
           label: 'Wraps poulet', recipe_id: null, image_url: null, n: 4, portion_ids: [ID(1), ID(2), ID(3), ID(4)], restant: 3,
-          repas: [{ meal: 'dejeuner', pour: ['Kamil', 'Thauba'] }, { meal: 'diner', pour: ['Kamil', 'Thauba'] }],
+          repas: [{ meal: 'dejeuner', pour: ['Kamil', 'Léa'] }, { meal: 'diner', pour: ['Kamil', 'Léa'] }],
         }],
       }
     case 'barquette_perime':
@@ -58,7 +58,7 @@ function donneesDe(type: TypeDeRappel): Record<string, unknown> {
     case 'confirmer_les_charges':
       return {
         mois: '2030-06-01', n: 2,
-        lignes: [{ libelle: 'Électricité', montant_cents: 8240 }, { libelle: 'Internet', montant_cents: 3700 }],
+        lignes: [{ libelle: 'Électricité', montant_cents: 8240 }, { libelle: 'Internet', montant_cents: 4000 }],
       }
     case 'cloturer_le_mois':
       return { mois: '2030-06-01', lignes: 18, a_confirmer: 2, absent: null }
@@ -197,7 +197,7 @@ describe('le texte s’accorde au nombre', () => {
     expect(un.texte).toContain('Il n’en restera plus au congélateur.')
     expect(un.texte).toContain('pour toi')
 
-    const deux = sortirDe('Burger', 2, 1, ['Kamil', 'Thauba'])
+    const deux = sortirDe('Burger', 2, 1, ['Kamil', 'Léa'])
     expect(deux.sujet).toBe('Ce soir, sors 2 burgers du congélateur')
     expect(deux.texte).toContain('Il restera ensuite 1 burger au congélateur.')
     expect(deux.texte).toContain('pour vous deux')
@@ -247,7 +247,7 @@ describe('le texte s’accorde au nombre', () => {
     const m = construis('sortir_du_congelateur', {
       jour: '2030-06-12',
       plats: [
-        { label: 'Pizza', recipe_id: null, image_url: null, n: 2, portion_ids: [ID(1), ID(2)], restant: 0, repas: [{ meal: 'dejeuner', pour: ['Kamil', 'Thauba'] }] },
+        { label: 'Pizza', recipe_id: null, image_url: null, n: 2, portion_ids: [ID(1), ID(2)], restant: 0, repas: [{ meal: 'dejeuner', pour: ['Kamil', 'Léa'] }] },
         { label: 'Burger', recipe_id: null, image_url: null, n: 1, portion_ids: [ID(3)], restant: 4, repas: [{ meal: 'diner', pour: ['Kamil'] }] },
       ],
     }, ctx)
@@ -319,8 +319,8 @@ describe('le texte s’accorde au nombre', () => {
     expect(jourEnToutesLettres('2030-09-01')).toBe('dimanche 1er septembre')
     expect(deMois('2030-04-01')).toBe('d’avril')
     expect(deMois('2030-06-01')).toBe('de juin')
-    expect(pourDit(['Kamil', 'Thauba'], 'Kamil')).toBe('pour vous deux')
-    expect(pourDit(['Thauba'], 'Kamil')).toBe('pour Thauba')
+    expect(pourDit(['Kamil', 'Léa'], 'Kamil')).toBe('pour vous deux')
+    expect(pourDit(['Léa'], 'Kamil')).toBe('pour Léa')
     expect(pourDit(['Kamil'], 'Kamil')).toBe('pour toi')
     expect(pourDit(['Léa', 'Max', 'Zoé'], 'Kamil')).toBe('pour Léa, Max et Zoé')
     expect(pourDit([], 'Kamil')).toBe('')
@@ -551,11 +551,11 @@ describe('facture_annuelle : un mail par membre et par jour, les charges listée
 
 describe('cloturer_le_mois : le revenu qui manque', () => {
   it('un autre membre n’a pas posé son revenu : le mail le dit au lieu de promettre la clôture', () => {
-    const m = construis('cloturer_le_mois', { mois: '2030-11-01', lignes: 12, a_confirmer: 0, absent: 'Thauba' }, ctx)
-    expect(m.sujet).toBe('Novembre se termine : Thauba doit poser son revenu')
-    expect(m.texte).toContain('Thauba doit encore poser son revenu de novembre : tant que ce n’est pas fait, le mois ne peut pas être clôturé.')
+    const m = construis('cloturer_le_mois', { mois: '2030-11-01', lignes: 12, a_confirmer: 0, absent: 'Léa' }, ctx)
+    expect(m.sujet).toBe('Novembre se termine : Léa doit poser son revenu')
+    expect(m.texte).toContain('Léa doit encore poser son revenu de novembre : tant que ce n’est pas fait, le mois ne peut pas être clôturé.')
     expect(m.texte).not.toContain('Demain, tu pourras le clôturer')
-    expect(m.texte).toContain('Le revenu de novembre de Thauba')
+    expect(m.texte).toContain('Le revenu de novembre de Léa')
   })
   it('sans absent, la promesse reste ; « d’octobre » s’élide', () => {
     expect(construis('cloturer_le_mois', donneesDe('cloturer_le_mois'), ctx).texte).toContain('Demain, tu pourras le clôturer')
@@ -597,10 +597,10 @@ describe('les prénoms : normalisés partout, du destinataire à « pour qui »'
     const m = construis('sortir_du_congelateur', {
       jour: '2030-06-12',
       plats: [{ label: 'Wrap', recipe_id: null, image_url: null, n: 2, portion_ids: [ID(1), ID(2)], restant: 0,
-        repas: [{ meal: 'diner', pour: ['Thauba', piege] }] }],
+        repas: [{ meal: 'diner', pour: ['Léa', piege] }] }],
     }, ctx)
     expect(m.html).not.toContain('<img src=x')
-    expect(m.html).toContain('pour Thauba et &lt;img')
+    expect(m.html).toContain('pour Léa et &lt;img')
     expect(structure(m.html)).toBeNull()
     // Le premier mot seulement (comme la base) : « <img » — échappé, il ne devient jamais une balise.
     expect(m.sujet).not.toContain('Dupont')

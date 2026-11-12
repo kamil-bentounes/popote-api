@@ -3,7 +3,7 @@ id: foyer-inviter
 titre: Inviter quelqu’un dans le foyer
 ecrans: [/reglages]
 questions:
-  - Comment inviter Thauba ?
+  - Comment inviter Léa ?
   - L’invitation part par mail ?
   - Combien de temps le lien d’invitation marche ?
   - Le lien d’invitation a expiré, que faire ?
@@ -49,7 +49,7 @@ Puis :
 
 ## Exemple
 
-Tu écris l’adresse de Thauba, tu appuies sur « Créer l’invitation », tu copies le lien et tu le lui envoies sur WhatsApp. Elle l’ouvre sur son téléphone : voir la page « foyer-rejoindre ».
+Tu écris l’adresse de Léa, tu appuies sur « Créer l’invitation », tu copies le lien et tu le lui envoies sur WhatsApp. Elle l’ouvre sur son téléphone : voir la page « foyer-rejoindre ».
 
 ## Ce que l’appli ne fait pas
 

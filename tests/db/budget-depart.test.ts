@@ -1,7 +1,7 @@
 /**
  * Le départ d'un membre : le détail part, le total reste.
  *
- * Sans cela, après le départ de Thauba, Kamil lisait encore chacun de ses achats
+ * Sans cela, après le départ de Léa, Kamil lisait encore chacun de ses achats
  * « Pharmacie », datés et chiffrés.
  */
 import { randomUUID } from 'node:crypto'
@@ -19,34 +19,34 @@ afterAll(remetLHeure)
 describe('un membre part, le foyer reste', () => {
   it('ses saisies perso partent, mois clôturés compris ; les montants et ses versements restent',
     async () => {
-      const f = await foyerSolo('dep-thauba', { revenu: 300_000 })
-      const thauba = await membre(f, 'Thauba', { revenu: 300_000 })
+      const f = await foyerSolo('dep-lea', { revenu: 300_000 })
+      const lea = await membre(f, 'Léa', { revenu: 300_000 })
       const pharmacie = await poseCharge(f, { libelle: 'Pharmacie', cents: 2_000, mode: 'au_fil',
-                                              participants: [thauba.userId] })
+                                              participants: [lea.userId] })
       const courses = await poseCharge(f, { libelle: 'Courses', cents: 80_000, mode: 'au_fil',
-        commun: true, participants: [f.userId, thauba.userId] })
+        commun: true, participants: [f.userId, lea.userId] })
       await ouvre(f, '2026-09-01')
       await ouvre(f, '2026-10-01')
-      ou(await declare(thauba, (await ligne(pharmacie, '2026-09-01'))!.id, '2026-09-12', 1_200))
-      ou(await declare(thauba, (await ligne(pharmacie, '2026-10-01'))!.id, '2026-10-03', 800))
-      ou(await declare(thauba, (await ligne(courses, '2026-10-01'))!.id, '2026-10-05', 5_000))
+      ou(await declare(lea, (await ligne(pharmacie, '2026-09-01'))!.id, '2026-09-12', 1_200))
+      ou(await declare(lea, (await ligne(pharmacie, '2026-10-01'))!.id, '2026-10-03', 800))
+      ou(await declare(lea, (await ligne(courses, '2026-10-01'))!.id, '2026-10-05', 5_000))
       await clos(f, '2026-09-01')
       // Ses deux comptes perso, l'un archivé : c'est l'état de Kamil en prod.
       ou(await admin().from('compte').insert([
-        { household_id: f.householdId, nom: 'CA de Thauba', genre: 'perso', titulaire_id: thauba.userId },
-        { household_id: f.householdId, nom: 'Ancien CA', genre: 'perso', titulaire_id: thauba.userId,
+        { household_id: f.householdId, nom: 'CA de Léa', genre: 'perso', titulaire_id: lea.userId },
+        { household_id: f.householdId, nom: 'Ancien CA', genre: 'perso', titulaire_id: lea.userId,
           archive_le: '2026-06-01T00:00:00Z' },
       ]).select())
       // Son choix de clôture de septembre, et son versement.
       const poche = ou(await admin().from('poche_epargne').insert({
         household_id: f.householdId, libelle: 'Urgence', genre: 'urgence' }).select().single()) as { id: string }
       const v = ou(await admin().from('versement_epargne').insert({
-        household_id: f.householdId, poche_id: poche.id, user_profile_id: thauba.userId,
+        household_id: f.householdId, poche_id: poche.id, user_profile_id: lea.userId,
         montant_cents: 10_000, motif: 'balayage' }).select().single()) as { id: string }
       const k = ou(await admin().from('cloture').select('id').eq('household_id', f.householdId)
         .eq('mois', '2026-09-01').single()) as { id: string }
       ou(await admin().from('cloture_choix').insert({
-        cloture_id: k.id, household_id: f.householdId, user_profile_id: thauba.userId,
+        cloture_id: k.id, household_id: f.householdId, user_profile_id: lea.userId,
         reste_cents: 50_000, mis_de_cote_cents: 10_000, poche_id: poche.id, versement_id: v.id,
       }).select())
 
@@ -56,7 +56,7 @@ describe('un membre part, le foyer reste', () => {
       const avant = await total()
       const pharmacieDOctobre = (await ligne(pharmacie, '2026-10-01'))!.montant_cents
 
-      const { error } = await thauba.client.rpc('delete_my_account')
+      const { error } = await lea.client.rpc('delete_my_account')
       expect(error, `départ refusé : ${error?.message}`).toBeNull()
       /* Sa pharmacie, charge à elle seule, s'en va avec elle : sa ligne d'octobre,
          encore ouverte, disparaît. Rien d'autre ne bouge : un centime de plus ou de
@@ -75,40 +75,40 @@ describe('un membre part, le foyer reste', () => {
       expect(partagee).toEqual([{ saisi_par: null, montant_cents: 5_000 }])
       /* Les parts de la ligne gelée restent (`depense_part` n'a aucune clé vers
          le profil) : elles font encore 10 000 pb, donc la part de Kamil ne grossit
-         pas du départ de Thauba et aucun centime de Courses n'est créé ni perdu. */
+         pas du départ de Léa et aucun centime de Courses n'est créé ni perdu. */
       const { data: parts } = await admin().from('depense_part').select('part_bps')
         .eq('depense_id', (await ligne(courses, '2026-10-01'))!.id)
       expect(parts!.reduce((s, p) => s + p.part_bps, 0), 'les parts ne font plus 100 %')
         .toBe(10_000)
       const { data: choix } = await admin().from('cloture_choix')
-        .select('reste_cents, versement_id').eq('user_profile_id', thauba.userId)
+        .select('reste_cents, versement_id').eq('user_profile_id', lea.userId)
       expect(choix).toEqual([{ reste_cents: null, versement_id: v.id }])
-      expect((await admin().from('compte').select('id').eq('titulaire_id', thauba.userId)).data)
+      expect((await admin().from('compte').select('id').eq('titulaire_id', lea.userId)).data)
         .toEqual([])
     })
 
   it('sa charge perso s’archive si elle a une histoire, se supprime sinon ; celles de Kamil restent',
     async () => {
       const f = await foyerSolo('dep-charge-perso', { revenu: 300_000 })
-      const thauba = await membre(f, 'Thauba', { revenu: 300_000 })
+      const lea = await membre(f, 'Léa', { revenu: 300_000 })
       const pharmacie = await poseCharge(f, { libelle: 'Pharmacie', cents: 3_000, mode: 'au_fil',
-                                              participants: [thauba.userId] })
+                                              participants: [lea.userId] })
       const sport = await poseCharge(f, { libelle: 'Sport de Kamil', cents: 2_500, mode: 'fixe',
                                           participants: [f.userId] })
       const courses = await poseCharge(f, { libelle: 'Courses', cents: 80_000, mode: 'au_fil',
-        commun: true, participants: [f.userId, thauba.userId] })
+        commun: true, participants: [f.userId, lea.userId] })
       await ouvre(f, '2026-09-01')
       await ouvre(f, '2026-10-01')
-      ou(await declare(thauba, (await ligne(pharmacie, '2026-09-01'))!.id, '2026-09-12', 1_200))
+      ou(await declare(lea, (await ligne(pharmacie, '2026-09-01'))!.id, '2026-09-12', 1_200))
       await clos(f, '2026-09-01')
       // Posée après la clôture de septembre : aucune ligne clôturée, donc aucune histoire.
       const neuve = await poseCharge(f, { libelle: 'Abonnement neuf', cents: 1_500, mode: 'fixe',
-                                          participants: [thauba.userId] })
+                                          participants: [lea.userId] })
       const restantes = async () => ((ou(await admin().from('depense').select('id, charge_id')
         .in('charge_id', [sport, courses])) as { id: string }[]).map(l => l.id).sort())
       const avant = await restantes()
 
-      ou(await thauba.client.rpc('delete_my_account'))
+      ou(await lea.client.rpc('delete_my_account'))
 
       const { data: p } = await admin().from('charge').select('archive_le').eq('id', pharmacie)
       expect(p, 'la pharmacie a une histoire : elle s’arrête, elle ne disparaît pas').toHaveLength(1)
@@ -123,9 +123,9 @@ describe('un membre part, le foyer reste', () => {
   it('les mois ouverts se repartagent entre ceux qui restent ; le mois clôturé garde ses parts',
     async () => {
       const f = await foyerSolo('dep-repartage', { revenu: 300_000 })
-      const thauba = await membre(f, 'Thauba', { arrivee: '2026-09-01', revenu: 200_000 })
+      const lea = await membre(f, 'Léa', { arrivee: '2026-09-01', revenu: 200_000 })
       const courses = await poseCharge(f, { libelle: 'Courses', cents: 80_000, mode: 'au_fil',
-        commun: true, participants: [f.userId, thauba.userId] })
+        commun: true, participants: [f.userId, lea.userId] })
       await ouvre(f, '2026-09-01')
       await ouvre(f, '2026-10-01')
       await clos(f, '2026-09-01')
@@ -138,7 +138,7 @@ describe('un membre part, le foyer reste', () => {
       expect((await parts('2026-10-01')).map(p => p.part_bps).sort((a, b) => a - b))
         .toEqual([4_000, 6_000])
 
-      ou(await thauba.client.rpc('delete_my_account'))
+      ou(await lea.client.rpc('delete_my_account'))
 
       /* Octobre est ouvert : sa part de Courses revient à Kamil, qui doit TOUT.
          Avant, 40 % restaient rattachés à un profil disparu : Kamil lisait « Il te
@@ -152,13 +152,13 @@ describe('un membre part, le foyer reste', () => {
   it('à trois, le départ de l’un repartage entre les deux qui restent, au prorata de leurs revenus',
     async () => {
       const f = await foyerSolo('dep-trois', { revenu: 300_000 })
-      const thauba = await membre(f, 'Thauba', { arrivee: '2026-09-01', revenu: 200_000 })
+      const lea = await membre(f, 'Léa', { arrivee: '2026-09-01', revenu: 200_000 })
       const camille = await membre(f, 'Camille', { arrivee: '2026-09-01', revenu: 100_000 })
       const courses = await poseCharge(f, { libelle: 'Courses', cents: 80_000, mode: 'au_fil',
-        commun: true, participants: [f.userId, thauba.userId, camille.userId] })
+        commun: true, participants: [f.userId, lea.userId, camille.userId] })
       await ouvre(f, '2026-10-01')
       const ligneDOctobre = (await ligne(courses, '2026-10-01'))!
-      ou(await thauba.client.rpc('delete_my_account'))
+      ou(await lea.client.rpc('delete_my_account'))
       const parts = ou(await admin().from('depense_part').select('user_profile_id, part_cents')
         .eq('depense_id', ligneDOctobre.id)) as { user_profile_id: string; part_cents: number }[]
       // 300 000 et 100 000 : 75 % et 25 % de 80 000 €.
@@ -170,15 +170,15 @@ describe('un membre part, le foyer reste', () => {
   it('l’ajustement posé sur la charge perso archivée de la partante part avec elle', async () => {
     await regleLHeure('2026-11-10T12:00:00+01:00')
     const f = await foyerSolo('dep-ajustement', { revenu: 300_000 })
-    const thauba = await membre(f, 'Thauba', { arrivee: '2026-09-01', revenu: 300_000 })
+    const lea = await membre(f, 'Léa', { arrivee: '2026-09-01', revenu: 300_000 })
     const entretien = await poseCharge(f, { libelle: 'Entretien perso', cents: 50_004,
-      mode: 'mis_de_cote', participants: [thauba.userId] })
+      mode: 'mis_de_cote', participants: [lea.userId] })
     await ouvreLAnnee(f, entretien, 2026)
-    ou(await thauba.client.rpc('paie_une_facture', { la_facture: randomUUID(), la_charge: entretien,
+    ou(await lea.client.rpc('paie_une_facture', { la_facture: randomUUID(), la_charge: entretien,
                                                     montant_cents: 32_000, paye_le: '2026-11-10' }))
     expect((await ajustements(entretien)).length, 'le test doit partir d’un ajustement').toBeGreaterThan(0)
 
-    ou(await thauba.client.rpc('delete_my_account'))
+    ou(await lea.client.rpc('delete_my_account'))
 
     // La charge a une facture : elle s'arrête. Son ajustement du mois ouvert n'est à personne.
     expect((await admin().from('charge').select('archive_le').eq('id', entretien)).data![0].archive_le)
@@ -189,21 +189,21 @@ describe('un membre part, le foyer reste', () => {
 
   it('le départ du seul membre qui avait un revenu recale les années ouvertes', async () => {
     const f = await foyerSolo('dep-recale', { revenu: null })
-    const thauba = await membre(f, 'Thauba', { arrivee: '2026-09-01', revenu: 240_000 })
+    const lea = await membre(f, 'Léa', { arrivee: '2026-09-01', revenu: 210_000 })
     const entretien = await poseCharge(f, { libelle: 'Entretien auto', cents: 50_004,
-      mode: 'mis_de_cote', commun: true, participants: [f.userId, thauba.userId] })
+      mode: 'mis_de_cote', commun: true, participants: [f.userId, lea.userId] })
     await ouvreLAnnee(f, entretien, 2026)
     ou(await f.client.rpc('paie_une_facture', { la_facture: randomUUID(), la_charge: entretien,
                                                 montant_cents: 32_000, paye_le: '2026-11-10' }))
     expect((await ajustements(entretien)).map(l => l.montant_cents)).toEqual([15_332])
-    ou(await thauba.client.rpc('delete_my_account'))
+    ou(await lea.client.rpc('delete_my_account'))
     // Plus aucun revenu : plus aucun mois suivi, Pl = 0, toute la facture compte.
     expect((await ajustements(entretien)).map(l => l.montant_cents)).toEqual([15_332, 16_668])
   })
 })
 
 /**
- * Une charge perso annuelle de Thauba, dont elle a porté septembre et octobre
+ * Une charge perso annuelle de Léa, dont elle a porté septembre et octobre
  * (2 × 41,67 € = 83,34 €), dont plus aucun participant n'est présent. Ce qu'elle
  * avait mis de côté est parti avec elle : `recale_l_annee` ne le rend pas à Kamil.
  * Mais ce que Kamil a posé LUI-MÊME ensuite lui revient, retirer sa facture comprise.
@@ -217,16 +217,16 @@ describe('une charge perso de la membre partie', () => {
   beforeAll(async () => { c = await connexion() })
   afterAll(async () => { await c.end() })
 
-  async function sansThauba(nom: string) {
+  async function sansLea(nom: string) {
     const f = await foyerSolo(nom, { revenu: 300_000 })
-    const thauba = await membre(f, 'Thauba', { arrivee: '2026-09-01', revenu: 300_000 })
+    const lea = await membre(f, 'Léa', { arrivee: '2026-09-01', revenu: 300_000 })
     const entretien = await poseCharge(f, { libelle: 'Entretien perso', cents: 50_004,
-      mode: 'mis_de_cote', participants: [thauba.userId] })
+      mode: 'mis_de_cote', participants: [lea.userId] })
     for (const m of ['2026-09-01', '2026-10-01']) {
       ou(await f.client.rpc('ouvre_la_charge', { la_charge: entretien, foyer: f.householdId,
                                                  le_mois: m }))
     }
-    ou(await admin().auth.admin.deleteUser(thauba.userId))
+    ou(await admin().auth.admin.deleteUser(lea.userId))
     return { f, entretien }
   }
   const somme = async (charge: string) =>
@@ -234,11 +234,11 @@ describe('une charge perso de la membre partie', () => {
 
   it('la facture de Kamil se pose sur lui, et la retirer la rend : rien ne reste sur novembre',
     async () => {
-      const { f, entretien } = await sansThauba('dep-facture-retiree')
+      const { f, entretien } = await sansLea('dep-facture-retiree')
       const la = randomUUID()
       ou(await f.client.rpc('paie_une_facture', { la_facture: la, la_charge: entretien,
                                                   montant_cents: 20_001, paye_le: '2026-11-10' }))
-      // 200,01 € moins les 83,34 € que Thauba avait mis de côté, sur Kamil seul.
+      // 200,01 € moins les 83,34 € que Léa avait mis de côté, sur Kamil seul.
       expect((await ajustements(entretien)).map(l => [l.mois, l.montant_cents]))
         .toEqual([['2026-11-01', 11_667]])
       ou(await f.client.rpc('retire_une_facture', { la_facture: la }))
@@ -246,7 +246,7 @@ describe('une charge perso de la membre partie', () => {
     })
 
   it('corriger le relevé à la baisse, après le départ, ne laisse rien non plus', async () => {
-    const { f, entretien } = await sansThauba('dep-releve-corrige')
+    const { f, entretien } = await sansLea('dep-releve-corrige')
     const la = randomUUID()
     ou(await admin().from('releve_annuel').insert({
       household_id: f.householdId, charge_id: entretien, annee: 2026, reel_cents: 20_000,
@@ -260,8 +260,8 @@ describe('une charge perso de la membre partie', () => {
     expect(await somme(entretien), 'la correction n’a pas rendu l’écart à Kamil').toBe(0)
   })
 
-  it('le solde de décembre ne rend pas à Kamil ce que Thauba avait mis de côté', async () => {
-    const { f, entretien } = await sansThauba('dep-solde-sans-rendre')
+  it('le solde de décembre ne rend pas à Kamil ce que Léa avait mis de côté', async () => {
+    const { f, entretien } = await sansLea('dep-solde-sans-rendre')
     await enProprietaire(c, f.userId)
     try {
       await c.query('select public.solde_l_annee($1, $2, $3)', [entretien, 2026, '2026-12-01'])

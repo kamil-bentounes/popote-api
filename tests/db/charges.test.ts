@@ -97,12 +97,12 @@ beforeAll(async () => {
   await admin().from('user_profile')
     .update({ entre_le: '2026-01-01' }).in('id', [moi.userId, elle])
 
-  // 3 700 / 2 400 → 60,65 / 39,34, soit 6066 / 3934 points de base.
+  // 3 100 / 2 100 → 59,62 / 40,38, soit 5962 / 4038 points de base.
   await admin().from('revenu').insert([
     { household_id: moi.householdId, user_profile_id: moi.userId,
-      net_mensuel_cents: 370_000, valid_from: '2026-01-01' },
+      net_mensuel_cents: 310_000, valid_from: '2026-01-01' },
     { household_id: moi.householdId, user_profile_id: elle,
-      net_mensuel_cents: 240_000, valid_from: '2026-01-01' },
+      net_mensuel_cents: 210_000, valid_from: '2026-01-01' },
   ])
 
   const { data: cpt } = await admin().from('compte').insert({
@@ -134,7 +134,7 @@ describe('l’ouverture d’un mois', () => {
     const mienne = parts!.find(p => p.user_profile_id === moi.userId)!
     expect(mienne.part_cents, 'le plus gros revenu porte la plus grosse part')
       .toBeGreaterThan(parts!.find(p => p.user_profile_id === elle)!.part_cents)
-    expect(mienne.part_bps).toBeGreaterThanOrEqual(6060)
+    expect(mienne.part_bps).toBeGreaterThanOrEqual(5955)
   })
 
   it('ne double rien quand on la relance — l’ouverture est paresseuse', async () => {
@@ -408,7 +408,7 @@ describe('la clé propre à une charge', () => {
     })
     await admin().from('revenu').insert({
       household_id: moi.householdId, user_profile_id: tiers,
-      net_mensuel_cents: 390_000, valid_from: '2026-01-01',
+      net_mensuel_cents: 480_000, valid_from: '2026-01-01',
     })
 
     await poseCharge({ libelle: 'À deux sur trois', cents: 10_000, periodicite: 'mensuel',
@@ -427,18 +427,18 @@ describe('la clé propre à une charge', () => {
     /* AU CENTIME, et pas « supérieur à ». Une première version bornait par le
        bas : en remplaçant la renormalisation par une division par 10 000, le
        reliquat reversait tout l'écart au plus gros contributeur et le test
-       restait vert — 76,00 € au lieu de 60,66 € passaient tous les deux.
-       Les valeurs exactes : 3700 et 2400 points de base sur 6100 de total,
-       donc 6065 et 3934 centimes, plus le centime résiduel au premier. */
+       restait vert — 31,00 € au lieu de 59,62 € passaient tous les deux.
+       Les valeurs exactes : 3100 et 2100 points de base sur 5200 de total,
+       donc 5961 et 4038 centimes, plus le centime résiduel au premier. */
     const mienne = parts!.find(p => p.user_profile_id === moi.userId)!
     const sienne = parts!.find(p => p.user_profile_id === elle)!
     expect(mienne.part_cents, 'la renormalisation ne se fait pas sur les participants')
-      .toBe(6_066)
-    expect(sienne.part_cents, 'sa part n’est pas celle de leur duo').toBe(3_934)
-    /* 6066, et non plus 6065 : les points de base sont eux aussi répartis aux
+      .toBe(5_962)
+    expect(sienne.part_cents, 'sa part n’est pas celle de leur duo').toBe(4_038)
+    /* 5962, et non plus 5961 : les points de base sont eux aussi répartis aux
        plus forts restes, donc ils somment à 10 000 exactement. La version
        tronquée en perdait un et la trace d'audit ne recomposait pas le tout. */
-    expect(mienne.part_bps, 'le bps figé n’explique pas la part en centimes').toBe(6_066)
+    expect(mienne.part_bps, 'le bps figé n’explique pas la part en centimes').toBe(5_962)
     const { data: tousBps } = await admin().from('depense_part')
       .select('part_bps').eq('depense_id', d!.id)
     expect(tousBps!.reduce((s, p) => s + p.part_bps, 0),

@@ -182,7 +182,7 @@ begin
   /* Les participants d'une charge ne sont pas toujours tout le foyer : leurs
      parts ne font donc pas 10000 à elles seules. On les renormalise sur leur
      propre total — sans quoi une charge à un seul participant ne lui
-     attribuerait que 61 % de ce qu'il paie seul. */
+     attribuerait que 60 % de ce qu'il paie seul. */
   brut as (
     select depense_id, uid, part_bps, montant_cents,
            (montant_cents::bigint * part_bps / bps_total)::integer as cents,
