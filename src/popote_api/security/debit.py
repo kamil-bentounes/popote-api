@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from ipaddress import IPv6Address, ip_address, ip_network
 
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -45,7 +45,12 @@ journal = logging.getLogger(__name__)
 MAX_CLES = 10_000
 CLE_SANS_IP = "sans-ip"  # clé commune quand l'adresse manque : jamais un compteur par requête
 NON_LIMITEES = frozenset({"/api/healthz", "/api/readyz"})
+# `/internal/*` n'a ni relais ni `X-Popote-IP` : tous ses appelants partageraient la clé `sans-ip` avec
+# n'importe quel inconnu qui tape l'URL publique du conteneur, et un flot de requêtes non signées ferait
+# rendre 429 à un appel signé. La signature (`security.signature`) garde ces routes : le débit n'y compte pas.
+PREFIXE_INTERNE = "/internal/"
 PREFIXE_IPV6 = 64
+CLE_VERDICT_PERSONNE = "verdict_personne"  # dans l'état de la requête
 SECONDES_ENTRE_DEUX_ALERTES = 60.0
 
 
@@ -189,7 +194,11 @@ class LimiteParAdresse:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope["path"] in NON_LIMITEES:
+        if (
+            scope["type"] != "http"
+            or scope["path"] in NON_LIMITEES
+            or scope["path"].startswith(PREFIXE_INTERNE)
+        ):
             await self.app(scope, receive, send)
             return
         sures = scope["method"] in METHODES_SURES
@@ -206,22 +215,30 @@ class LimiteParAdresse:
         async def envoie_avec_les_en_tetes(message: Message) -> None:
             if message["type"] == "http.response.start":
                 en_tetes = MutableHeaders(scope=message)
-                for nom, valeur in verdict.en_tetes().items():
-                    # Un limiteur plus fin (par personne) a pu les poser avant nous : il garde la main.
-                    if nom not in en_tetes:
+                # Le limiteur par personne, plus fin, annonce son quota sur toute réponse (y compris un
+                # `Response` rendu tel quel par la route, que FastAPI ne complète pas) ; sinon, l'adresse.
+                verdict_de_la_personne = scope.get("state", {}).get(CLE_VERDICT_PERSONNE)
+                if verdict_de_la_personne is not None:
+                    for nom, valeur in verdict_de_la_personne.en_tetes().items():
                         en_tetes[nom] = valeur
+                else:
+                    for nom, valeur in verdict.en_tetes().items():
+                        if nom not in en_tetes:  # un refus 429 de la personne porte déjà les siens
+                            en_tetes[nom] = valeur
             await send(message)
 
         await self.app(scope, receive, envoie_avec_les_en_tetes)
 
 
-async def limite_par_personne(request: Request, response: Response, personne: str) -> None:
+async def limite_par_personne(request: Request, personne: str) -> None:
     """Deuxième barrière, à appeler par la dépendance de session une fois la session validée.
 
-    `personne` est l'identifiant lu dans la session validée en base, jamais une valeur du cookie brut.
+    `personne` est l'identifiant lu dans la session validée en base (`person_id`), jamais une valeur du cookie
+    brut : deux sessions de la même personne partagent un compteur. Le verdict est posé dans l'état de la
+    requête, que `LimiteParAdresse` lit au départ de la réponse pour y écrire les en-têtes de la personne.
     """
     politique = LECTURE if request.method in METHODES_SURES else ECRITURE
     controle = _controle(request.app.state.debit.personne, politique, personne)
     if isinstance(controle, Probleme):
         raise controle
-    response.headers.update(controle.en_tetes())
+    setattr(request.state, CLE_VERDICT_PERSONNE, controle)

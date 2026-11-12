@@ -120,6 +120,16 @@ def configure(flux: TextIO | None = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def gabarit_de_la_route(scope: Scope) -> str | None:
+    """Le gabarit complet de la route (`/api/v1/me`), préfixe du routeur inclus compris.
+
+    Depuis FastAPI 0.16x, `scope["route"].path_format` est relatif au routeur inclus (`/me`) : le gabarit
+    complet est dans le contexte de route effectif posé par FastAPI. Sans lui, on retombe sur la route.
+    """
+    contexte = scope.get("fastapi", {}).get("effective_route_context")
+    return getattr(contexte, "path_format", None) or getattr(scope.get("route"), "path_format", None)
+
+
 class Acces:
     """Middleware ASGI pur : une ligne par réponse, avec le gabarit de la route et jamais le chemin."""
 
@@ -149,7 +159,7 @@ class Acces:
             raise
         finally:
             if statut is not None:
-                gabarit = getattr(scope.get("route"), "path_format", None)
+                gabarit = gabarit_de_la_route(scope)
                 journal_acces.info(
                     "Requête traitée",
                     extra={

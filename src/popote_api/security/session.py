@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import Depends, Request, Response
+from fastapi import Depends, Request
 from fastapi.security import APIKeyCookie
 
 from popote_api.config import NOM_DU_COOKIE_DE_SESSION
@@ -66,7 +66,7 @@ def _refus(raison: str) -> Probleme:
     )
 
 
-async def personne_connectee(request: Request, response: Response) -> AsyncIterator[PersonneConnectee]:
+async def personne_connectee(request: Request) -> AsyncIterator[PersonneConnectee]:
     """Le contexte « personne » de la requête ; `401 pas_de_session` sans session valide."""
     nom = request.app.state.settings.nom_du_cookie_de_session
     jeton = request.cookies.get(nom)
@@ -83,8 +83,8 @@ async def personne_connectee(request: Request, response: Response) -> AsyncItera
         except SessionRefuseeError as erreur:
             raise _refus("inconnue") from erreur
         # La limite par personne ne se compte qu'une fois la session validée : un cookie inventé n'ouvre
-        # aucun compteur. Sa clé est l'empreinte de la session, jamais le cookie.
-        await limite_par_personne(request, response, empreinte.hex())
+        # aucun compteur. Sa clé est l'identifiant de la personne (toutes ses sessions comptent ensemble).
+        await limite_par_personne(request, str(personne_id))
         yield PersonneConnectee(personne_id, empreinte, curseur)
 
 

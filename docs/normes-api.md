@@ -169,13 +169,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
     que celui de la personne : deux téléphones d'un foyer partagent une adresse et relisent la session toutes
     les 3 s. Les websockets ne sont pas comptés.
   - **Par personne : 120 lectures et 30 écritures par minute**, une dépendance FastAPI appelée par la
-    dépendance de session (T6) avec l'identifiant validé en base :
-    `limite_par_personne(request, response, personne)`. L'état est distinct de celui de l'adresse ; ses
-    en-têtes `RateLimit*` priment sur ceux de l'adresse.
+    dépendance de session avec l'identifiant de la personne validé en base (`person_id`, pas l'empreinte de
+    la session : toutes les sessions d'une personne partagent un compteur) : `limite_par_personne(request,
+    personne)`. L'état est distinct de celui de l'adresse. Le verdict est posé dans l'état de la requête et
+    `LimiteParAdresse` écrit ses en-têtes `RateLimit*` au départ de toute réponse, y compris un `Response`
+    rendu tel quel par la route (`200`/`304` conditionnels) ; ils priment sur ceux de l'adresse.
   - **Mémoire bornée** (10 000 clés par limiteur) sans jamais oublier un compteur actif : on retire d'abord
     les fenêtres expirées ; s'il n'y en a pas, la requête d'une clé *nouvelle* est refusée (`503
     limiteur_sature` + `Retry-After`) et l'événement est journalisé (au plus une fois par minute, sans adresse).
-  - **Non limités** : `/api/healthz` et `/api/readyz`, quelle que soit la méthode.
+  - **Non limités** : `/api/healthz` et `/api/readyz`, quelle que soit la méthode, et `/internal/*` : ces
+    routes n'ont ni relais ni adresse, leurs appelants partageraient la clé `sans-ip` avec un inconnu qui tape
+    l'URL du conteneur ; la signature les garde.
   - **En-têtes** (brouillon IETF `draft-ietf-httpapi-ratelimit-headers`, **version -11 du 23/05/2026**, toujours
     un brouillon : un client ne doit pas en dépendre) : champs structurés (RFC 9651), listes d'éléments dont la
     valeur est une chaîne. `RateLimit-Policy: "read";q=600;w=60` (`q` quota, `w` fenêtre en secondes) ;
@@ -316,7 +320,8 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   - **Tout refus est un `404`** `introuvable`, jamais `401` ou `403` : on ne révèle pas la route. Pour la même
     raison, une `405` (mauvaise méthode) ou une `422` (corps JSON invalide, lu par FastAPI avant les dépendances)
     qui précède la vérification se rend `404` ; la raison du refus (`signature_fausse`, `hors_fenetre`…) va au
-    journal, jamais une valeur reçue. Un corps de mauvais type, signé, rend `422`.
+    journal, jamais une valeur reçue (un avertissement au plus par minute et par motif, les autres en `info`).
+    Un corps de mauvais type, signé, rend `422`.
   - **Corps** : la borne de 1 Mio (`limites.TailleMax`, qui lit le corps avant l'application) et l'exigence de
     `Content-Type: application/json` pour un corps (`limites.TypeJson`) valent aussi pour `/internal/*`, avant la
     vérification de signature : `413` et `415` ne disent rien de la route. La garde d'origine exempte `/internal/`
