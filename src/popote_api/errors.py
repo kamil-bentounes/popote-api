@@ -55,6 +55,7 @@ MESSAGES_422 = {
     "string_too_short": "Trop court : {min_length} caractères au minimum.",
     "string_too_long": "Trop long : {max_length} caractères au maximum.",
     "int_parsing": "Un nombre entier est attendu.",
+    "int_type": "Un nombre entier est attendu.",
     "float_parsing": "Un nombre est attendu.",
     "bool_parsing": "Un booléen (vrai ou faux) est attendu.",
     "dict_type": "Un objet JSON est attendu.",
@@ -73,6 +74,10 @@ MESSAGES_422 = {
     "extra_forbidden": "Ce champ n'est pas permis.",
     "value_error": "La valeur n'est pas acceptée.",
 }
+
+
+class ValeurRefusee(ValueError):
+    """Un refus de validation dont le message, écrit pour la personne, sort tel quel dans le `422`."""
 
 
 # Marque posée sur l'exception qu'on a déjà journalisée avec son `request_id`.
@@ -150,6 +155,9 @@ def _pointeur(chemin: tuple[Any, ...]) -> str:
 
 
 def _message(erreur: Mapping[str, Any]) -> str:
+    refus = (erreur.get("ctx") or {}).get("error")
+    if isinstance(refus, ValeurRefusee):
+        return str(refus)
     modele = MESSAGES_422.get(erreur["type"])
     if modele is None:
         return MESSAGE_PAR_DEFAUT
