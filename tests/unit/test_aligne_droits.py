@@ -280,3 +280,125 @@ class TestApi:
             tool.parse_snapshot_output('{"schemas": []}')
         with pytest.raises(tool.AlignmentError):
             tool.parse_snapshot_output("pas du json")
+
+
+class TestListing:
+    """Le journal d'une CI publique nomme les objets divergents, sans aucune donnée."""
+
+    def divergent_report(self, count: int) -> tool.Report:
+        source = snapshot_of(relations=[table(f"t{n:02d}", [f"anon={FULL}/postgres"]) for n in range(count)])
+        target = snapshot_of(relations=[table(f"t{n:02d}", []) for n in range(count)])
+        return tool.compute_report(source, target)
+
+    def test_each_object_is_named_with_role_and_privileges(self) -> None:
+        lines = tool.describe_divergences(self.divergent_report(1))
+        assert len(lines) == 1
+        assert '"public"."t00"' in lines[0]
+        assert "anon" in lines[0]
+        assert "SELECT" in lines[0]  # attendu
+        assert "table" in lines[0]
+
+    def test_listing_is_capped_and_says_how_many_are_left(self) -> None:
+        lines = tool.describe_divergences(self.divergent_report(tool.MAX_LISTED_DIVERGENCES + 5))
+        assert len(lines) == tool.MAX_LISTED_DIVERGENCES + 1
+        assert "5 autres" in lines[-1]
+
+    def test_no_divergence_gives_no_line(self) -> None:
+        assert tool.describe_divergences(tool.Report()) == []
+
+    def test_report_printing_includes_the_listing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        tool.print_report(self.divergent_report(2))
+        out = capsys.readouterr().out
+        assert '"public"."t00"' in out
+        assert '"public"."t01"' in out
+
+    def test_missing_objects_are_named_too(self, capsys: pytest.CaptureFixture[str]) -> None:
+        source = snapshot_of(relations=[table("seule_ici", [])])
+        tool.print_report(tool.compute_report(source, snapshot_of()))
+        assert '"public"."seule_ici"' in capsys.readouterr().out
+
+
+TARGET_DSN = "postgresql://postgres.abcdefghijklmnopqrst:mot%2Fde%40passe@hote.exemple:5432/postgres"
+
+
+class TestTargetByDsn:
+    """La cible lue par psql (pooler Supavisor en mode session), en lecture seule : le contrôle de la CI."""
+
+    def test_prod_is_refused_in_the_dsn(self) -> None:
+        dsn = f"postgresql://postgres.{tool.FORBIDDEN_PROJECT_REF}:x@hote.exemple:5432/postgres"
+        with pytest.raises(tool.AlignmentError, match="prod"):
+            tool.check_target_dsn(dsn)
+
+    def test_dsn_starting_with_a_dash_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError):
+            tool.check_target_dsn("--help")
+
+    def test_empty_dsn_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError):
+            tool.check_target_dsn("")
+
+    def test_ordinary_dsn_is_accepted(self) -> None:
+        tool.check_target_dsn(TARGET_DSN)
+
+    def test_applying_through_a_dsn_is_refused_before_any_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def no_read(dsn: str, label: str) -> tool.Snapshot:
+            raise AssertionError("aucune lecture ne doit partir")
+
+        monkeypatch.setattr(tool, "read_snapshot_by_psql", no_read)
+        assert tool.main(["--cible-dsn", TARGET_DSN, "--appliquer"]) == 2
+
+    def test_psql_failure_never_relays_the_connection_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class Failed:
+            returncode = 2
+            stdout = ""
+            stderr = f"psql: error: connection to {TARGET_DSN} failed"
+
+        monkeypatch.setattr(tool.subprocess, "run", lambda *a, **k: Failed())
+        with pytest.raises(tool.AlignmentError) as error:
+            tool.read_snapshot_by_psql(TARGET_DSN, "cible")
+        assert "de%40passe" not in str(error.value)
+        assert "hote.exemple" not in str(error.value)
+
+    def test_snapshot_is_read_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, object] = {}
+
+        class Done:
+            returncode = 0
+            stdout = '{"schemas": [], "relations": [], "routines": [], "default_acls": []}'
+
+        def fake_run(*args: object, **kwargs: dict[str, str]) -> Done:
+            seen["env"] = kwargs["env"]
+            return Done()
+
+        monkeypatch.setattr(tool.subprocess, "run", fake_run)
+        tool.read_snapshot_by_psql(TARGET_DSN, "cible")
+        assert "default_transaction_read_only=on" in seen["env"]["PGOPTIONS"]  # type: ignore[index]
+
+    def run_with(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: tool.Snapshot, target: tool.Snapshot
+    ) -> int:
+        def fake_read(dsn: str, label: str) -> tool.Snapshot:
+            return source if label == "source" else target
+
+        monkeypatch.setattr(tool, "read_snapshot_by_psql", fake_read)
+        sortie = tmp_path / "droits.sql"
+        return tool.main(["--cible-dsn", TARGET_DSN, "--sortie", str(sortie)])
+
+    def test_equal_rights_exit_0(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        same = snapshot_of(relations=[table("t", [f"anon={FULL}/postgres"])])
+        assert self.run_with(monkeypatch, tmp_path, same, same) == 0
+
+    def test_diverging_rights_exit_1_and_name_the_object(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = snapshot_of(relations=[table("t", [f"anon={FULL}/postgres"])])
+        target = snapshot_of(relations=[table("t", [])])
+        assert self.run_with(monkeypatch, tmp_path, source, target) == 1
+        out = capsys.readouterr().out
+        assert '"public"."t"' in out
+        assert "de%40passe" not in out
+        assert "hote.exemple" not in out
+
+    def test_dsn_comes_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALIGNE_CIBLE_DSN", TARGET_DSN)
+        assert tool.parse_arguments([]).cible_dsn == TARGET_DSN
