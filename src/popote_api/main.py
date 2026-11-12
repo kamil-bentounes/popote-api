@@ -15,6 +15,7 @@ from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import Base, SondeBase
 from popote_api.security.debit import Debit, LimiteParAdresse
+from popote_api.security.empreintes import Empreintes
 from popote_api.security.origine import garde_origine
 from popote_api.trace import Trace
 
@@ -36,10 +37,16 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
         emetteur=settings.emetteur_des_jetons,
     )
 
+    empreintes = Empreintes.depuis(settings)
     auth_admin = cree_auth_admin(settings)
 
     @asynccontextmanager
     async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
+        if not empreintes.disponible:
+            avertissements.warning(
+                "POPOTE_IDENTITY_PEPPER absent : le journal de sécurité s'écrit sans clés de compte ni d'IP, "
+                "et les limites par clé refusent plutôt que de compter sans clé."
+            )
         if not base.service_configure:
             avertissements.warning(
                 "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
@@ -74,6 +81,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     )
     app.state.settings = settings
     app.state.base = base
+    app.state.empreintes = empreintes
     app.state.debit = Debit(horloge)
     app.state.horloge_debit = horloge  # la même que le débit : les tests l'avancent à la main
     app.state.derniers_avertissements_internes = {}

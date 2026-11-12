@@ -88,7 +88,8 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   publiable par défaut peut être supprimée. Si elle ne le peut pas, `/auth/v1` ne tient que par les réglages
   ci-dessus, et c'est écrit.
 - **Journal de sécurité.** Connexions réussies et ratées, déconnexions, changements et réinitialisations de mot
-  de passe, invitations créées, acceptées ou révoquées, sessions fermées, comptes supprimés. Gardé un an.
+  de passe, invitations créées, acceptées ou révoquées, sessions fermées, comptes supprimés. Gardé un an, sauf les
+  échecs et blocages de connexion (90 jours) ; voir 4.2.
 
 ### 4.1 Règles de mot de passe et liste de fuites (code : `security/mots_de_passe.py`, `infra/fuites.py`)
 
@@ -138,6 +139,37 @@ l'import de ce module).
 
 **Réglage.** `POPOTE_BREACH_CHECK` : `hibp` (défaut) ou `off`. `off` n'est permis qu'en local ; `essai` et `prod`
 refusent de démarrer avec autre chose que `hibp`.
+
+### 4.2 Journal de sécurité et clés HMAC (0.4, migration 0136 ; code : `security/journal_securite.py`, `security/empreintes.py`)
+
+- **Table `public.security_event`** : `id`, `occurred_at`, `kind` (liste fermée par CHECK : `connexion_reussie`,
+  `connexion_ratee`, `connexion_bloquee`, `deconnexion`, `reauthentification_reussie`, `reauthentification_ratee`,
+  `session_fermee`, `mot_de_passe_change`, `reinitialisation_demandee`, `reinitialisation_utilisee`,
+  `invitation_creee`, `invitation_acceptee`, `invitation_revoquee`, `compte_supprime`, `compte_repris`,
+  `verification_fuites_indisponible` ; un test compare cette liste à l'énumération `Evenement`), `person_id`
+  (`on delete set null`), `session_id` et `invitation_id` (sans clé étrangère : la session ou le lien peut être
+  purgé avant l'événement), `account_key` et `ip_hash` (32 octets), `request_id` (32 caractères hexadécimaux, celui
+  de l'API). **Rien d'autre** : ni e-mail, ni IP, ni agent utilisateur, ni champ libre. RLS activée et forcée, aucune
+  politique, aucun droit à aucun rôle de l'application.
+- **Clés HMAC.** `account_key` = HMAC-SHA256 du poivre sur l'e-mail normalisé (`email_normalise` : NFKC, minuscules,
+  espaces de bord retirés : la forme unique, aussi pour la recherche en base et la création du compte) ; `ip_hash` =
+  HMAC-SHA256 de l'IP canonique : IPv4 entière, `::ffff:a.b.c.d` ramenée à l'IPv4, **IPv6 réduite à son /64**, requête
+  sans adresse = une clé commune « sans-ip ». Chaque clé a son étiquette : une clé de compte n'est jamais une clé
+  d'IP. Le poivre (`POPOTE_IDENTITY_PEPPER`, 32 caractères au moins) n'apparaît dans aucun `repr` ni journal.
+- **Sans poivre** (le conteneur d'essai ne l'a pas encore) : hors local, `cle_compte` et `cle_ip` rendent `None`,
+  l'événement s'écrit **sans clés** (on perd le lien entre événements, pas l'événement) et un avertissement part au
+  démarrage. Un appelant qui compte par clé (les limites de connexion) refuse au lieu de compter sans clé. En local
+  le poivre est tiré au hasard par processus.
+- **Conservation.** `connexion_ratee` et `connexion_bloquee`, liées à une clé de compte et non à une personne :
+  **90 jours** ; tout le reste **1 an**. Purge par lots de 5 000, idempotente, qui rend un nombre de lignes et jamais
+  une valeur ; tâche `pg_cron` quotidienne (`journal-securite-purge`, 03 h 41 UTC) en SQL pur, gardée comme celle des
+  rappels (sans l'extension, la migration passe et avertit).
+- **Droits.** Le schéma `private` naît fermé (`revoke all`, aucun rôle n'a `usage`) : les aides internes
+  (`private.ecrit_evenement`) et les variantes à horloge (`private.purge_journal_securite(p_now, p_lot)`) y vivent. Une
+  fonction exécutable par `authenticated` n'a jamais de paramètre d'horloge (une personne choisirait sa date ; un test
+  de surface le garde). `public.journalise` est exécutable par `popote_api` (contexte connexion) **et** `service_role`
+  (contexte service, où le rôle COURANT est `service_role`), jamais par `authenticated` ni `popote_internal` : une
+  personne ne forge pas d'événement. Le droit se lit sur le rôle courant : les tests jouent `set local role`.
 
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
@@ -303,7 +335,7 @@ configuration, journalisation, protection des données.
   aucune donnée d'une personne identifiable, d'où aucune conservation à convenir. À confirmer : la
   localisation du service (hors Union européenne ou non) et son éventuel statut de sous-traitant ne sont pas
   établis par ce document ; à faire valider avant la bascule (0.8).
-- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an, journal des appels au modèle 90 jours,
+- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an (échecs et blocages de connexion : 90 jours), journal des appels au modèle 90 jours,
   photos de saisie 30 jours.
 - Export et suppression du compte restent des routes de l'API.
 

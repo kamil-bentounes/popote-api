@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from popote_api.config import Settings
 
 SECRET = "s" * 32
+POIVRE = "p" * 32
 DSN = "postgresql://x:y@127.0.0.1:1/rien"
 RELAIS = {"X-Popote-Relais": SECRET}
 # Ce qu'envoie le front dans une écriture : l'origine de l'environnement et l'en-tête propre à l'appli.
@@ -21,7 +22,7 @@ def reglages(env: str, **autres: Any) -> Settings:
     # Le journal JSON est coupé par défaut : les tests ne touchent pas à la configuration du journal.
     valeurs: dict[str, Any] = {"env": env, "json_logs": False}
     if env != "local":
-        valeurs |= {"relay_secret": SECRET, "database_url": DSN}
+        valeurs |= {"relay_secret": SECRET, "database_url": DSN, "identity_pepper": POIVRE}
     return Settings.model_validate(valeurs | autres)
 
 
