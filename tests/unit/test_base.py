@@ -121,7 +121,7 @@ async def test_sans_poivre_hors_local_le_demarrage_avertit_sans_le_poivre(
 async def test_avec_le_poivre_le_demarrage_n_avertit_pas_et_ne_le_journalise_pas(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    app = create_app(reglages("essai", database_url_internal=DSN))
+    app = create_app(reglages("essai", database_url_internal=DSN, internal_secret="i" * 32))
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
         async with app.router.lifespan_context(app):
             pass
