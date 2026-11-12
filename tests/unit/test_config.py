@@ -164,3 +164,15 @@ def test_hors_local_le_poivre_est_facultatif(env: str) -> None:
         {"env": env, "relay_secret": SECRET, "database_url": DSN, "identity_pepper": ""}
     )
     assert reglages.identity_pepper is None
+
+
+def test_un_retour_a_la_ligne_de_fin_du_poivre_est_retire() -> None:
+    reglages = Settings.model_validate({"env": "local", "identity_pepper": "p" * 32 + "\n"})
+    assert reglages.identity_pepper is not None
+    assert reglages.identity_pepper.get_secret_value() == "p" * 32
+
+
+@pytest.mark.parametrize("poivre", [" " * 40, "x" * 31 + "\n"])
+def test_un_poivre_fait_de_blancs_ou_trop_court_une_fois_nettoye_echoue(poivre: str) -> None:
+    with pytest.raises(ValidationError, match="identity_pepper"):
+        Settings.model_validate({"env": "local", "identity_pepper": poivre})

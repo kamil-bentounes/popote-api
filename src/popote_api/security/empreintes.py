@@ -7,9 +7,9 @@ a son étiquette : la clé d'un compte et celle d'une IP ne peuvent pas se confo
 SANS POIVRE (`POPOTE_IDENTITY_PEPPER` absent hors local) : le conteneur d'essai ne l'a pas encore. Les deux
 clés rendent alors `None`, le journal écrit l'événement sans clé (colonnes nulles : on perd le lien entre
 événements, pas l'événement), et un avertissement part au démarrage. Un appelant qui COMPTE par clé (les
-limites de connexion) ne peut pas se contenter de `None` : il doit refuser, jamais compter « sans clé » (une
-limite qui ne limite personne). En local le poivre est tiré au hasard par processus : les clés sont stables le
-temps du processus, et ne survivent pas à son arrêt.
+limites de connexion) appelle `cle_compte_requise` et `cle_ip_requise`, qui lèvent `PoivreAbsentError` : il
+refuse, jamais il ne compte « sans clé » (une limite qui ne limite personne). En local le poivre est tiré au
+hasard par processus : les clés sont stables le temps du processus, et ne survivent pas à son arrêt.
 """
 
 import hashlib
@@ -41,11 +41,22 @@ def email_normalise(email: str) -> str:
     return unicodedata.normalize("NFKC", forme).strip()
 
 
+class PoivreAbsentError(Exception):
+    """Une clé était exigée (limite, compteur) alors que `POPOTE_IDENTITY_PEPPER` n'est pas posé."""
+
+
 def ip_canonique(ip: str | None) -> str:
-    """L'IPv4 entière, l'IPv6 réduite à son /64, `::ffff:a.b.c.d` ramenée à l'IPv4 ; `sans-ip` si absente."""
+    """L'IPv4 entière, l'IPv6 réduite à son /64, `::ffff:a.b.c.d` ramenée à l'IPv4.
+
+    Absente ou illisible (un `client.host` qui n'est pas une adresse : socket Unix, test) : `sans-ip`, la clé
+    commune. Plus de monde partage ce seau, donc la limite par IP est plus stricte, jamais plus lâche.
+    """
     if ip is None:
         return IP_ABSENTE
-    adresse = ip_address(ip.strip())
+    try:
+        adresse = ip_address(ip.strip())
+    except ValueError:
+        return IP_ABSENTE
     if isinstance(adresse, IPv6Address):
         if adresse.ipv4_mapped is not None:
             return str(adresse.ipv4_mapped)
@@ -84,6 +95,19 @@ class Empreintes:
 
     def cle_ip(self, ip: str | None) -> bytes | None:
         return self._hmac(ETIQUETTE_IP, ip_canonique(ip))
+
+    def cle_compte_requise(self, email: str) -> bytes:
+        """Pour qui COMPTE par clé : sans poivre, refuser plutôt que compter sans clé (fail closed)."""
+        cle = self.cle_compte(email)
+        if cle is None:
+            raise PoivreAbsentError
+        return cle
+
+    def cle_ip_requise(self, ip: str | None) -> bytes:
+        cle = self.cle_ip(ip)
+        if cle is None:
+            raise PoivreAbsentError
+        return cle
 
     def __repr__(self) -> str:
         return f"Empreintes(disponible={self.disponible})"

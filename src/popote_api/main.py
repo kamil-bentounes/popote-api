@@ -43,7 +43,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
         if not empreintes.disponible:
             avertissements.warning(
                 "POPOTE_IDENTITY_PEPPER absent : le journal de sécurité s'écrit sans clés de compte ni d'IP, "
-                "et les limites par clé ne peuvent pas compter."
+                "et les limites par clé refusent plutôt que de compter sans clé."
             )
         if not base.service_configure:
             avertissements.warning(

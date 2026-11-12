@@ -111,9 +111,13 @@ class Settings(BaseSettings):
     @field_validator("identity_pepper")
     @classmethod
     def _poivre_assez_long(cls, poivre: SecretStr | None) -> SecretStr | None:
-        if poivre is not None and len(poivre.get_secret_value()) < LONGUEUR_MINIMALE_DU_POIVRE:
+        if poivre is None:
+            return None
+        # Un retour à la ligne de fin (secret lu dans un fichier) ne compte ni dans la longueur ni la clé.
+        propre = poivre.get_secret_value().strip()
+        if len(propre) < LONGUEUR_MINIMALE_DU_POIVRE:
             raise ValueError(f"identity_pepper : {LONGUEUR_MINIMALE_DU_POIVRE} caractères au moins.")
-        return poivre
+        return SecretStr(propre)
 
     @property
     def emetteur_des_jetons(self) -> str | None:

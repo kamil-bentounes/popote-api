@@ -161,7 +161,7 @@ def test_aucune_fonction_ouverte_a_authenticated_n_a_de_parametre_d_horloge(
                 or has_function_privilege('anon', p.oid, 'execute'))
            and exists (select 1 from generate_subscripts(p.proargtypes, 1) i
                         where p.proargtypes[i] = 'timestamptz'::regtype
-                          and p.proargnames[i + 1] in ('p_now', 'p_maintenant'))
+                          and p.proargnames[i + 1] ~ '^p_(now|maintenant|horloge|clock|today)')
         """
     ).fetchall()
     assert fautives == []

@@ -132,7 +132,7 @@ def test_une_cle_de_mauvaise_longueur_est_refusee(colonne: int, cle: bytes, marq
 
 
 @pytest.mark.parametrize(
-    "texte", ["a@b.fr", "1.2.3.4", "x" * 32, "A" * 32, "a" * 31, "a" * 33, "", "avec espace"]
+    "texte", ["a@b.fr", "1.2.3.4", "x" * 32, "A" * 32, "a" * 31, "a" * 33, "", "avec espace", "a" * 32 + "\n"]
 )
 def test_le_request_id_n_accepte_ni_adresse_ni_ip_ni_texte_libre(texte: str) -> None:
     with connecte(DSN_API) as cx, pytest.raises(errors.CheckViolation):
@@ -255,24 +255,57 @@ def test_le_contexte_service_journalise_sous_service_role(
     assert [e["kind"] for e in evenements(admin, marque)] == ["compte_repris"]
 
 
-@pytest.mark.parametrize("role", ["anon", "authenticated", "service_role", "popote_api", "popote_internal"])
-def test_la_table_est_fermee_a_tous_les_roles(role: str, admin: psycopg.Connection[Ligne]) -> None:
-    with pytest.raises(errors.InsufficientPrivilege), admin.transaction():
+@pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"])
+def test_la_table_est_fermee_aux_roles_empruntables(role: str, admin: psycopg.Connection[Ligne]) -> None:
+    with admin.transaction():
         admin.execute(f"set local role {role}")
-        admin.execute("select * from public.security_event")
-
-
-@pytest.mark.parametrize("role", ["anon", "authenticated", "service_role", "popote_api"])
-def test_l_aide_interne_et_la_purge_ne_sont_executables_par_aucun_role_applicatif(
-    role: str, admin: psycopg.Connection[Ligne]
-) -> None:
-    for appel in (
-        "select private.ecrit_evenement('deconnexion')",
-        "select private.purge_journal_securite()",
-    ):
         with pytest.raises(errors.InsufficientPrivilege), admin.transaction():
-            admin.execute(f"set local role {role}")
+            admin.execute("select * from public.security_event")
+
+
+@pytest.mark.parametrize("dsn", [DSN_API, DSN_INTERNAL], ids=["popote_api", "popote_internal"])
+def test_la_table_est_fermee_aux_roles_de_connexion(dsn: str) -> None:
+    with connecte(dsn) as cx, pytest.raises(errors.InsufficientPrivilege):
+        cx.execute("select * from public.security_event")
+
+
+APPELS_INTERNES = ["select private.ecrit_evenement('deconnexion')", "select private.purge_journal_securite()"]
+
+
+@pytest.mark.parametrize("appel", APPELS_INTERNES)
+@pytest.mark.parametrize("dsn", [DSN_API, DSN_INTERNAL], ids=["popote_api", "popote_internal"])
+def test_l_aide_interne_et_la_purge_ne_sont_pas_executables_par_les_roles_de_connexion(
+    dsn: str, appel: str
+) -> None:
+    with connecte(dsn) as cx, pytest.raises(errors.InsufficientPrivilege):
+        cx.execute(appel)
+
+
+@pytest.mark.parametrize("appel", APPELS_INTERNES)
+@pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"])
+def test_l_aide_interne_et_la_purge_ne_sont_pas_executables_par_les_roles_empruntables(
+    role: str, appel: str, admin: psycopg.Connection[Ligne]
+) -> None:
+    with admin.transaction():
+        admin.execute(f"set local role {role}")
+        with pytest.raises(errors.InsufficientPrivilege), admin.transaction():
             admin.execute(appel)
+
+
+@pytest.mark.parametrize(
+    "fonction",
+    [
+        "public.journalise(text, uuid, uuid, uuid, bytea, bytea, text)",
+        "private.purge_journal_securite(timestamp with time zone, integer)",
+    ],
+)
+def test_les_fonctions_security_definer_ont_un_search_path_vide(
+    fonction: str, admin: psycopg.Connection[Ligne]
+) -> None:
+    ligne = admin.execute(
+        "select prosecdef, proconfig from pg_proc where oid = %s::regprocedure", (fonction,)
+    ).fetchone()
+    assert ligne == (True, ['search_path=""'])
 
 
 # ── Purge ───────────────────────────────────────────────────────────────────
@@ -292,6 +325,18 @@ def test_purge_garde_une_seconde_avant_l_echeance_et_efface_une_seconde_apres(
     assert purge(admin) == attendu
     [reste] = evenements(admin, marque)
     assert MAINTENANT - reste["occurred_at"] == echeance - timedelta(seconds=1)  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    ("kind", "jours"),
+    [("connexion_reussie", 365), ("connexion_ratee", 90), ("connexion_bloquee", 90), ("deconnexion", 365)],
+)
+def test_purge_garde_un_evenement_pile_a_l_echeance(
+    kind: str, jours: int, admin: psycopg.Connection[Ligne], marque: str
+) -> None:
+    insere(admin, marque, kind, timedelta(days=jours))
+    purge(admin)
+    assert len(evenements(admin, marque)) == 1
 
 
 def test_les_echecs_de_connexion_partent_a_90_jours_le_reste_a_un_an(

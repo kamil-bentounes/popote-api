@@ -4,7 +4,7 @@ import pytest
 from _commun import POIVRE, reglages
 from pydantic import SecretStr
 
-from popote_api.security.empreintes import Empreintes, email_normalise, ip_canonique
+from popote_api.security.empreintes import Empreintes, PoivreAbsentError, email_normalise, ip_canonique
 
 POIVRE_B = "q" * 32
 # « a@x.fr » en pleine largeur (U+FF41…), en majuscules et suivi d'une espace idéographique.
@@ -92,10 +92,12 @@ def test_sans_adresse_la_cle_est_commune_et_distincte_de_toute_adresse() -> None
     assert ip_canonique(None) == "sans-ip"
 
 
-@pytest.mark.parametrize("texte", ["", "pas-une-ip", "1.2.3", "1.2.3.4.5", "sans-ip"])
-def test_une_ip_mal_formee_leve_valueerror(texte: str) -> None:
-    with pytest.raises(ValueError, match="does not appear to be"):
-        empreintes().cle_ip(texte)
+@pytest.mark.parametrize(
+    "texte", ["", "pas-une-ip", "1.2.3", "1.2.3.4.5", "sans-ip", "1.2.3.4/24", "testclient"]
+)
+def test_une_ip_illisible_vaut_la_cle_commune_sans_ip_et_ne_leve_pas(texte: str) -> None:
+    assert ip_canonique(texte) == "sans-ip"
+    assert empreintes().cle_ip(texte) == empreintes().cle_ip(None)
 
 
 def test_sans_poivre_les_deux_cles_manquent() -> None:
@@ -129,3 +131,15 @@ def test_hors_local_sans_poivre_les_cles_manquent(env: str) -> None:
 def test_avec_le_meme_poivre_deux_processus_calculent_la_meme_cle() -> None:
     a, b = Empreintes.depuis(reglages("prod")), Empreintes.depuis(reglages("prod"))
     assert a.cle_compte("a@x.fr") == b.cle_compte("a@x.fr")
+
+
+def test_sans_poivre_les_variantes_requises_refusent_au_lieu_de_compter_sans_cle() -> None:
+    with pytest.raises(PoivreAbsentError):
+        empreintes(None).cle_compte_requise("a@x.fr")
+    with pytest.raises(PoivreAbsentError):
+        empreintes(None).cle_ip_requise("1.2.3.4")
+
+
+def test_avec_poivre_les_variantes_requises_rendent_les_memes_cles() -> None:
+    assert empreintes().cle_compte_requise("a@x.fr") == empreintes().cle_compte("a@x.fr")
+    assert empreintes().cle_ip_requise("1.2.3.4") == empreintes().cle_ip("1.2.3.4")

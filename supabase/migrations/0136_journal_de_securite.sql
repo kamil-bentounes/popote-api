@@ -134,8 +134,8 @@ grant execute on function public.journalise(text, uuid, uuid, uuid, bytea, bytea
   to popote_api, service_role;
 
 -- ── 4. La purge ─────────────────────────────────────────────────────────────
-/* Par lots (5 000 par défaut ; les tests en prennent 2) : une table qui aurait grossi ne garde pas son verrou
-   d'écriture pendant toute la purge. `skip locked` : deux purges simultanées ne s'attendent pas. Idempotente : un
+/* Par lots (5 000 par défaut ; les tests en prennent 2) : chaque `delete` reste de taille bornée (la fonction
+   n'est tout de même qu'une transaction : les verrous de ligne tiennent jusqu'à sa fin). `skip locked` : deux purges simultanées ne s'attendent pas. Idempotente : un
    deuxième passage ne trouve rien. Rend le nombre de lignes effacées, jamais une valeur ; le message de notice
    non plus. Variante à horloge (`p_now`) : dans `private`, jamais exécutable par une personne. */
 create or replace function private.purge_journal_securite(
