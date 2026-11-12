@@ -137,7 +137,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - Pas de CORS : une seule origine. Une écriture dont l'`Origin` n'est pas celle de l'environnement est refusée ;
   sur l'essai, la liste admet aussi le motif des adresses d'aperçu.
 - **Garde d'origine** (`security/origine.py`, dépendance de l'application entière : une route d'écriture
-  future est gardée sans y penser). Sur `POST`, `PUT`, `PATCH`, `DELETE`, trois preuves, toutes exigées, sinon
+  future est gardée sans y penser). Sur toute méthode qui n'est pas `GET`, `HEAD` ou `OPTIONS` (une méthode inattendue est donc gardée), trois preuves, toutes exigées, sinon
   `403 origine_refusee` (un seul message, pour ne pas dire laquelle manque) :
   1. `Origin` est exactement l'une des origines de l'environnement (`Settings.origines` : prod
      `https://notre-popote.fr` ; essai `https://essai.notre-popote.fr` ; local `http://localhost:5173` et
@@ -146,6 +146,9 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
      modifier) ;
   3. `X-Popote-Client: web` (une requête inter-sites « simple », comme un formulaire, ne peut pas poser
      d'en-tête personnalisé sans demande préalable que l'API ne permet pas).
+  La poignée de main d'un websocket est gardée aussi (un `GET` avec cookie est détournable depuis un site
+  tiers) : `Origin` et `Sec-Fetch-Site` y sont exigés, mais pas `X-Popote-Client`, qu'un navigateur ne peut pas
+  poser sur un websocket ; le refus ferme la poignée de main (code 1008, vu comme un `403`).
   Les routes `/internal/*` en sont exemptées : sans cookie ni navigateur, leur signature HMAC les garde.
   Le relais Cloudflare retransmet ces trois en-têtes tels quels (il copie ceux de la requête et n'écrase que
   `Host`, `X-Popote-Relais` et `X-Popote-IP`).

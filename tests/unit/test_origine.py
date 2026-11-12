@@ -2,11 +2,14 @@ import logging
 
 import httpx
 import pytest
-from _commun import ECRITURE_ESSAI, ECRITURE_LOCALE, RELAIS, reglages
-from fastapi import FastAPI
+from _commun import ECRITURE_ESSAI, ECRITURE_LOCALE, RELAIS, appeler_websocket, reglages
+from fastapi import FastAPI, WebSocket
+from starlette.requests import HTTPConnection
 
 from popote_api.config import Settings
+from popote_api.errors import Probleme
 from popote_api.main import create_app
+from popote_api.security.origine import garde_origine
 
 ECRITURES = ["POST", "PUT", "PATCH", "DELETE"]
 COMPTE = "monbureau"
@@ -23,6 +26,12 @@ def app_de_test(env: str, **autres: str) -> FastAPI:
     @app.post("/internal/_test/signe")
     async def interne() -> dict[str, bool]:
         return {"ok": True}
+
+    @app.websocket("/api/_test/ws")
+    async def ws(websocket: WebSocket) -> None:
+        await websocket.accept()
+        await websocket.send_json({"ok": True})
+        await websocket.close()
 
     @app.post("/internalement/_test")
     async def presque_interne() -> dict[str, bool]:
@@ -244,3 +253,51 @@ def test_le_compte_des_apercus_est_lu_dans_l_environnement(monkeypatch: pytest.M
     }.items():
         monkeypatch.setenv(nom, valeur)
     assert Settings().origine_admise(APERCU)
+
+
+# --- Les méthodes inattendues et les websockets ---------------------------------------------------
+
+
+@pytest.mark.parametrize("methode", ["PROPPATCH", "TRACE", "PURGE", "LINK", "post"])
+async def test_une_methode_inattendue_est_gardee_comme_une_ecriture(methode: str) -> None:
+    scope = {"type": "http", "method": methode, "path": "/api/x", "headers": [], "app": app_de_test("local")}
+    with pytest.raises(Probleme) as erreur:
+        await garde_origine(HTTPConnection(scope))
+    assert erreur.value.code == "origine_refusee"
+
+
+@pytest.mark.parametrize("methode", ["GET", "HEAD", "OPTIONS"])
+async def test_les_methodes_sures_ne_sont_pas_gardees(methode: str) -> None:
+    scope = {"type": "http", "method": methode, "path": "/api/x", "headers": [], "app": app_de_test("local")}
+    await garde_origine(HTTPConnection(scope))
+
+
+async def test_un_websocket_avec_l_origine_de_l_environnement_est_accepte() -> None:
+    messages = await appeler_websocket(
+        app_de_test("local"), "/api/_test/ws", {"Origin": "http://localhost:5173"}
+    )
+    assert messages[0]["type"] == "websocket.accept"
+
+
+@pytest.mark.parametrize(
+    "en_tetes",
+    [
+        {},
+        {"Origin": "https://evil.example"},
+        {"Origin": "null"},
+        {"Origin": "http://localhost:5173", "Sec-Fetch-Site": "cross-site"},
+    ],
+    ids=["sans-origin", "etrangere", "null", "cross-site"],
+)
+async def test_un_websocket_d_une_origine_etrangere_est_refuse_a_la_poignee_de_main(
+    en_tetes: dict[str, str],
+) -> None:
+    messages = await appeler_websocket(app_de_test("local"), "/api/_test/ws", en_tetes)
+    assert [(m["type"], m.get("code")) for m in messages] == [("websocket.close", 1008)]
+
+
+async def test_un_websocket_n_a_pas_besoin_de_x_popote_client() -> None:
+    """Un navigateur ne peut pas poser d'en-tête personnalisé sur un websocket : seule l'origine compte."""
+    en_tetes = {"Origin": "http://localhost:5173", "Sec-Fetch-Site": "same-origin"}
+    messages = await appeler_websocket(app_de_test("local"), "/api/_test/ws", en_tetes)
+    assert messages[0]["type"] == "websocket.accept"
