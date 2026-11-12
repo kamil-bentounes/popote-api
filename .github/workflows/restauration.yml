@@ -1,0 +1,100 @@
+name: Restauration
+# L'essai de restauration mensuel (docs/exploitation.md, § 5.4 et amendement 9) : la DERNIÈRE sauvegarde de
+# l'ESSAI est déchiffrée avec la clé de l'essai, puis rejouée sur une pile Supabase neuve, dans le runner.
+# Il prouve les scripts. La clé privée de la prod n'est jamais dans un secret : une sauvegarde de prod se
+# restaure à la main, chaque trimestre (voir docs/exploitation.md).
+on:
+  schedule:
+    - cron: "0 4 1 * *" # le 1er du mois, 04:00 UTC
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: restauration
+  cancel-in-progress: false
+jobs:
+  restauration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: essai
+    permissions:
+      contents: read
+    env:
+      # public.ecr.aws limite les tirages anonymes depuis les runners partagés (toomanyrequests).
+      SUPABASE_INTERNAL_IMAGE_REGISTRY: ghcr.io
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      # Au-delà, la sauvegarde nocturne de l'essai ne tourne plus : l'essai de restauration le dit.
+      AGE_MAXIMUM_JOURS: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: ./.github/actions/outils-sauvegarde
+      - name: Vérifier les secrets
+        env:
+          AGE_ESSAI_KEY: ${{ secrets.AGE_ESSAI_KEY }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+        run: |
+          manque=()
+          for nom in S3_BUCKET AGE_ESSAI_KEY S3_ACCESS_KEY S3_SECRET_KEY; do
+            [ -n "${!nom}" ] || manque+=("$nom")
+          done
+          if [ ${#manque[@]} -gt 0 ]; then
+            echo "::error::restauration impossible, valeurs manquantes dans l'environnement essai : ${manque[*]} (secrets AGE_ESSAI_KEY, S3_ACCESS_KEY, S3_SECRET_KEY ; variable S3_BUCKET)"
+            exit 1
+          fi
+      # Une pile neuve : `supabase start` applique les migrations du dépôt à une base vide.
+      - name: Démarrer la pile Supabase (3 essais)
+        run: |
+          for essai in 1 2 3; do
+            npx supabase start -x studio,imgproxy,logflare,vector,supavisor && exit 0
+            echo "essai $essai échoué, nouvel essai dans 20 s"; npx supabase stop --no-backup || true; sleep 20
+          done
+          exit 1
+      - name: Récupérer et déchiffrer la dernière sauvegarde de l'essai
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: fr-par
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          AGE_ESSAI_KEY: ${{ secrets.AGE_ESSAI_KEY }}
+        run: |
+          set -euo pipefail
+          point_acces=https://s3.fr-par.scw.cloud
+          # Les clés d'un même préfixe sont triées : popote-<date UTC>.tar.age, la dernière est la plus récente.
+          derniere=$(aws s3api list-objects-v2 --bucket "$S3_BUCKET" --prefix essai/popote- \
+            --endpoint-url "$point_acces" --query 'Contents[-1].[Key,LastModified,Size]' --output text | tail -n 1)
+          read -r cle modifiee taille <<< "$derniere"
+          if [ -z "${cle:-}" ] || [ "$cle" = None ]; then
+            echo "::error::aucune sauvegarde de l'essai dans $S3_BUCKET/essai/"
+            exit 1
+          fi
+          age_jours=$(( ( $(date -u +%s) - $(date -u -d "$modifiee" +%s) ) / 86400 ))
+          echo "sauvegarde retenue : $cle, $taille octets, vieille de $age_jours jour(s)"
+          if [ "$age_jours" -gt "$AGE_MAXIMUM_JOURS" ]; then
+            echo "::error::la dernière sauvegarde de l'essai a plus de $AGE_MAXIMUM_JOURS jours : la sauvegarde nocturne ne tourne plus"
+            exit 1
+          fi
+          [ "$taille" -gt 0 ] || { echo "::error::la sauvegarde retenue est vide"; exit 1; }
+          aws s3 cp "s3://$S3_BUCKET/$cle" "$RUNNER_TEMP/sauvegarde.tar.age" --endpoint-url "$point_acces" --only-show-errors
+          # La clé privée ne touche jamais le disque : elle passe par un descripteur de processus.
+          install -d -m 700 "$RUNNER_TEMP/clair"
+          age -d -i <(printf '%s\n' "$AGE_ESSAI_KEY") "$RUNNER_TEMP/sauvegarde.tar.age" |
+            tar -x -C "$RUNNER_TEMP/clair" --no-same-owner --no-same-permissions
+          rm -f "$RUNNER_TEMP/sauvegarde.tar.age"
+      - name: Restaurer sur la pile neuve et comparer les comptes
+        run: |
+          set -euo pipefail
+          # Les clés locales de démonstration ne sont pas des secrets.
+          eval "$(npx supabase status -o env 2>/dev/null | grep -E '^(API_URL|SERVICE_ROLE_KEY)=')"
+          export SUPABASE_URL=$API_URL SUPABASE_SECRET_KEY=$SERVICE_ROLE_KEY
+          bash ops/sauvegarde/restaure.sh "$RUNNER_TEMP/clair"
+      - name: Effacer ce qui a été déchiffré
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/clair" "$RUNNER_TEMP/sauvegarde.tar.age"
