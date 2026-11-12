@@ -231,6 +231,46 @@ def test_une_cle_nulle_est_refusee(admin: psycopg.Connection[Ligne], cles: list[
         admin.execute(PRENDRE, (None, neuve(cles), T0))
 
 
+@pytest.mark.parametrize(
+    "parametres",
+    [
+        (None, 20, 900, 3600),
+        (5, None, 900, 3600),
+        (5, 20, None, 3600),
+        (5, 20, 900, None),
+        (0, 20, 900, 3600),
+        (2_147_483_647, 20, 900, 3600),
+        (5, 20, 0, 3600),
+        (5, 20, 2_147_483_647, 2_147_483_647),
+        (5, 20, 900, 899),
+        (5, 20, 900, 86401),
+    ],
+)
+def test_une_limite_nulle_ou_hors_bornes_est_refusee_par_la_fonction_publique(
+    parametres: tuple[int | None, ...], admin: psycopg.Connection[Ligne], cles: list[bytes]
+) -> None:
+    compte, ip = neuve(cles), neuve(cles)
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        admin.execute(
+            "select * from public.prend_les_creneaux(%s, %s, %s, %s, %s, %s)", (compte, ip, *parametres)
+        )
+
+
+@pytest.mark.parametrize(
+    "parametres", [(None, 3600), (3, None), (0, 3600), (100_000, 3600), (3, 0), (3, 86401)]
+)
+def test_une_limite_de_reinitialisation_hors_bornes_est_refusee(
+    parametres: tuple[int | None, ...], admin: psycopg.Connection[Ligne], cles: list[bytes]
+) -> None:
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        admin.execute("select public.prend_un_creneau_reinit(%s, %s, %s)", (neuve(cles), *parametres))
+
+
+def test_le_plafond_de_la_configuration_ne_peut_pas_etre_sous_la_fenetre() -> None:
+    with pytest.raises(ValueError, match="connexion_attente_max_s"):
+        Settings(env="local", connexion_fenetre_s=900, connexion_attente_max_s=899)  # type: ignore[arg-type,call-arg]
+
+
 # ── La réinitialisation : 3 par heure et par (e-mail, IP) ───────────────────
 
 

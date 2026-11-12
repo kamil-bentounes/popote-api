@@ -199,6 +199,8 @@ refusent de démarrer avec autre chose que `hibp`.
   d'adresse en base. Une clé de compte inconnue se comporte comme une connue (la fonction ne lit pas `auth.users`).
 - **Journal** : `prend_les_creneaux` rend aussi quelle clé vient de passer en blocage ; seul ce drapeau déclenche
   `connexion_bloquee` : un événement par (clé, fenêtre de blocage), pas un par essai refusé.
+- **Bornes** : la base refuse une limite nulle ou hors bornes (limite 1 à 10 000, fenêtre 1 à 86 400 s, plafond entre la
+  fenêtre et 86 400 s) : un appelant ne désactive pas une limite. `config.py` refuse un plafond sous la fenêtre.
 - **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
   nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h.
 - **Risque accepté : blocage par un tiers (B5).** Qui connaît l'adresse d'une personne peut ralentir **sa** connexion en

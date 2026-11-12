@@ -34,6 +34,7 @@
 --   select cron.unschedule('limites-de-connexion-purge');   -- si pg_cron est là
 --   drop function public.prend_les_creneaux(bytea, bytea, integer, integer, integer, integer);
 --   drop function public.prend_un_creneau_reinit(bytea, integer, integer);
+--   drop function private.prend_un_creneau_reinit(bytea, integer, integer, timestamptz);
 --   drop function public.libere_compte(bytea);
 --   drop function private.prend_les_creneaux(bytea, bytea, integer, integer, integer, integer, timestamptz);
 --   drop function private.prend_un_creneau(text, bytea, integer, integer, integer, boolean, timestamptz);
@@ -94,13 +95,20 @@ begin
   if p_key is null or pg_catalog.length(p_key) <> 32 then
     raise exception 'La clé de limite doit faire 32 octets.' using errcode = 'invalid_parameter_value';
   end if;
-  if p_limit < 1 or p_window_s < 1 or p_max_block_s < p_window_s then
+  -- Les bornes se vérifient ici, pour toutes les fonctions publiques : un appelant ne désactive pas la limite (limite
+  -- énorme), ne pose pas un blocage de plusieurs années, et un paramètre nul ne passe pas (`null < 1` n'est pas vrai).
+  if p_limit is null or p_window_s is null or p_max_block_s is null or p_escalade is null or p_now is null
+     or p_limit not between 1 and 10000
+     or p_window_s not between 1 and 86400
+     or p_max_block_s not between p_window_s and 86400 then
     raise exception 'Limite, fenêtre ou plafond invalide.' using errcode = 'invalid_parameter_value';
   end if;
 
-  insert into public.login_throttle (scope, key, window_start) values (p_scope, p_key, p_now)
-  on conflict (scope, key) do nothing;
-  select * into v_ligne from public.login_throttle where scope = p_scope and key = p_key for update;
+  -- Créer la ligne si elle manque ET la verrouiller en une seule instruction : la purge nocturne ne peut pas
+  -- l'effacer entre les deux (un `insert … do nothing` puis un `select … for update` laisserait cette fenêtre).
+  insert into public.login_throttle as t (scope, key, window_start) values (p_scope, p_key, p_now)
+  on conflict (scope, key) do update set window_start = t.window_start
+  returning t.* into v_ligne;
 
   -- Bloqué : l'attente restante, sans compter.
   if v_ligne.blocked_until is not null and v_ligne.blocked_until > p_now then

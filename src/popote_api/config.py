@@ -209,6 +209,13 @@ class Settings(BaseSettings):
             raise ValueError("supabase_secret_key sans supabase_url : poser l'adresse du projet aussi.")
         return self
 
+    @model_validator(mode="after")
+    def _le_plafond_d_attente_couvre_la_fenetre(self) -> Self:
+        # La base refuse un plafond plus court que la fenêtre : échouer au démarrage plutôt qu'à la connexion.
+        if self.connexion_attente_max_s < self.connexion_fenetre_s:
+            raise ValueError("connexion_attente_max_s : au moins connexion_fenetre_s.")
+        return self
+
     @property
     def nom_du_cookie_de_session(self) -> str:
         return self.session_cookie_name or NOM_DU_COOKIE_DE_SESSION
