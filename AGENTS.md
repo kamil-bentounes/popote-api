@@ -16,3 +16,4 @@ Règles pour toute session d'agent sur `popote-api` (base Supabase, fonctions, i
 - `tests/db/front-fige/` est une copie figée du front : ne pas la modifier (retirée en 0.5).
 - Aucun secret dans un fichier versionné ; le `.env` local ne porte que les clés de démonstration.
 - Commits Conventional Commits en français, sans ligne de co-auteur. Remote : alias SSH `github-perso` uniquement.
+- Erreurs de l'API : une route ou une dépendance lève `Probleme` ; un middleware rend `reponse(...)` au lieu de lever (une exception de middleware finit en 500). Authentification et limite de débit : dépendances FastAPI.
