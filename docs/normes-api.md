@@ -219,7 +219,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   [`exploitation.md`](exploitation.md) § 10.
 - `suivi.signale(exc, request_id)` : la prise du suivi hébergé (D4), sans effet ; elle ne fait jamais échouer
   la réponse d'une 500.
-- `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
+- `/api/healthz` (le processus vit ; rend aussi `version`, le SHA du commit de l'image) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
   La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun
   droit sur les tables) et lit une ligne de `public.instance_setting` : table de référence lisible sans foyer,

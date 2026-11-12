@@ -12,6 +12,11 @@ class Etat(BaseModel):
     status: Literal["ok"]
 
 
+class Sante(Etat):
+    # Le SHA du commit de l'image : le déploiement attend de le lire pour savoir que la nouvelle image répond.
+    version: str
+
+
 @router.get(
     "/healthz",
     operation_id="healthz",
@@ -19,8 +24,8 @@ class Etat(BaseModel):
     response_description="Le processus répond.",
     responses=reponses_erreur(500),
 )
-async def healthz() -> Etat:
-    return Etat(status="ok")
+async def healthz(request: Request) -> Sante:
+    return Sante(status="ok", version=request.app.state.settings.version)
 
 
 @router.get(
