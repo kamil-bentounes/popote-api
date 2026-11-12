@@ -16,7 +16,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           },
           "pointer": {
             "anyOf": [
@@ -27,6 +28,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "JSON Pointer (RFC 6901) vers le champ du corps.",
             "title": "Pointer"
           }
@@ -95,6 +97,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "Seulement pour `422`.",
             "title": "Errors"
           },

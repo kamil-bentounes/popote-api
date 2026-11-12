@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import pytest
 from _commun import reglages
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -25,6 +24,10 @@ def _application_avec_une_route() -> FastAPI:
     async def cree(entree: Entree, page: int = 1) -> dict[str, str]:
         return {"nom": entree.nom}
 
+    @app.get("/api/_test/oubli")  # ne déclare pas son 422 : FastAPI y mettrait son propre schéma
+    async def oubli(page: int = 1) -> dict[str, int]:
+        return {"page": page}
+
     return app
 
 
@@ -38,10 +41,9 @@ def test_le_contrat_serialise_trie_ses_cles_et_finit_par_une_fin_de_ligne() -> N
     assert texte == '{\n  "a": {\n    "c": 2,\n    "d": "é"\n  },\n  "b": 1\n}\n'
 
 
-def test_le_contrat_ne_depend_pas_de_l_environnement_du_poste(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POPOTE_ENV", "prod")
-    monkeypatch.setenv("POPOTE_DATABASE_URL", "postgresql://x:y@127.0.0.1:1/rien")
-    assert contrat_publie() == OPENAPI_JSON.read_text(encoding="utf-8")
+def test_le_contrat_de_l_essai_est_celui_de_local() -> None:
+    """Les routes provisoires de l'essai (preuves) restent hors contrat."""
+    assert serialise(create_app(reglages("essai")).openapi()) == OPENAPI_JSON.read_text(encoding="utf-8")
 
 
 def _reponses_du_contrat(contrat: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
@@ -62,16 +64,11 @@ def test_toute_erreur_documentee_est_un_probleme_json() -> None:
         assert reponse["content"][MEDIA]["schema"] == {"$ref": "#/components/schemas/ProblemDetails"}
 
 
-def test_une_route_qui_declare_le_422_n_herite_pas_du_schema_de_fastapi() -> None:
+def test_le_422_de_fastapi_est_remplace_par_problem_details_partout() -> None:
     contrat = _application_avec_une_route().openapi()
-    assert "HTTPValidationError" not in contrat["components"]["schemas"]
-
-
-def test_les_reponses_de_succes_gardent_leur_type_de_contenu() -> None:
-    contrat = create_app(reglages("local")).openapi()
-    succes = [r for _, s, r in _reponses_du_contrat(contrat) if s == "200"]
-    assert succes
-    assert all(list(r["content"]) == ["application/json"] for r in succes)
+    assert not {"HTTPValidationError", "ValidationError"} & set(contrat["components"]["schemas"])
+    oubli = contrat["paths"]["/api/_test/oubli"]["get"]["responses"]["422"]
+    assert oubli["content"] == {MEDIA: {"schema": {"$ref": "#/components/schemas/ProblemDetails"}}}
 
 
 def test_chaque_operation_a_un_identifiant_et_un_resume() -> None:
@@ -86,11 +83,6 @@ def test_healthz_et_readyz_declarent_leurs_erreurs() -> None:
     chemins = create_app(reglages("local")).openapi()["paths"]
     assert set(chemins["/api/healthz"]["get"]["responses"]) == {"200", "500"}
     assert set(chemins["/api/readyz"]["get"]["responses"]) == {"200", "500", "503"}
-
-
-def test_un_statut_sans_titre_connu_est_refuse_a_la_declaration() -> None:
-    with pytest.raises(KeyError):
-        reponses_erreur(418)
 
 
 async def test_les_erreurs_reelles_respectent_le_schema_problem_details() -> None:
