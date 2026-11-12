@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
 
-from popote_api import errors
+from popote_api import errors, relais
 from popote_api.api import health
 from popote_api.config import Settings
 
@@ -16,6 +16,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="Popote", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
     )
     app.state.settings = settings
+
+    # Starlette exécute en premier le dernier middleware déclaré : `identifiant` doit envelopper `garde`.
+    app.middleware("http")(relais.garde)
 
     @app.middleware("http")
     async def identifiant(request: Request, suite: Callable[[Request], Awaitable[Response]]) -> Response:
