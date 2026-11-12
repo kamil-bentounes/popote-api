@@ -1,0 +1,37 @@
+name: Réveil de l'essai
+on:
+  schedule:
+    - cron: "47 6 * * *" # chaque jour à 06:47 UTC, hors des heures rondes
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: reveil-essai
+  cancel-in-progress: false
+jobs:
+  reveil:
+    # Un échec fait échouer le run : GitHub prévient par mail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: essai # porte la variable ESSAI_SUPABASE_URL
+    permissions: {}
+    env:
+      ESSAI_SUPABASE_URL: ${{ vars.ESSAI_SUPABASE_URL }}
+      # Clé publiable du projet d'essai : PUBLIQUE par conception (elle part dans le bundle du front,
+      # voir VITE_SUPABASE_ANON_KEY dans popote-web/.env.essai). Ce n'est pas un secret.
+      ESSAI_SUPABASE_PUBLISHABLE_KEY: sb_publishable_i_ORdPvw0SlhaclCDoQ15Q_DHMR8jcI # gitleaks:allow
+    steps:
+      - name: Réveiller l'API par le relais
+        run: |
+          set -euo pipefail
+          curl --silent --show-error --fail-with-body --max-time 60 \
+            --retry 3 --retry-delay 10 --retry-all-errors \
+            https://essai.notre-popote.fr/api/readyz
+          echo
+      - name: Réveiller le projet Supabase
+        run: |
+          set -euo pipefail
+          curl --silent --show-error --fail-with-body --max-time 60 \
+            --retry 3 --retry-delay 10 --retry-all-errors \
+            --header "apikey: $ESSAI_SUPABASE_PUBLISHABLE_KEY" \
+            "$ESSAI_SUPABASE_URL/auth/v1/health"
+          echo
