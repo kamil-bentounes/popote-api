@@ -12,6 +12,7 @@ from popote_api import contrat, erreurs_base, errors, journal, limites, relais
 from popote_api.api import health, internes, v1
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
+from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import Base, SondeBase
 from popote_api.security.debit import Debit, LimiteParAdresse
 from popote_api.security.empreintes import Empreintes
@@ -37,6 +38,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     )
 
     empreintes = Empreintes.depuis(settings)
+    auth_admin = cree_auth_admin(settings)
 
     @asynccontextmanager
     async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
@@ -48,6 +50,11 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
         if not base.service_configure:
             avertissements.warning(
                 "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
+            )
+        if not auth_admin.configure:
+            avertissements.warning(
+                "POPOTE_SUPABASE_URL ou POPOTE_SUPABASE_SECRET_KEY absente : l'administration d'Auth est "
+                "indisponible (503)."
             )
         if not settings.secrets_internes:
             avertissements.warning(
@@ -78,6 +85,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.state.debit = Debit(horloge)
     app.state.horloge_unix = time.time  # l'instant de la signature interne ; les tests la remplacent
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
+    app.state.auth_admin = auth_admin
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
     # `Trace`, `Acces`, `Garde`, `LimiteParAdresse` (un refus de débit ne lit pas le corps), puis les
