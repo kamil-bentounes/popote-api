@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response
 
 from popote_api import errors
+from popote_api.api import health
 from popote_api.config import Settings
 
 
@@ -23,6 +24,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         reponse.headers["X-Request-Id"] = request.state.request_id
         return reponse
 
+    app.include_router(health.router)
     errors.installe(app)
     return app
 
