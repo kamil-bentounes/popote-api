@@ -43,6 +43,11 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `409` conflit d'état (transition de cycle refusée, mois déjà clos) ; `412` version périmée (`If-Match`) ;
   `413` corps trop gros ; `415` type de contenu refusé ; `422` données invalides ; `428` `If-Match` manquant ;
   `429` trop de requêtes ; `500` erreur interne ; `502`, `503`, `504` pour un fournisseur en panne ou trop lent.
+- **`HEAD` n'est pas servi.** Il est classé « sûr » (garde d'origine, limite de lecture), mais aucune route ne le
+  déclare : le front relit avec `GET` et `If-None-Match`, et une opération `HEAD` par lecture doublerait le
+  contrat (un `operationId` de plus par route) sans servir personne. Sous `/api/v1`, `HEAD` rend donc `401`
+  comme toute méthode non servie (§ 3.10) ; ailleurs `405` avec `Allow`. Une route qui le servirait un jour
+  l'écrit à part et rend le même `ETag` et le même `304` que son `GET`.
 
 ## 3.3 Erreurs (RFC 9457)
 
@@ -111,7 +116,8 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
     en-tête, pour que le client relise sans second aller-retour. Jamais le « succès » facultatif d'une écriture
     déjà appliquée (§ 13.1.1) : deux personnes du foyer qui éditent ensemble doivent voir le conflit.
   - `If-None-Match` : comparaison **faible** ; `*` correspond à toute ressource existante. Si la condition est
-    fausse, `304` pour `GET` et `HEAD`, `412` pour les autres méthodes (§ 13.1.2). Le `304` n'a pas de corps et
+    fausse, `304` pour `GET` et `HEAD`, `412` pour les autres méthodes (§ 13.1.2). Nos routes ne servent que `GET`
+    (voir « `HEAD` » plus bas) : la règle de `repond_ou_304` pour `HEAD` n'a pas de route qui l'atteigne. Le `304` n'a pas de corps et
     reprend `ETag` et `Cache-Control` du `200` (§ 15.4.5), plus `Vary`, `Content-Location` et `Expires` si la route
     les pose. `Date` vient du serveur.
   - Ordre (§ 13.2.2) : `If-Match`, puis `If-None-Match`. Un `If-Match` faux l'emporte sur un `304`.
@@ -228,6 +234,18 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - Les erreurs d'une route sont déclarées avec `responses=reponses_erreur(404, 409)` (`errors.py`) : le contrat
   les publie en `application/problem+json`, schéma `ProblemDetails` (la forme que `reponse()` produit).
   `readyz` déclare aussi `503`.
+- **Les erreurs communes se déclarent une fois**, pour toute l'application (`contrat._declare_les_erreurs_communes`),
+  pas route par route : `503` avec `Retry-After` (le délai `delai_depasse`, un limiteur saturé), `429` avec
+  `Retry-After`, `RateLimit` et `RateLimit-Policy` (sauf `healthz` et `readyz`, non limitées), `404` sous
+  `/api/v1/`, `403` sur toute écriture (la garde d'origine), `413` et `415` sur `POST`, `PUT` et `PATCH`. Une
+  route qui déclare déjà un de ces statuts garde sa description. `X-Request-Id` est déclaré sur toute réponse.
+- **Les en-têtes conditionnels sont des paramètres** : une route qui appelle `repond_ou_304` ou `exige_if_match`
+  pose `dependencies=[EN_TETES_CONDITIONNELS]` (`If-None-Match`, `If-Match`, optionnels dans le contrat : leur
+  absence est jugée par la route, `428` pour `If-Match`) et déclare son `304` avec `REPONSE_304` (`ETag` et
+  `Cache-Control`, ceux du `200`).
+- `tests/contract/test_schemathesis_authentifie.py` éprouve `GET /api/v1/me` avec une vraie session (base locale,
+  marqueur `integration`) : les réponses `200` et `304` sont validées contre le contrat. `test_schemathesis.py`,
+  sans base, n'atteint que le `401`.
 - Gardes de la CI (job `contrat`) : le contrat régénéré doit être celui qui est versionné ; `oasdiff breaking`
   compare à `origin/main:openapi.json` et échoue sur une rupture (niveau `ERR`) ; retirer une route sans
   l'avoir marquée `deprecated: true` avec `x-sunset` (date au moins 30 jours après) est une rupture. Tant que
@@ -250,11 +268,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   (RFC 9110 § 11.1 : un `auth-scheme` est un `token`, enregistré ou non). Jamais `Basic`, `Digest` ou
   `Negotiate` : le navigateur ouvrirait une fenêtre de saisie, et `Bearer` promettrait un en-tête
   `Authorization` que personne n'envoie.
-- **Limites connues de la fermeture** : FastAPI lit le corps avant de résoudre les dépendances, donc un `POST`
-  au JSON invalide sans cookie rend `422` avant le `401` ; et `404`, `405` ne disent pas le `401` : la
-  présence d'une route se devine sans session. Hors local, tout passe d'abord par le relais (en-tête secret),
-  et le contrat est publié ; le risque est accepté. Aucune limite de débit n'existe encore avant la lecture de
-  la session : la limite par IP en amont (T3b) s'y pose.
+- **Sous `/api/v1/`, tout refus est un `401` tant qu'aucune session n'a été validée** (`errors._route_fermee`,
+  état `session_validee` posé par `personne_connectee`). FastAPI lit le corps avant les dépendances et le
+  routeur répond avant elles pour une adresse ou une méthode inconnue : sans cette règle, un JSON invalide
+  rendait `422`, une méthode inconnue `405` avec `Allow`, une adresse inconnue `404`, et la présence d'une
+  route se devinait sans session. Le `401` est celui de l'absence de session, sans `Allow` ; le journal
+  garde la raison (`refus_405_avant_la_session`). Conséquence assumée : une méthode ou une adresse que le
+  routeur n'a pas servie rend `401` même pour une personne connectée (la dépendance n'a pas tourné) ; un
+  refus levé par une route qui a lu la session (`404` d'un objet, `422` d'un champ) garde son statut.
+  `413` et `415` des middlewares précèdent encore le `401` : ils ne disent rien de la route (taille et type
+  du corps, vus avant toute lecture). Hors local, tout passe d'abord par le relais (en-tête secret), et le
+  contrat est publié ; ce dernier risque est accepté. La limite par adresse compte les refus avant la session.
 - **Fermé par défaut, et prouvé** : `tests/unit/test_routes_fermees.py` énumère toutes les routes de
   l'application. Hors de la liste blanche écrite dans le test (`/api/healthz`, `/api/readyz`, et le contrat
   `/api/openapi.json` que FastAPI sert hors prod), chacune exige `personne_connectee`. Une route ajoutée sans
