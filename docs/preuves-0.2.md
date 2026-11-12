@@ -135,8 +135,9 @@ Date : 12/11/2026 (navigateur Chromium, puis rejouée par `curl` le même soir).
 - dans le navigateur, le cookie n'est pas lisible par JavaScript (`document.cookie` ne le contient pas) ;
 - appel direct de l'adresse du conteneur, sans l'en-tête du relais : `404`.
 
-Rejouer : `curl -si -X POST https://essai.notre-popote.fr/api/_preuves/cookie -H 'X-Popote-IP: 192.0.2.1'`, puis
-`curl -s https://essai.notre-popote.fr/api/_preuves/cookie -b '__Host-popote_preuve=x'`.
+Rejouer (ces routes de preuve ont été retirées en 0.3, avec `GET /api/v1/me` : pour rejouer, repartir du commit
+de la preuve) : `curl -si -X POST https://essai.notre-popote.fr/api/_preuves/cookie -H 'X-Popote-IP: 192.0.2.1'`,
+puis `curl -s https://essai.notre-popote.fr/api/_preuves/cookie -b '__Host-popote_preuve=x'`.
 
 ## Preuve 6 : sauvegarde et restauration
 

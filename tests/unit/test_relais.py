@@ -95,5 +95,5 @@ async def test_une_exemption_declaree_passe_sans_relais(monkeypatch: pytest.Monk
     assert "x-popote-relais" not in retour.en_tetes
 
 
-def test_la_liste_d_exemptions_est_vide_a_l_etape_0_2() -> None:
-    assert relais.EXEMPTIONS == ()
+def test_la_liste_d_exemptions_est_le_seul_prefixe_interne() -> None:
+    assert relais.EXEMPTIONS == ("/internal/",)
