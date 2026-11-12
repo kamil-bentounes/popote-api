@@ -12,7 +12,9 @@
 --
 -- Tout refus rend `null` / `false` SANS exception et sans le dire : adresse inconnue, deux comptes pour la même
 -- adresse (casse), compte SSO ou anonyme, banni (`banned_until` futur), supprimé (`deleted_at`), hachage vide, nul
--- ou mal formé, hachage qui ne commence pas par `$2a$`, mot de passe vide, nul ou de plus de 72 octets.
+-- ou mal formé, hachage qui ne commence pas par `$2a$`, mot de passe vide, nul ou de plus de 72 octets, adresse
+-- non confirmée (`email_confirmed_at` nul : GoTrue refuse aussi cette connexion ; sans cela, quelqu'un qui s'inscrirait
+-- avec l'adresse d'un tiers entrerait ici). Un compte supprimé ne compte pas dans le doublon d'adresse.
 --
 --  - SEUL `$2a$` EST ACCEPTÉ (B15) : pgcrypto ne reconnaît pas `$2b$` ni `$2y$` ; devant un préfixe inconnu, il
 --    retombe sur l'ancien `crypt` DES et rend une chaîne sans rapport, sans erreur. Un compte à un autre préfixe
@@ -28,7 +30,7 @@
 --    de `auth.users`. Une adresse n'est jamais un motif (égalité, pas `ilike`).
 --
 -- Droits : `popote_api` SEUL (contexte « connexion », `Base.connexion()`) ; ni `authenticated`, ni `anon`, ni
--- `service_role`, ni `popote_internal`. Un `crypt()` par appel est un coût (60 à 100 ms) : le pool `popote_api` et
+-- `service_role`, ni `popote_internal`. Un `crypt()` par appel est un coût (de l'ordre de 50 à 100 ms) : le pool `popote_api` et
 -- la limite de connexion (T6) l'encadrent ; aucun appel ne se fait sans avoir pris un créneau.
 --
 -- COMPATIBLE avec l'appli en ligne : fonctions neuves, lecture seule de `auth.users`, aucun appelant actuel.
@@ -90,16 +92,18 @@ declare
   v_personne uuid;
   v_hash text;
 begin
-  -- Un hachage n'est rendu que pour un compte actif ; deux comptes (ou aucun) pour l'adresse : aucun hachage.
+  -- Un hachage n'est rendu que pour un compte actif et confirmé ; deux comptes non supprimés (ou aucun) pour
+  -- l'adresse : aucun hachage.
   select pg_catalog.count(*),
          (pg_catalog.array_agg(u.id))[1],
          (pg_catalog.array_agg(case
-            when (u.banned_until is null or u.banned_until <= v_maintenant) and u.deleted_at is null
+            when (u.banned_until is null or u.banned_until <= v_maintenant) and u.email_confirmed_at is not null
             then u.encrypted_password end))[1]
     into v_comptes, v_personne, v_hash
     from auth.users u
    where v_email <> ''
      and pg_catalog.lower(pg_catalog.btrim(u.email)) = v_email
+     and u.deleted_at is null
      and not u.is_sso_user
      and not u.is_anonymous;
   if v_comptes is distinct from 1 then
@@ -135,6 +139,7 @@ begin
    where u.id = p_person
      and (u.banned_until is null or u.banned_until <= v_maintenant)
      and u.deleted_at is null
+     and u.email_confirmed_at is not null
      and not u.is_sso_user
      and not u.is_anonymous;
   return private.mot_de_passe_correspond(p_password, v_hash);

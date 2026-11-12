@@ -28,10 +28,13 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   Auth : ni ses limites par IP partagées, ni des jetons à révoquer. La fonction :
   - refuse sans exception et sans dire pourquoi : adresse inconnue, deux comptes pour la même adresse (à la casse
     près), compte SSO ou anonyme, banni (`banned_until` dans le futur), supprimé (`deleted_at`), hachage vide, nul ou
-    mal formé, mot de passe vide, nul ou de plus de 72 octets ;
+    mal formé, adresse non confirmée (`email_confirmed_at` nul : GoTrue refuse aussi cette connexion, et sans cela
+    une inscription avec l'adresse d'un tiers ouvrirait la porte), mot de passe vide, nul ou de plus de 72 octets ;
+    un compte supprimé ne compte pas dans le doublon d'adresse ;
   - **n'accepte que `$2a$`** (B15, migration 0137) : pgcrypto ne reconnaît pas `$2b$` ni `$2y$` et, devant un préfixe
     inconnu, retombe sur l'ancien `crypt` DES sans erreur (vérifié). Un compte à un autre préfixe passe par « mot
-    de passe oublié » (il a un profil) ; les préfixes de la prod sont comptés à la répétition de la bascule ;
+    de passe oublié » (il a un profil) ; les préfixes **et les coûts** (`$2a$10$`) des hachages de la prod sont comptés à la répétition de la bascule : le
+    hachage factice a le coût 10, un autre coût en prod ferait dire au temps que le compte existe ;
   - fait **exactement un `crypt()` dans toutes les branches** : le vrai hachage, ou un hachage factice de même
     coût (`$2a$10$`) pour un compte inconnu, banni, supprimé, sans hachage ou mal formé. Mesuré en local le 12/11 :
     58,7 ms pour un compte connu et un mauvais mot de passe, 59,5 ms pour une adresse inconnue (médiane de 25) ;

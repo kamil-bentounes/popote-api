@@ -152,6 +152,7 @@ REFUS: dict[str, dict[str, object]] = {
     "supprime": {"colonnes": {"deleted_at": "now()"}},
     "sso": {"colonnes": {"is_sso_user": True}},
     "anonyme": {"colonnes": {"is_anonymous": True}},
+    "non_confirme": {"colonnes": {"email_confirmed_at": None}},
 }
 PREFIXES_REFUSES = {"md5": "$1$", "blowfish_y": "$2y$", "blowfish_b": "$2b$", "blowfish_x": "$2x$"}
 
@@ -226,6 +227,24 @@ def test_deux_comptes_pour_la_meme_adresse_a_la_casse_pres_sont_refuses(
     comptes.bon(email=email.upper())
     assert verifie(cx_api, email, MOT_DE_PASSE) is None
     assert verifie(cx_api, email.upper(), MOT_DE_PASSE) is None
+
+
+def test_un_compte_supprime_ne_bloque_pas_le_compte_actif_de_la_meme_adresse(
+    cx_api: psycopg.Connection[Ligne], comptes: Comptes
+) -> None:
+    _, email = comptes.bon()
+    supprime = comptes.admin.execute("select now()").fetchone()
+    assert supprime is not None
+    comptes.bon(email=email.upper(), deleted_at=supprime[0])
+    assert verifie(cx_api, email, MOT_DE_PASSE) is not None
+
+
+def test_un_compte_dont_l_adresse_n_est_pas_confirmee_ne_se_connecte_pas(
+    cx_api: psycopg.Connection[Ligne], comptes: Comptes
+) -> None:
+    personne, email = comptes.bon(email_confirmed_at=None)
+    assert verifie(cx_api, email, MOT_DE_PASSE) is None
+    assert verifie_de(cx_api, personne, MOT_DE_PASSE) is False
 
 
 def test_un_bannissement_echu_est_accepte(cx_api: psycopg.Connection[Ligne], comptes: Comptes) -> None:
@@ -388,9 +407,13 @@ def test_seul_popote_api_a_le_droit_d_execution(
 # ── Le temps ne dit rien ────────────────────────────────────────────────────
 
 ESSAIS = 15
+# Un second `crypt()` doublerait le temps ; les médianes mesurées tombent à 0,95-1,05 (marge : charge).
+RAPPORT_MIN, RAPPORT_MAX = 0.65, 1.5
 
 
-def mediane(cx: psycopg.Connection[Ligne], email: str, mot_de_passe: str = MOT_DE_PASSE + "x") -> float:
+def mediane(
+    cx: psycopg.Connection[Ligne], email: str, mot_de_passe: str | None = MOT_DE_PASSE + "x"
+) -> float:
     verifie(cx, email, mot_de_passe)  # chauffe
     durees = []
     for _ in range(ESSAIS):
@@ -406,17 +429,30 @@ def test_un_compte_inconnu_coute_le_meme_temps_qu_un_mauvais_mot_de_passe(
     _, connu = comptes.bon()
     reference = mediane(cx_api, connu)
     inconnu = mediane(cx_api, f"{uuid4().hex}@inconnu.test")
-    assert 0.5 <= inconnu / reference <= 2, (inconnu, reference)
+    assert RAPPORT_MIN <= inconnu / reference <= RAPPORT_MAX, (inconnu, reference)
 
 
-@pytest.mark.parametrize("nom", ["hachage_vide", "malforme", "banni_a_l_infini", "supprime", "sso"])
+@pytest.mark.parametrize(
+    "nom",
+    [
+        "hachage_vide",
+        "hachage_nul",
+        "malforme",
+        "banni_a_l_infini",
+        "banni_demain",
+        "supprime",
+        "sso",
+        "anonyme",
+        "non_confirme",
+    ],
+)
 def test_un_refus_coute_le_meme_temps_qu_un_mauvais_mot_de_passe(
     nom: str, cx_api: psycopg.Connection[Ligne], comptes: Comptes
 ) -> None:
     _, connu = comptes.bon()
     _, refuse = cree_refus(comptes, REFUS[nom])
     reference = mediane(cx_api, connu)
-    assert 0.5 <= mediane(cx_api, refuse) / reference <= 2
+    assert RAPPORT_MIN <= mediane(cx_api, refuse) / reference <= RAPPORT_MAX
 
 
 def test_un_prefixe_2b_et_un_mot_de_passe_trop_long_coutent_le_meme_temps(
@@ -425,8 +461,19 @@ def test_un_prefixe_2b_et_un_mot_de_passe_trop_long_coutent_le_meme_temps(
     _, connu = comptes.bon()
     _, en_2b = comptes.cree("$2b$" + hache(comptes.admin, MOT_DE_PASSE)[4:])
     reference = mediane(cx_api, connu)
-    assert 0.5 <= mediane(cx_api, en_2b) / reference <= 2
-    assert 0.5 <= mediane(cx_api, connu, "z" * 100) / reference <= 2
+    assert RAPPORT_MIN <= mediane(cx_api, en_2b) / reference <= RAPPORT_MAX
+    for mot_de_passe in ("z" * 100, "", None):
+        assert RAPPORT_MIN <= mediane(cx_api, connu, mot_de_passe) / reference <= RAPPORT_MAX
+
+
+def test_un_doublon_d_adresse_coute_le_meme_temps_qu_un_mauvais_mot_de_passe(
+    cx_api: psycopg.Connection[Ligne], comptes: Comptes
+) -> None:
+    _, connu = comptes.bon()
+    _, double = comptes.bon()
+    comptes.bon(email=double.upper())
+    reference = mediane(cx_api, connu)
+    assert RAPPORT_MIN <= mediane(cx_api, double) / reference <= RAPPORT_MAX
 
 
 # ── Le mot de passe ne reste nulle part ─────────────────────────────────────
