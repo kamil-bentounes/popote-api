@@ -73,7 +73,7 @@ EN_TETE_DU_CONTRAT: Final[dict[str, Any]] = {
         "l'effet ; la même clé avec un autre contenu rend `422`, pendant que le premier envoi tourne `409`."
     ),
     "schema": {"type": "string", "minLength": 3, "maxLength": 2 * LONGUEUR_MAX_DE_LA_CLE + 2},
-    "example": '"8e03978e-40d5-43e8-bc93-6894a57f9324"',
+    "example": '"depense-2026-11-12-0001"',
 }
 
 

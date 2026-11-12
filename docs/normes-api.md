@@ -99,7 +99,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   rend `409 requete_en_cours` ; l'en-tête manquant rend `400 cle_idempotence_manquante`, mal formé
   `400 cle_idempotence_invalide`.
   - **Forme de l'en-tête** : une chaîne de champ structuré (RFC 9651), donc entre guillemets :
-    `Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"`. Contenu ASCII imprimable de 1 à 255 caractères,
+    `Idempotency-Key: "depense-2026-11-12-0001"`. Contenu ASCII imprimable de 1 à 255 caractères,
     `"` et `\` échappés par `\`. Ni paramètre (`;a=1`), ni liste, ni deuxième ligne d'en-tête : `400`.
   - **Même envoi** = même méthode, même chemin, même chaîne de requête, même corps (SHA-256, `empreinte_de_la_requete`).
   - **Garde** : `idempotency_key` (migration 0135), clé primaire (personne, clé), RLS sur `auth.uid()` : la même
