@@ -2,6 +2,19 @@
 
 Chaque section dit ce qui est prouvé, comment le rejouer (sans aucun secret) et ce qui reste à surveiller.
 
+## Les six preuves
+
+Définies au § 10 de la [spec du socle](https://github.com/kamil-bentounes/popote-web/blob/main/docs/superpowers/specs/2026-11-12-socle-design.md). Un résultat n'est consigné ici que lorsque la preuve est faite.
+
+| # | Preuve | État | Où |
+|---|---|---|---|
+| 1 | Clés historiques : travailler avec la seule clé secrète, réactiver ; suppression de la clé publiable par défaut ; coupure de la connexion par mot de passe de GoTrue sans perdre son administration | à faire | — |
+| 2 | Réveil : une requête de l'API sur `/api/readyz` garde-t-elle le projet éveillé (demande plus de 7 jours d'inactivité mesurée) | à faire | — |
+| 3 | Rôles `popote_api` et `popote_internal` par Supavisor, avec `set local role` | faite le 12/11/2026 | [Preuve 3 : Supavisor](#preuve-3--supavisor) |
+| 4 | Relais Cloudflare : cookie `__Host-`, `no-store`, en-tête secret, adresse IP lue | à faire | — |
+| 5 | Démarrage à froid du conteneur, mesuré | à faire | — |
+| 6 | Sauvegarde puis restauration complète dans un projet vide | à faire | — |
+
 ## Preuve 3 : Supavisor
 
 Date : 12/11/2026. Migration : `supabase/migrations/0130_roles_api.sql`. Tests : `tests/integration/test_roles.py`.
