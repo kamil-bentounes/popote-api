@@ -28,6 +28,13 @@ jobs:
       SUPABASE_URL: ${{ vars.PROD_SUPABASE_URL }}
       S3_BUCKET: ${{ vars.S3_BUCKET }}
     steps:
+      # Le journal d'un dépôt public ne doit pas porter l'hôte, l'utilisateur ni l'URL (ni la référence du
+      # projet qu'ils contiennent) : GitHub ne masque d'office que les secrets, pas les variables.
+      - name: Masquer les variables sensibles
+        run: |
+          for valeur in "$PGHOST" "$PGUSER" "$SUPABASE_URL" "${PGUSER#*.}" "$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://##; s#\..*$##')"; do
+            [ -z "$valeur" ] || echo "::add-mask::$valeur"
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -56,6 +63,19 @@ jobs:
             exit 1
           fi
           bash ops/sauvegarde/sauvegarde.sh
+      - name: Signaler la réussite à la sonde extérieure (facultatif)
+        env:
+          SONDE_URL: ${{ vars.SONDE_SAUVEGARDE_URL }}
+        run: |
+          # Un « dead man's switch » : la sonde alerte si ce signal n'arrive plus (cron coupé, dépôt inactif).
+          # Sans SONDE_SAUVEGARDE_URL dans l'environnement, rien à faire.
+          if [ -z "$SONDE_URL" ]; then
+            echo "pas de sonde configurée (variable SONDE_SAUVEGARDE_URL)"
+            exit 0
+          fi
+          echo "::add-mask::$SONDE_URL"
+          curl -fsS -m 10 --retry 3 -o /dev/null "$SONDE_URL" || echo "::warning::la sonde extérieure n'a pas répondu"
+
   essai:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -71,6 +91,13 @@ jobs:
       SUPABASE_URL: ${{ vars.ESSAI_SUPABASE_URL }}
       S3_BUCKET: ${{ vars.S3_BUCKET }}
     steps:
+      # Le journal d'un dépôt public ne doit pas porter l'hôte, l'utilisateur ni l'URL (ni la référence du
+      # projet qu'ils contiennent) : GitHub ne masque d'office que les secrets, pas les variables.
+      - name: Masquer les variables sensibles
+        run: |
+          for valeur in "$PGHOST" "$PGUSER" "$SUPABASE_URL" "${PGUSER#*.}" "$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://##; s#\..*$##')"; do
+            [ -z "$valeur" ] || echo "::add-mask::$valeur"
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -94,3 +121,15 @@ jobs:
             exit 1
           fi
           bash ops/sauvegarde/sauvegarde.sh
+      - name: Signaler la réussite à la sonde extérieure (facultatif)
+        env:
+          SONDE_URL: ${{ vars.SONDE_SAUVEGARDE_URL }}
+        run: |
+          # Un « dead man's switch » : la sonde alerte si ce signal n'arrive plus (cron coupé, dépôt inactif).
+          # Sans SONDE_SAUVEGARDE_URL dans l'environnement, rien à faire.
+          if [ -z "$SONDE_URL" ]; then
+            echo "pas de sonde configurée (variable SONDE_SAUVEGARDE_URL)"
+            exit 0
+          fi
+          echo "::add-mask::$SONDE_URL"
+          curl -fsS -m 10 --retry 3 -o /dev/null "$SONDE_URL" || echo "::warning::la sonde extérieure n'a pas répondu"

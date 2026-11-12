@@ -8,13 +8,18 @@ runs:
     - name: Client PostgreSQL 17 (PGDG)
       shell: bash
       env:
-        # Empreinte de la clé de signature du dépôt apt.postgresql.org (ACCC4CF8).
+        # Empreinte de la clé de signature du dépôt apt.postgresql.org (ACCC4CF8), telle que PGDG la
+        # publie (https://www.postgresql.org/download/linux/ubuntu/) : en dur, jamais lue ailleurs.
         EMPREINTE_PGDG: B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
       run: |
         set -euo pipefail
         cle="$RUNNER_TEMP/pgdg.asc"
         curl -fsSL --retry 3 -o "$cle" https://www.postgresql.org/media/keys/ACCC4CF8.asc
-        trouvee=$(gpg --show-keys --with-colons "$cle" | awk -F: '/^fpr/ { print $10; exit }')
+        # Exactement UNE clé dans le fichier (pas une seconde qu'apt accepterait aussi), et c'est la bonne.
+        gpg --show-keys --with-colons "$cle" > "$RUNNER_TEMP/pgdg.colons"
+        [ "$(grep -c '^pub:' "$RUNNER_TEMP/pgdg.colons")" = 1 ] || { echo "::error::le fichier PGDG ne contient pas exactement une clé"; exit 1; }
+        [ "$(grep -c '^sub:' "$RUNNER_TEMP/pgdg.colons")" = 0 ] || { echo "::error::le fichier PGDG contient une sous-clé"; exit 1; }
+        trouvee=$(awk -F: '/^fpr/ { print $10 }' "$RUNNER_TEMP/pgdg.colons")
         [ "$trouvee" = "$EMPREINTE_PGDG" ] || { echo "::error::clé PGDG inattendue"; exit 1; }
         sudo install -D -m 0644 "$cle" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
         echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" |
