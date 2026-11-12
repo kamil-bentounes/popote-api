@@ -1,3 +1,5 @@
 # Fichiers de verrou : générés, masqués dans les diffs et hors du compte des lignes d’une demande de fusion.
 uv.lock linguist-generated
 package-lock.json linguist-generated
+# Le contrat OpenAPI est produit par le code (uv run python scripts/exporte_contrat.py) : jamais écrit à la main.
+openapi.json linguist-generated

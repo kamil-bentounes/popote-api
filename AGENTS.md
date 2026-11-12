@@ -8,6 +8,7 @@ Règles pour toute session d'agent sur `popote-api` (base Supabase, fonctions, i
 - Référentiels : `npm run seed` · Tests : `npm test` (Vitest, contre la pile locale)
 - Fonctions Edge : `npx supabase functions serve` doit tourner pour `tests/db/invitation.test.ts`.
 - Avant de proposer un commit, la suite complète `npm test` doit passer.
+- Contrat : `uv run python scripts/exporte_contrat.py` régénère `openapi.json` après tout changement de route, de modèle ou de réponse d'erreur ; un conflit sur ce fichier se règle en le régénérant, jamais à la main.
 
 ## Règles
 
