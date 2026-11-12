@@ -13,15 +13,26 @@ journal = logging.getLogger(__name__)
 DELAI_TOTAL_S = 3  # connexion et requête comprises
 DUREE_DU_CACHE_S = 5.0
 
+# Lit une vraie table, c'est ce qui garde le projet Supabase éveillé (spec § 3.11). `instance_setting` :
+# sa politique `true` la rend lisible par `authenticated` sans foyer, et la migration 0009 y sème
+# toujours une ligne. `popote_api` (NOINHERIT, sans droit sur les tables) passe par `set local role`.
+REQUETE_DE_SONDE: LiteralString = "select 1 from public.instance_setting limit 1"
 
-async def repond(dsn: str, requete: LiteralString = "select 1") -> bool:
+
+async def repond(dsn: str, requete: LiteralString = REQUETE_DE_SONDE) -> bool:
+    """Vrai si la table de référence rend une ligne ; la ligne n'est ni gardée ni journalisée."""
     try:
         async with asyncio.timeout(DELAI_TOTAL_S):
             async with await psycopg.AsyncConnection.connect(
                 dsn, connect_timeout=5, prepare_threshold=None
             ) as connexion:
-                await connexion.execute(requete)
-        return True
+                async with connexion.transaction():
+                    await connexion.execute("set local role authenticated")
+                    curseur = await connexion.execute(requete)
+                    ligne = await curseur.fetchone()
+        if ligne is None:
+            journal.warning("Base indisponible : aucune ligne lisible dans la table de référence")
+        return ligne is not None
     except (psycopg.Error, TimeoutError) as erreur:
         # Le type seulement : le message de libpq peut contenir l'hôte de la base.
         journal.warning("Base indisponible : %s", type(erreur).__name__)

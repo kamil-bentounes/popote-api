@@ -60,6 +60,26 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - Pagination par curseur : `?limit=` (20 par défaut, 100 au plus) et `?cursor=` ; réponse
   `{"items": [...], "next_cursor": "…" | null}`. Jamais de troncature silencieuse.
 - Filtres et tris explicites, sur des champs nommés dans le contrat.
+- **Outillage** : `popote_api/pagination.py`. `parametres_de_page` (dépendance FastAPI) : `limit` de 1 à 100,
+  20 par défaut ; au-delà ou en deçà, `422` (jamais de troncature silencieuse). `Page[T]` est le modèle de
+  réponse, `{"items": [...], "next_cursor": str | null}` (les deux champs sont toujours présents). La route
+  demande `limit + 1` lignes : la ligne en trop dit qu'il y a une suite (`construit_page`), sans `count`.
+- **Pagination par clé, jamais par `offset`** : `clause_apres` écrit `(cle, id) > (%s, %s)` (`<` en ordre
+  descendant) et `ordre` le `ORDER BY cle, id` ; l'identifiant départage les égalités, donc aucune ligne n'est
+  sautée ni répétée quand la liste change entre deux pages. Un index `(cle, id)` sert la requête. La clé de tri
+  et l'identifiant sont `not null` ; leurs noms sont écrits dans le code (`Tri`), jamais pris à la requête.
+- **Le curseur est validé, pas signé.** Choix et raison : le périmètre d'une liste (foyer, personne) vient du
+  `WHERE` de la route, pas du curseur, qui n'est qu'une position dans un ordre. Un curseur forgé ne peut donc
+  que changer de page parmi des lignes que la personne lit déjà ; un test le montre sur Postgres (curseur
+  pointant sur une ligne d'un autre foyer). Un HMAC n'ajouterait que l'intégrité de cette position, au prix
+  d'un secret de plus à poser et à tourner dans chaque environnement (sans lui le conteneur ne démarre pas).
+  Le décodage est complet : alphabet et taille bornés ; JSON d'un objet aux seules clés `v`, `t` (nom du tri),
+  `k` (clé), `i` (UUID) ; version, nom du tri et type de la clé vérifiés (un curseur d'une autre liste est
+  refusé) ; clé acceptée par Postgres (entier `bigint`, texte de 200 caractères au plus sans NUL, instant avec
+  décalage) ; enfin le curseur doit se ré-encoder **à l'identique**, ce qui écarte toute forme que nous
+  n'aurions pas écrite. Tout échec rend `400 curseur_invalide`. Conséquence : le curseur est lisible par le
+  client (base64url d'un JSON) ; n'y mettre que la clé de tri d'une ligne qu'il a déjà reçue, et borner à 200
+  caractères (`max_length`) tout texte qui sert de clé de tri.
 
 ## 3.5 Écritures sûres
 
@@ -72,6 +92,30 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   incrémenté par déclencheur) sur chaque table que deux personnes peuvent éditer (charges, lignes du mois,
   recettes du foyer, réglages) ; `If-Match` obligatoire sur `PUT`, `PATCH` et `DELETE` de ces ressources :
   `412` si la version a changé, `428` s'il manque. Les colonnes `version` arrivent par les migrations de 0.5.
+- **Outillage** : `popote_api/conditionnel.py`. `etag_de_version(n)` rend `"v<n>"` ; `etag_de_contenu(octets)`
+  un SHA-256 tronqué à 128 bits en base64url ; tous deux sont **forts**. `exige_if_match(request, etag_actuel)`
+  garde l'écriture et `repond_ou_304(request, etag, corps)` la lecture, à appeler une fois la ressource trouvée
+  et la personne autorisée (un `404` passe avant toute précondition). La RFC 9110 s'applique ainsi :
+  - `If-Match` : comparaison **forte** (§ 8.8.3.2), donc un `W/"…"` ne correspond jamais ; `*` correspond à toute
+    ressource existante ; une liste correspond si un membre correspond. Absent : `428
+    precondition_requise`. Sans correspondance : `412 precondition_echouee`, avec l'`ETag` **actuel** en
+    en-tête, pour que le client relise sans second aller-retour. Jamais le « succès » facultatif d'une écriture
+    déjà appliquée (§ 13.1.1) : deux personnes du foyer qui éditent ensemble doivent voir le conflit.
+  - `If-None-Match` : comparaison **faible** ; `*` correspond à toute ressource existante. Si la condition est
+    fausse, `304` pour `GET` et `HEAD`, `412` pour les autres méthodes (§ 13.1.2). Le `304` n'a pas de corps et
+    reprend `ETag` et `Cache-Control` du `200` (§ 15.4.5), plus `Vary`, `Content-Location` et `Expires` si la route
+    les pose. `Date` vient du serveur.
+  - Ordre (§ 13.2.2) : `If-Match`, puis `If-None-Match`. Un `If-Match` faux l'emporte sur un `304`.
+  - Listes : plusieurs lignes d'un même en-tête valent une liste ; les éléments vides sont ignorés ; une virgule
+    peut se trouver dans une étiquette (`"a,b"`), on lit donc étiquette par étiquette. Une valeur vide est une
+    liste vide : aucune correspondance.
+  - Un en-tête conditionnel **mal formé** (guillemets manquants, `w/` minuscule, `*` mêlé à une étiquette,
+    deux étiquettes sans virgule) rend `400 requete_mal_formee`, jamais ignoré : ignorer un `If-Match` ouvrirait
+    la mise à jour perdue.
+  - `If-Modified-Since`, `If-Unmodified-Since`, `Range`, `If-Range` sont ignorés : pas de date de modification.
+    `If-Unmodified-Since` ne remplace pas `If-Match` (`428`).
+  - Le client fait ses lectures conditionnelles lui-même (l'`ETag` gardé en mémoire et renvoyé dans
+    `If-None-Match`) : `Cache-Control: no-store` et `304` ne se contredisent pas.
 
 ## 3.6 Limites
 
@@ -103,6 +147,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 - Instants en RFC 3339 avec décalage ; jours du calendrier en `YYYY-MM-DD`, toujours au sens de
   `Europe/Paris` ; argent en centimes entiers avec `currency: "EUR"` ; quantités avec leur unité.
+- **Types à réutiliser** (`popote_api/formats.py`), dans tout modèle d'entrée ou de sortie :
+  - `Instant` : texte RFC 3339 **avec** décalage (`Z` ou `+01:00`). Un instant sans décalage, un horodatage
+    Unix, un espace à la place du `T`, un décalage sans deux-points, une seconde `60` sont refusés (`422`).
+    En sortie, toujours en UTC avec le décalage écrit (`2026-11-12T09:00:00+00:00`) : l'écran convertit.
+  - `Jour` : `YYYY-MM-DD` seul (un instant ou un `datetime` est refusé), au sens de `Europe/Paris`.
+    `jour_a_paris(instant)` donne le jour de Paris d'un instant (heure d'été comprise : des journées de 23,
+    24 ou 25 h) ; `aujourdhui_a_paris()` prend une horloge en paramètre pour les tests. Jamais `date.today()`,
+    qui suit le fuseau du serveur.
+  - `Montant` : `{"amount_cents": int, "currency": "EUR"}`. Entier strict (ni `12.5`, ni `12.0`, ni `"1250"`),
+    de ±(2^53 − 1) (au-delà, un nombre JSON n'est plus exact dans le navigateur), négatif pour un avoir ;
+    `currency` obligatoire et seulement `"EUR"` (casse comprise) ; champ inconnu refusé.
 
 ## 3.9 Cache, versions, contrat
 
@@ -144,3 +199,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   d'e-mail en clair).
 - `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
+  La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun
+  droit sur les tables) et lit une ligne de `public.instance_setting` : table de référence lisible sans foyer,
+  semée par la migration 0009. Une table sans ligne lisible vaut « base indisponible ». Aucune donnée n'est rendue
+  ni journalisée ; le résultat reste en cache 5 s, et connexion plus requête tiennent en 3 s.

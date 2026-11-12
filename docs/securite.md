@@ -138,15 +138,14 @@ refusent de démarrer avec autre chose que `hibp`.
 - La clé secrète Supabase (API d'administration d'Auth et Storage) vit dans le gestionnaire de secrets, lue
   seulement par les modules de connexion et de photos.
 - `auth.uid()` lit `request.jwt.claims` : le contexte « personne » le satisfait.
-- **La porte du service ne se fie plus à une revendication.** Aujourd'hui `is_service_role()` accepte
-  `current_user = 'service_role'` ou la revendication `role = 'service_role'` de `request.jwt.claims` (parce que,
-  dans une fonction `security definer`, `current_user` devient le propriétaire). Or cette revendication n'est
-  qu'un paramètre de session : dans le pool « personne », un `set_config` injecté ouvrirait `rappels_a_envoyer`,
-  `reserve_rappel` et les exemptions des gardes. Une migration compatible (avant 0.5) la réécrit :
-  `session_user = 'popote_internal'` (le rôle de connexion, que ni une fonction `security definer` ni un
-  paramètre ne changent), ou, jusqu'à la fermeture seulement, `session_user = 'authenticator'` avec la
-  revendication `service_role` (le chemin des Edge Functions actuelles, dont PostgREST a vérifié la signature).
-  La seconde branche part à J+2. `execute` sur les fonctions réservées au service est retiré à `authenticated`.
+- **La porte du service ne se fie plus à une revendication** (migration `0131`). `is_service_role()` lit
+  `session_user`, le rôle de connexion, que ni un `set role`, ni une fonction `security definer`, ni un
+  paramètre ne changent. Vraie pour `popote_internal` et, **jusqu'à la fermeture (J+2)**, pour `authenticator`
+  (PostgREST) avec la revendication `service_role` dont il a vérifié la signature : le chemin des Edge Functions
+  actuelles. Tout autre rôle (`popote_api`, `postgres`…) est refusé, même avec la revendication : un
+  `set_config` injecté dans le pool « personne » n'ouvre plus rien. `execute` sur les fonctions réservées
+  (`rappels_a_envoyer`, `reserve_rappel`, `libere_rappel`, `prepare_les_rappels`, `note_la_passe`…) : `service_role`
+  seul. Tests : `tests/integration/test_porte_du_service.py`.
 - L'étape 0.3 prouve tout cela par des tests sur une base locale, à travers le pooler en mode transaction :
   `set local` ne vit que le temps de la transaction ; une connexion rendue au pool ne garde ni rôle ni identité ;
   le pool « personne » qui pose la revendication `service_role` échoue sur `rappels_a_envoyer`.
