@@ -7,6 +7,11 @@ from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_valida
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
+# Le préfixe `__Host-` impose `Secure`, `Path=/` et aucun `Domain` : le navigateur refuse le cookie sinon.
+NOM_DU_COOKIE_DE_SESSION = "__Host-popote_session"
+# Un nom de cookie est un `token` (RFC 6265 § 4.1.1) ; on n'admet que lettres, chiffres, `_` et `-`.
+FORME_D_UN_NOM_DE_COOKIE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
 # Les origines (schéma, hôte, port) d'où le front de chaque environnement appelle l'API.
 ORIGINES_PAR_ENV: dict[str, frozenset[str]] = {
     "prod": frozenset({"https://notre-popote.fr"}),
@@ -71,6 +76,9 @@ class Settings(BaseSettings):
 
     # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
     json_logs: bool = True
+    # Le nom du cookie de session ne se change qu'en local, où `__Host-` et `Secure` ne passent pas partout
+    # sur `http://localhost` : hors local, c'est `NOM_DU_COOKIE_DE_SESSION`, un autre nom est une erreur.
+    session_cookie_name: str | None = None
 
     # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
     # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
@@ -98,6 +106,21 @@ class Settings(BaseSettings):
     @property
     def relais_exige(self) -> bool:
         return self.env is not Env.local
+
+    @property
+    def nom_du_cookie_de_session(self) -> str:
+        return self.session_cookie_name or NOM_DU_COOKIE_DE_SESSION
+
+    @model_validator(mode="after")
+    def _regle_le_cookie_de_session(self) -> Self:
+        nom = self.session_cookie_name
+        if nom is None:
+            return self
+        if self.env is not Env.local and nom != NOM_DU_COOKIE_DE_SESSION:
+            raise ValueError("session_cookie_name ne se change qu'en local.")
+        if FORME_D_UN_NOM_DE_COOKIE.fullmatch(nom) is None:
+            raise ValueError("session_cookie_name : lettres, chiffres, _ et - seulement (64 au plus).")
+        return self
 
     @property
     def origines(self) -> frozenset[str]:

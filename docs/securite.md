@@ -42,6 +42,22 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   de la configuration.
 - **Durée.** 30 jours glissants, 90 jours au plus ; l'identifiant change à la connexion et à chaque changement
   de mot de passe.
+- **Lire la session (0.3, migration 0133).** Table `public.login_session` (`login_session` : `session` désigne
+  déjà la séance de cuisine et `auth.sessions` celle de GoTrue) : `token_hash` (SHA-256 des 32 octets, unique),
+  `person_id` (cascade à la suppression du compte), `created_at`, `last_seen_at`, `expires_at` (glissante),
+  `absolute_expires_at` (90 jours), `revoked_at`. RLS activée sans politique, aucun droit à aucun rôle de l'application (les rôles de maintenance de Supabase,
+  qui contournent la RLS, peuvent la lire : elle ne garde que des empreintes SHA-256 de jetons de 256 bits). La colonne
+  d'appareil arrive en 0.4 avec la création des sessions. `public.session_personne(p_hash bytea)` est
+  `security definer`, `search_path = ''`, exécutable par `popote_api` **seul** (`revoke` explicite à `public`,
+  `anon`, `authenticated`, `service_role`) ; elle rend la personne ou `null` (inconnue, échue, révoquée, au bout
+  des 90 jours, `banned_until` futur, `deleted_at` posé). Elle repousse l'échéance
+  (`least(now() + 30 jours, absolute_expires_at)`) et `last_seen_at` **au plus une fois toutes les 5 minutes** :
+  une lecture n'est pas une écriture à chaque requête. L'API l'appelle en `popote_api`, avant d'emprunter
+  `authenticated`, dans la **même transaction** que le reste de la requête. Le verrou de la ligne tient jusqu'à la
+  fin de la requête : `for update skip locked` évite que deux requêtes simultanées s'attendent (la seconde lit
+  l'ancienne valeur, encore valide).
+- **Le cookie** ne porte que le jeton : 43 caractères base64url (32 octets), décodage strict. Hors local son nom
+  est `__Host-popote_session` et un autre nom est refusé au démarrage.
 - **Falsification de requête (CSRF).** `SameSite=Lax`, plus, sur toute méthode qui écrit : `Origin` égale à
   l'origine attendue, `Sec-Fetch-Site: same-origin`, et un en-tête propre à l'appli (guide OWASP sur le CSRF).
 - **Mots de passe** (NIST SP 800-63B-4) : 15 caractères au moins quand le mot de passe est le seul facteur ;
@@ -128,7 +144,7 @@ refusent de démarrer avec autre chose que `hibp`.
 |---|---|---|---|---|
 | Personne | `popote_api` | `set local role authenticated` | `request.jwt.claims` = `{"sub": <personne>, "role": "authenticated"}` | toute requête d'une personne connectée ; la RLS et les gardes (`tg_saisie_garde`, `tg_depense_garde`…) s'appliquent |
 | Service | `popote_internal` | `set local role service_role` | `{"role": "service_role"}` | seulement les routes `/internal/*`, l'acceptation d'une invitation et les purges ; liste fermée, chaque usage relu |
-| Connexion | `popote_api` | aucun : fonction `security definer` privée | aucune | vérifier un mot de passe |
+| Connexion | `popote_api` | aucun : fonction `security definer` privée | aucune | vérifier un mot de passe ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction |
 | Sauvegarde | `postgres`, hors API | — | — | `pg_dump` lancé par GitHub Actions |
 
 - **Deux rôles de connexion, deux pools.** `popote_api` n'est membre que d'`authenticated`, `popote_internal`

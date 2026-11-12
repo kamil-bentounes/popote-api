@@ -78,6 +78,43 @@ def test_un_secret_non_ascii_echoue_au_demarrage(env: str, secret: str) -> None:
         Settings.model_validate({"env": env, "relay_secret": secret, "database_url": DSN})
 
 
+def test_le_cookie_de_session_porte_son_nom_de_prefixe_host_par_defaut() -> None:
+    reglages = Settings.model_validate({"env": "local"})
+    assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
+
+
+def test_en_local_le_nom_du_cookie_de_session_se_configure() -> None:
+    reglages = Settings.model_validate({"env": "local", "session_cookie_name": "popote_session"})
+    assert reglages.nom_du_cookie_de_session == "popote_session"
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_un_autre_nom_de_cookie_de_session_echoue(env: str) -> None:
+    with pytest.raises(ValidationError, match="session_cookie_name"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "session_cookie_name": "popote_session"}
+        )
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_le_nom_du_cookie_de_session_peut_etre_redit(env: str) -> None:
+    reglages = Settings.model_validate(
+        {
+            "env": env,
+            "relay_secret": SECRET,
+            "database_url": DSN,
+            "session_cookie_name": "__Host-popote_session",
+        }
+    )
+    assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
+
+
+@pytest.mark.parametrize("nom", ["", "a b", "a=b", "a;b", "é", "a" * 65, "a\r\nSet-Cookie"])
+def test_un_nom_de_cookie_de_session_illegal_echoue(nom: str) -> None:
+    with pytest.raises(ValidationError, match="session_cookie_name"):
+        Settings.model_validate({"env": "local", "session_cookie_name": nom})
+
+
 @pytest.mark.parametrize("env", ["essai", "prod"])
 def test_hors_local_desactiver_la_liste_de_fuites_echoue(env: str) -> None:
     with pytest.raises(ValidationError, match="breach_check"):
