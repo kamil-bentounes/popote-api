@@ -55,7 +55,15 @@ async def test_sans_adresse_interne_le_demarrage_avertit_et_la_base_de_service_m
 
 
 async def test_avec_l_adresse_interne_le_demarrage_n_avertit_pas(caplog: pytest.LogCaptureFixture) -> None:
-    app = create_app(reglages("essai", database_url_internal=DSN, internal_secret="i" * 32))
+    app = create_app(
+        reglages(
+            "essai",
+            database_url_internal=DSN,
+            internal_secret="i" * 32,
+            supabase_url="https://p.supabase.co",
+            supabase_secret_key="sb_secret_" + "k" * 30,
+        )
+    )
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
         async with app.router.lifespan_context(app):
             pass
