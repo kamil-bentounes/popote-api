@@ -22,8 +22,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, assert_never
+from typing import Annotated, Any, Final, assert_never
 
+from fastapi import Depends, Header
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from starlette.responses import Response
@@ -38,6 +39,38 @@ OCTETS_DE_CONTENU = 16  # 128 bits du SHA-256 : assez pour qu'une collision soit
 # `entity-tag = [ "W/" ] DQUOTE *etagc DQUOTE`, `etagc` = VCHAR sauf `"`, plus obs-text (§ 8.8.3).
 # Les octets 0x80-0xFF arrivent en latin-1 : c'est ainsi que Starlette décode les en-têtes.
 _ETIQUETTE = re.compile(r'(W/)?"([\x21\x23-\x7e\x80-\xff]*)"')
+
+
+# Ce que le contrat dit d'une lecture conditionnelle : le `304` reprend `ETag` et `Cache-Control` du `200`.
+REPONSE_304: Final[dict[str, Any]] = {
+    "description": "Non modifiée : `If-None-Match` correspond à l'`ETag` actuel.",
+    "headers": {
+        "ETag": {"description": "Empreinte du contenu, celle du `200`.", "schema": {"type": "string"}},
+        "Cache-Control": {"description": "Celui du `200`.", "schema": {"type": "string"}},
+    },
+}
+
+
+def _declare_en_tetes_conditionnels(
+    if_none_match: Annotated[
+        str | None,
+        Header(
+            alias="If-None-Match",
+            description="Étiquettes déjà connues du client ; `304` si l'une correspond.",
+        ),
+    ] = None,
+    if_match: Annotated[
+        str | None,
+        Header(
+            alias="If-Match", description="Étiquette de la version lue ; `412` si elle n'est plus la bonne."
+        ),
+    ] = None,
+) -> None:
+    """Sans effet à l'exécution : lus par `repond_ou_304`, ils sont déclarés ici pour le contrat seulement."""
+
+
+# À poser sur une route qui appelle `repond_ou_304` ou `exige_if_match` : le contrat les publie en paramètres.
+EN_TETES_CONDITIONNELS: Final = Depends(_declare_en_tetes_conditionnels)
 
 
 class ConditionMalFormee(ValueError):

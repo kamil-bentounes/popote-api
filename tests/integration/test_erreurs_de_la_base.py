@@ -89,6 +89,13 @@ def ajoute_les_routes(app: FastAPI, personne: UUID, base: Base) -> None:
             await curseur.execute("set local lock_timeout = '200ms'")
             await curseur.execute("lock table public.instance_setting in access exclusive mode")
 
+    @app.get("/essai/inactif")
+    async def inactif() -> None:
+        async with base.personne(personne) as curseur:
+            await curseur.execute("set local idle_in_transaction_session_timeout = '200ms'")
+            await asyncio.sleep(1)  # l'attente hors SQL que la règle interdit : c'est ce qu'on provoque
+            await curseur.execute("select 1")
+
     @app.get("/essai/delai")
     async def delai() -> None:
         async with base.personne(personne) as curseur:
@@ -185,6 +192,15 @@ async def test_un_verrou_trop_long_est_55p03_rendu_en_503_reessayer(fabrique: Fa
         with psycopg.connect(DSN_ADMIN) as bloqueur:
             bloqueur.execute("lock table public.instance_setting in access exclusive mode")
             reponse = await c.get("/essai/verrou")
+    assert (reponse.status_code, reponse.json()["code"]) == (503, "reessayer")
+    assert reponse.headers["retry-after"] == "1"
+
+
+async def test_une_transaction_inactive_trop_longtemps_est_25p03_rendue_en_503_reessayer(
+    fabrique: Fabrique,
+) -> None:
+    async with client(fabrique) as c:
+        reponse = await c.get("/essai/inactif")
     assert (reponse.status_code, reponse.json()["code"]) == (503, "reessayer")
     assert reponse.headers["retry-after"] == "1"
 

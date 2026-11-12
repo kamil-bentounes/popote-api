@@ -9,7 +9,7 @@ compter aussi les routes inconnues ; son middleware rend `reponse(...)` et ne l�
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -27,6 +27,15 @@ journal = logging.getLogger(__name__)
 
 TYPE_DE_BASE = "https://notre-popote.fr/problemes/"
 MEDIA = "application/problem+json"
+PREFIXE_V1: Final = "/api/v1/"
+# Posé dans l'état de la requête quand `personne_connectee` a validé la session.
+ETAT_SESSION_VALIDEE: Final = "session_validee"
+# RFC 9110 § 15.5.2 : un `401` porte au moins un défi. Aucun schéma enregistré ne décrit un cookie de
+# session ; `Cookie` est un nom à nous (jamais `Basic`, `Digest` ou `Negotiate` : le navigateur ouvrirait
+# une fenêtre de saisie).
+DEFI_D_AUTHENTIFICATION: Final = 'Cookie realm="popote"'
+# Le même texte pour tous les refus : la réponse n'apprend rien sur les jetons.
+PAS_DE_SESSION: Final = "Connecte-toi pour continuer."
 CODE_AUTH_INDISPONIBLE = "auth_indisponible"
 CODE_COMPTE_EXISTANT = "compte_existant"
 TITRE_PAR_DEFAUT = "Erreur"
@@ -239,6 +248,29 @@ def _introuvable(request: Request) -> JSONResponse:
     return reponse(request, 404, "introuvable", "Cette adresse n'existe pas.")
 
 
+def pas_de_session(request: Request) -> JSONResponse:
+    return reponse(
+        request, 401, "pas_de_session", PAS_DE_SESSION, headers={"WWW-Authenticate": DEFI_D_AUTHENTIFICATION}
+    )
+
+
+def _route_fermee(request: Request) -> bool:
+    """Vrai sous `/api/v1/` tant qu'aucune session n'a été validée.
+
+    Un `404` (adresse inconnue), une `405` (mauvaise méthode, avec son `Allow`) ou une `422` (JSON invalide,
+    lu avant les dépendances) répondrait à qui n'a pas de session que la route existe : sous `/api/v1/`,
+    ces refus se rendent `401`, comme l'absence de session. Une route qui a validé la session rend ses
+    refus tels quels.
+    """
+    validee = getattr(request.state, ETAT_SESSION_VALIDEE, False)
+    return request.scope["path"].startswith(PREFIXE_V1) and not validee
+
+
+def _refus_sans_session(request: Request, raison: str) -> JSONResponse:
+    journal.info("Session refusée : %s", raison)
+    return pas_de_session(request)
+
+
 def installe(app: FastAPI) -> None:
     logging.getLogger("uvicorn.error").addFilter(FILTRE_UVICORN)  # sans doublon : même instance
 
@@ -264,6 +296,8 @@ def installe(app: FastAPI) -> None:
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         if _route_cachee(request):
             return _introuvable(request)
+        if _route_fermee(request):
+            return _refus_sans_session(request, f"refus_{exc.status_code}_avant_la_session")
         titre, code = STATUTS.get(exc.status_code, (TITRE_PAR_DEFAUT, CODE_PAR_DEFAUT))
         detail = "Cette adresse n'existe pas." if exc.status_code == 404 else titre
         return reponse(request, exc.status_code, code, detail, headers=exc.headers)
@@ -272,6 +306,8 @@ def installe(app: FastAPI) -> None:
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
         if _route_cachee(request):
             return _introuvable(request)
+        if _route_fermee(request):
+            return _refus_sans_session(request, "refus_422_avant_la_session")
         erreurs = [_erreur_de_validation(e) for e in exc.errors()]
         return reponse(request, 422, "donnees_invalides", "Certaines données ne sont pas valides.", erreurs)
 
