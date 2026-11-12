@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from _commun import reglages
+from _commun import ECRITURE_LOCALE, reglages
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
@@ -91,8 +91,12 @@ async def test_les_erreurs_reelles_respectent_le_schema_problem_details() -> Non
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
         reponses = [
             await c.get("/api/nexiste-pas"),
-            await c.post("/api/_test/ressource?page=x", json={"nom": "a"}),
-            await c.post("/api/_test/ressource", content=b"{", headers={"content-type": "application/json"}),
+            await c.post("/api/_test/ressource?page=x", json={"nom": "a"}, headers=ECRITURE_LOCALE),
+            await c.post(
+                "/api/_test/ressource",
+                content=b"{",
+                headers=ECRITURE_LOCALE | {"content-type": "application/json"},
+            ),
         ]
     assert [r.status_code for r in reponses] == [404, 422, 422]
     for r in reponses:

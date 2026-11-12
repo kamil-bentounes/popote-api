@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Response
 from fastapi.security import APIKeyCookie
 
 from popote_api.config import NOM_DU_COOKIE_DE_SESSION
 from popote_api.errors import Probleme, reponses_erreur
 from popote_api.infra.db import Base, Curseur, SessionRefuseeError
+from popote_api.security.debit import limite_par_personne
 from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton
 
 journal = logging.getLogger(__name__)
@@ -52,8 +53,7 @@ class PersonneConnectee:
     """La personne de la session, et la transaction qui agit comme elle."""
 
     id: UUID
-    # Ce qui identifie la session sans la révéler : la clé de la limite de débit par personne, prise une fois
-    # la session validée, jamais avant (un cookie inventé n'ouvre pas de compteur).
+    # Ce qui identifie la session sans la révéler : la clé de la limite de débit par personne.
     empreinte_de_session: bytes
     curseur: Curseur
 
@@ -66,7 +66,7 @@ def _refus(raison: str) -> Probleme:
     )
 
 
-async def personne_connectee(request: Request) -> AsyncIterator[PersonneConnectee]:
+async def personne_connectee(request: Request, response: Response) -> AsyncIterator[PersonneConnectee]:
     """Le contexte « personne » de la requête ; `401 pas_de_session` sans session valide."""
     nom = request.app.state.settings.nom_du_cookie_de_session
     jeton = request.cookies.get(nom)
@@ -82,6 +82,9 @@ async def personne_connectee(request: Request) -> AsyncIterator[PersonneConnecte
             personne_id, curseur = await pile.enter_async_context(base.session(empreinte))
         except SessionRefuseeError as erreur:
             raise _refus("inconnue") from erreur
+        # La limite par personne ne se compte qu'une fois la session validée : un cookie inventé n'ouvre
+        # aucun compteur. Sa clé est l'empreinte de la session, jamais le cookie.
+        await limite_par_personne(request, response, empreinte.hex())
         yield PersonneConnectee(personne_id, empreinte, curseur)
 
 

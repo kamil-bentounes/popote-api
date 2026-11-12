@@ -230,3 +230,29 @@ async def test_les_delais_de_l_api_bornent_la_transaction_de_la_session(
     finally:
         await pool.close()
     assert reponse.json() == {"statement_timeout": "8s", "lock_timeout": "5s"}
+
+
+async def test_la_limite_par_personne_compte_par_session_et_arrete_la_cent_vingt_et_unieme_lecture(
+    base: Base, monkeypatch: pytest.MonkeyPatch, fabrique: Fabrique
+) -> None:
+    session = fabrique.session(fabrique.personne(fabrique.foyer()).id)
+    autre = fabrique.session(fabrique.personne(fabrique.foyer()).id)
+    app = application_de_test(base, monkeypatch, routeur)
+    async with client_de(app) as client:
+        statuts = [(await client.get(URL, headers=cookie(session))).status_code for _ in range(121)]
+        arretee = await client.get(URL, headers=cookie(session))
+        intacte = await client.get(URL, headers=cookie(autre))
+    assert statuts == [200] * 120 + [429]
+    assert arretee.headers["retry-after"]
+    assert intacte.status_code == 200
+
+
+async def test_un_cookie_invente_n_ouvre_aucun_compteur_par_personne(
+    base: Base, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jeton, _ = jeton_et_empreinte()
+    app = application_de_test(base, monkeypatch, routeur)
+    async with client_de(app) as client:
+        reponse = await client.get(URL, headers={"Cookie": f"__Host-popote_session={jeton}"})
+    assert reponse.status_code == 401
+    assert app.state.debit.personne._fenetres == {}
