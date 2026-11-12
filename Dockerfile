@@ -4,9 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_COMPILE_BYTECODE=1 UV_LINK_M
 COPY --from=ghcr.io/astral-sh/uv:0.10.7@sha256:edd1fd89f3e5b005814cc8f777610445d7b7e3ed05361f9ddfae67bebfe8456a /uv /bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 COPY src ./src
-RUN uv sync --frozen --no-dev && useradd --uid 10001 --no-create-home popote
+# pip ne sert pas à l'exécution (uv installe dans .venv) et ses paquets embarqués portent des CVE
+# (Trivy, 12/11/2026) : on le retire de l'image.
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev \
+    && python -m pip uninstall --yes pip \
+    && useradd --uid 10001 --no-create-home popote
 USER 10001
 # La valeur la plus stricte par défaut : l'essai la remplace au déploiement.
 ENV POPOTE_ENV=prod
