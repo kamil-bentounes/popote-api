@@ -5,7 +5,14 @@ name: Sauvegarde
 on:
   schedule:
     - cron: "30 2 * * *" # 02:30 UTC
+  # À la main, on choisit la cible : l'essai seul sert à éprouver un changement sans lire la prod.
   workflow_dispatch:
+    inputs:
+      cible:
+        description: "Base à sauvegarder"
+        type: choice
+        options: [les-deux, essai, prod]
+        default: les-deux
 permissions: {}
 concurrency:
   group: sauvegarde
@@ -13,6 +20,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prod:
+    # La nuit (schedule), `inputs.cible` est vide : les deux jobs partent.
+    if: github.event_name != 'workflow_dispatch' || inputs.cible != 'essai'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: prod-sauvegarde
@@ -77,6 +86,7 @@ jobs:
           curl -fsS -m 10 --retry 3 -o /dev/null "$SONDE_URL" || echo "::warning::la sonde extérieure n'a pas répondu"
 
   essai:
+    if: github.event_name != 'workflow_dispatch' || inputs.cible != 'prod'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: essai
