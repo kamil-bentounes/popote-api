@@ -165,6 +165,7 @@ describe('l’ouverture d’un mois', () => {
       .eq('libelle', 'Crédit auto').single()
     const { data: parts } = await admin().from('depense_part')
       .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
 
     expect(parts, 'une charge à un seul participant en a produit plusieurs').toHaveLength(1)
     expect(parts![0].part_cents, 'il ne porte pas la totalité de ce qu’il paie seul')
@@ -196,6 +197,7 @@ describe('l’ouverture d’un mois', () => {
       .eq('libelle', 'Électricité').single()
     const { data: parts } = await admin().from('depense_part')
       .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
 
     expect(parts, 'elle paie un mois où elle n’habitait pas là').toHaveLength(1)
     expect(parts![0].user_profile_id).toBe(moi.userId)
@@ -820,6 +822,7 @@ describe('la clé se fige quand le mois est VÉCU, pas quand il est engendré', 
         .eq('charge_id', id).eq('mois', '2028-06-01').single()
       const { data: p } = await admin().from('depense_part')
         .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
       return Object.fromEntries(p!.map(x => [x.user_profile_id, x.part_cents]))
     }
 
@@ -863,6 +866,7 @@ describe('la clé se fige quand le mois est VÉCU, pas quand il est engendré', 
 
     const { data: avant } = await admin().from('depense_part')
       .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
 
     await admin().from('revenu').insert({
       household_id: moi.householdId, user_profile_id: elle,
@@ -871,6 +875,7 @@ describe('la clé se fige quand le mois est VÉCU, pas quand il est engendré', 
 
     const { data: apres } = await admin().from('depense_part')
       .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
     expect(apres, 'un mois déjà vécu a été repartagé').toEqual(avant)
 
     await admin().from('revenu').delete()
@@ -960,6 +965,7 @@ describe('ce qu’une revue globale a trouvé', () => {
 
     const avant = await admin().from('depense_part')
       .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
 
     // Un revenu qui change ne doit PLUS toucher à ce mois.
     await admin().from('revenu').insert({
@@ -969,6 +975,7 @@ describe('ce qu’une revue globale a trouvé', () => {
 
     const apresParts = await admin().from('depense_part')
       .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
     expect(apresParts.data, 'un mois confirmé a été repartagé').toEqual(avant.data)
 
     await admin().from('revenu').delete()
@@ -1036,6 +1043,7 @@ describe('l’arrivée du second membre, éprouvée', () => {
         .eq('charge_id', id).eq('mois', '2027-07-01').single()
       const { data: p } = await admin().from('depense_part')
         .select('user_profile_id, part_cents').eq('depense_id', d!.id)
+      .order('user_profile_id')
       return Object.fromEntries(p!.map(x => [x.user_profile_id, x.part_cents]))
     }
     expect((await partsDe())[tardive], 'elle ne porte rien alors qu’elle est là')
