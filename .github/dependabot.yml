@@ -61,3 +61,21 @@ updates:
         update-types: ["minor", "patch"]
     commit-message:
       prefix: "build(deps)"
+
+  # Le Dockerfile fige `python` et `uv` par digest. Une version de `uv` change aussi `required-version` du
+  # pyproject et la version de ci.yml : la demande de mise à jour de `uv` s'accompagne de ces deux fichiers.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      mineures:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "fix(deps)"

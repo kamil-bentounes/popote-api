@@ -316,6 +316,10 @@ jobs:
       # privilèges par défaut de la pile locale, et une migration sans grant explicite y naît sans droits.
       # À blanc, en lecture seule ; le journal nomme les objets divergents, jamais une donnée.
       - name: Comparer les droits de l'essai à ceux de la référence
+        env:
+          # Liste blanche de l'outil : le projet du DSN doit être celui de cette URL (autre variable que
+          # ESSAI_PGUSER, donc un recoupement). Sa référence est masquée plus haut.
+          ESSAI_SUPABASE_URL: ${{ vars.ESSAI_SUPABASE_URL }}
         run: |
           set -uo pipefail
           ALIGNE_CIBLE_DSN="$(cat "$RUNNER_TEMP/essai.url")" python3 -I ops/aligne_droits.py --sortie "$RUNNER_TEMP/aligne_droits.sql"

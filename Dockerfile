@@ -19,4 +19,4 @@ ENV POPOTE_ENV=prod
 ARG POPOTE_VERSION=inconnue
 ENV POPOTE_VERSION=$POPOTE_VERSION
 EXPOSE 8080
-CMD ["/app/.venv/bin/uvicorn", "--factory", "popote_api.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header"]
+CMD ["/app/.venv/bin/uvicorn", "--factory", "popote_api.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header", "--no-access-log"]
