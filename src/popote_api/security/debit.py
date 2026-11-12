@@ -1,10 +1,16 @@
-"""La limite de débit : lecture 120 par minute, écriture 30 par minute, en mémoire, par instance.
+"""La limite de débit, en mémoire, par instance, à deux niveaux.
 
-Deux limiteurs indépendants, chacun avec ses compteurs :
-- `ip`, appliqué à toute requête par une dépendance de l'application, avant qu'aucun cookie soit lu : un
-  cookie inventé n'ouvre donc jamais un compteur neuf, la clé est l'adresse que le relais a vue ;
-- `personne`, que la dépendance de session appellera avec l'identifiant de la personne, une fois la session
-  validée (`limite_par_personne`).
+Par adresse, 600 lectures et 120 écritures par minute : un middleware ASGI pur (`LimiteParAdresse`), placé
+après la garde du relais et avant la lecture du corps. Exception assumée à la règle « le débit est une
+dépendance » (voir `errors.py`) : un refus doit coûter le moins possible, donc tomber avant que le corps
+(1 Mio) soit lu ou décodé, et la limite doit compter aussi les JSON invalides, les routes inconnues (404) et
+les méthodes refusées (405), ce qu'une dépendance ne voit pas. Aucun cookie n'est lu à ce niveau : un cookie
+inventé n'ouvre jamais un compteur neuf. La clé est l'adresse que le relais a vue, regroupée : une adresse
+IPv6 par préfixe /64 (une seule personne en possède des milliards), une adresse IPv4 telle quelle.
+
+Par personne, 120 lectures et 30 écritures par minute : une dépendance, `limite_par_personne`, que la
+dépendance de session appellera avec l'identifiant de la personne une fois la session validée. Le plafond par
+adresse est plus large : deux téléphones d'un foyer partagent souvent la même adresse.
 
 Fenêtre fixe, ouverte à la première requête de la clé : `r` (restant) et `t` (secondes avant le
 renouvellement) du brouillon IETF ont ainsi un sens exact. Une rafale à cheval sur deux fenêtres peut
@@ -24,18 +30,22 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from ipaddress import IPv6Address, ip_address, ip_network
 
 from fastapi import Request, Response
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from popote_api.errors import Probleme
+from popote_api.errors import Probleme, reponse
 from popote_api.relais import ip_de
+from popote_api.security import METHODES_SURES
 
 journal = logging.getLogger(__name__)
 
 MAX_CLES = 10_000
 CLE_SANS_IP = "sans-ip"  # clé commune quand l'adresse manque : jamais un compteur par requête
 NON_LIMITEES = frozenset({"/api/healthz", "/api/readyz"})
-METHODES_QUI_ECRIVENT = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+PREFIXE_IPV6 = 64
 SECONDES_ENTRE_DEUX_ALERTES = 60.0
 
 
@@ -46,8 +56,13 @@ class Politique:
     fenetre: int  # secondes
 
 
+# Par personne.
 LECTURE = Politique("read", 120, 60)
 ECRITURE = Politique("write", 30, 60)
+# Par adresse : plus large, car plusieurs personnes (et leurs téléphones, qui relisent toutes les 3 s)
+# peuvent partager une adresse.
+LECTURE_PAR_ADRESSE = Politique("read", 600, 60)
+ECRITURE_PAR_ADRESSE = Politique("write", 120, 60)
 
 
 @dataclass
@@ -133,36 +148,71 @@ class Debit:
         self.personne = Limiteur(horloge, max_cles)
 
 
-def _politique_de(methode: str) -> Politique:
-    return ECRITURE if methode in METHODES_QUI_ECRIVENT else LECTURE
+def cle_d_adresse(adresse: str | None) -> str:
+    """La clé de compteur d'une adresse : IPv6 regroupée par /64, IPv4 telle quelle, sinon la clé commune."""
+    if adresse is None:
+        return CLE_SANS_IP
+    try:
+        ip = ip_address(adresse)
+    except ValueError:
+        return CLE_SANS_IP
+    if isinstance(ip, IPv6Address):
+        return str(ip_network((ip, PREFIXE_IPV6), strict=False))
+    return str(ip)
 
 
-def _applique(limiteur: Limiteur, request: Request, response: Response, cle: str) -> None:
-    politique = _politique_de(request.method)
+def _controle(limiteur: Limiteur, politique: Politique, cle: str) -> Verdict | Probleme:
+    """Le verdict d'une requête acceptée, ou l'erreur à rendre (non levée : un middleware la rend, une
+    dépendance la lève)."""
     verdict = limiteur.consomme(cle, politique)
     if verdict is None:
-        attente = limiteur.secondes_avant_une_place()
-        raise Probleme(
+        return Probleme(
             503,
             "limiteur_sature",
             "Popote est très sollicité en ce moment. Réessaie dans un instant.",
-            headers={"Retry-After": str(attente)},
+            headers={"Retry-After": str(limiteur.secondes_avant_une_place())},
         )
     if not verdict.autorise:
-        raise Probleme(
+        return Probleme(
             429,
             "trop_de_requetes",
             f"Trop de requêtes. Réessaie dans {verdict.secondes} secondes.",
             headers={"Retry-After": str(verdict.secondes), **verdict.en_tetes()},
         )
-    response.headers.update(verdict.en_tetes())
+    return verdict
 
 
-async def limite_par_ip(request: Request, response: Response) -> None:
-    """Dépendance de toute l'application : première barrière, avant la lecture de tout cookie."""
-    if request.url.path in NON_LIMITEES:
-        return
-    _applique(request.app.state.debit.ip, request, response, ip_de(request) or CLE_SANS_IP)
+class LimiteParAdresse:
+    """Middleware ASGI pur : 429 (ou 503 si le limiteur est saturé) avant toute lecture du corps."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] in NON_LIMITEES:
+            await self.app(scope, receive, send)
+            return
+        sures = scope["method"] in METHODES_SURES
+        politique = LECTURE_PAR_ADRESSE if sures else ECRITURE_PAR_ADRESSE
+        controle = _controle(scope["app"].state.debit.ip, politique, cle_d_adresse(ip_de(Request(scope))))
+        if isinstance(controle, Probleme):
+            requete = Request(scope)
+            await reponse(requete, controle.status, controle.code, controle.detail, headers=controle.headers)(
+                scope, receive, send
+            )
+            return
+        verdict = controle
+
+        async def envoie_avec_les_en_tetes(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                en_tetes = MutableHeaders(scope=message)
+                for nom, valeur in verdict.en_tetes().items():
+                    # Un limiteur plus fin (par personne) a pu les poser avant nous : il garde la main.
+                    if nom not in en_tetes:
+                        en_tetes[nom] = valeur
+            await send(message)
+
+        await self.app(scope, receive, envoie_avec_les_en_tetes)
 
 
 async def limite_par_personne(request: Request, response: Response, personne: str) -> None:
@@ -170,4 +220,8 @@ async def limite_par_personne(request: Request, response: Response, personne: st
 
     `personne` est l'identifiant lu dans la session validée en base, jamais une valeur du cookie brut.
     """
-    _applique(request.app.state.debit.personne, request, response, personne)
+    politique = LECTURE if request.method in METHODES_SURES else ECRITURE
+    controle = _controle(request.app.state.debit.personne, politique, personne)
+    if isinstance(controle, Probleme):
+        raise controle
+    response.headers.update(controle.en_tetes())

@@ -3,14 +3,14 @@
 import time
 from collections.abc import Callable
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 
 from popote_api import contrat, errors, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import SondeBase
-from popote_api.security.debit import Debit, limite_par_ip
+from popote_api.security.debit import Debit, LimiteParAdresse
 
 
 def create_app(settings: Settings | None = None, *, horloge: Callable[[], float] = time.monotonic) -> FastAPI:
@@ -25,8 +25,6 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
         redoc_url=None,
         openapi_url=None if settings.env is Env.prod else "/api/openapi.json",
         redirect_slashes=False,
-        # Fermé par défaut : toute route est limitée par adresse, avant qu'aucun cookie soit lu.
-        dependencies=[Depends(limite_par_ip)],
     )
     app.state.settings = settings
     app.state.debit = Debit(horloge)
@@ -34,7 +32,9 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.state.sonde = SondeBase(dsn)
 
     # Le dernier middleware ajouté est le plus extérieur : `Identifiant` enveloppe `Garde`, si bien que
-    # le refus de la garde porte lui aussi son identifiant.
+    # le refus de la garde porte lui aussi son identifiant. La limite par adresse vient après la garde (un
+    # appelant sans le secret du relais n'a pas d'adresse fiable) et avant toute lecture du corps.
+    app.add_middleware(LimiteParAdresse)
     app.add_middleware(relais.Garde, settings=settings)
     app.add_middleware(Identifiant)
 

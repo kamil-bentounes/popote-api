@@ -1,5 +1,6 @@
 import logging
 from collections.abc import ItemsView
+from typing import Any
 
 import httpx
 import pytest
@@ -9,15 +10,20 @@ from fastapi import FastAPI, Request, Response
 from popote_api.main import create_app
 from popote_api.security.debit import (
     ECRITURE,
+    ECRITURE_PAR_ADRESSE,
     LECTURE,
+    LECTURE_PAR_ADRESSE,
     Debit,
     Fenetre,
     Limiteur,
+    Verdict,
+    cle_d_adresse,
     limite_par_personne,
 )
 
 # Ce que le front envoie dans une écriture ; sans effet tant que la garde d'origine n'est pas là.
 WEB = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+JSON_ENTETE = {"Content-Type": "application/json"}
 
 
 class Horloge:
@@ -42,10 +48,18 @@ def app_de_test(horloge: Horloge, env: str = "local", max_cles: int | None = Non
     async def x() -> dict[str, bool]:
         return {"ok": True}
 
-    @app.get("/api/_test/personne")
+    @app.api_route("/api/_test/personne", methods=["GET", "POST"])
     async def personne(request: Request, response: Response) -> dict[str, bool]:
         await limite_par_personne(request, response, request.headers["x-test-personne"])
         return {"ok": True}
+
+    @app.get("/api/_test/lecture-seule")
+    async def lecture_seule() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/api/_test/json")
+    async def json_attendu(donnees: dict[str, int]) -> dict[str, int]:
+        return donnees
 
     return app
 
@@ -61,28 +75,40 @@ async def repete(c: httpx.AsyncClient, methode: str, fois: int, **requete: objec
     return r
 
 
-# --- Lecture et écriture --------------------------------------------------------------------------
+# --- Par adresse : lecture et écriture -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("methode", ["GET", "HEAD"])
-async def test_la_120e_lecture_passe_et_la_121e_rend_429(methode: str) -> None:
+def test_les_plafonds_sont_ceux_des_normes() -> None:
+    assert (LECTURE_PAR_ADRESSE.quota, ECRITURE_PAR_ADRESSE.quota) == (600, 120)
+    assert (LECTURE.quota, ECRITURE.quota) == (120, 30)
+    assert (
+        LECTURE_PAR_ADRESSE.fenetre
+        == ECRITURE_PAR_ADRESSE.fenetre
+        == LECTURE.fenetre
+        == ECRITURE.fenetre
+        == 60
+    )
+
+
+@pytest.mark.parametrize("methode", ["GET", "HEAD", "OPTIONS"])
+async def test_la_600e_lecture_passe_et_la_601e_rend_429(methode: str) -> None:
     async with client(app_de_test(Horloge())) as c:
-        assert (await repete(c, methode, 120)).status_code == 200
+        assert (await repete(c, methode, 600)).status_code != 429
         r = await repete(c, methode, 1)
     assert r.status_code == 429
 
 
-@pytest.mark.parametrize("methode", ["POST", "PUT", "PATCH", "DELETE"])
-async def test_la_30e_ecriture_passe_et_la_31e_rend_429(methode: str) -> None:
+@pytest.mark.parametrize("methode", ["POST", "PUT", "PATCH", "DELETE", "PROPPATCH"])
+async def test_la_120e_ecriture_passe_et_la_121e_rend_429(methode: str) -> None:
     async with client(app_de_test(Horloge())) as c:
-        assert (await repete(c, methode, 30, headers=WEB)).status_code == 200
+        assert (await repete(c, methode, 120, headers=WEB)).status_code != 429
         r = await repete(c, methode, 1, headers=WEB)
     assert r.status_code == 429
 
 
 async def test_les_lectures_et_les_ecritures_ont_chacune_leur_compteur() -> None:
     async with client(app_de_test(Horloge())) as c:
-        await repete(c, "POST", 30, headers=WEB)
+        await repete(c, "POST", 120, headers=WEB)
         assert (await repete(c, "POST", 1, headers=WEB)).status_code == 429
         assert (await repete(c, "GET", 1)).status_code == 200
 
@@ -90,7 +116,7 @@ async def test_les_lectures_et_les_ecritures_ont_chacune_leur_compteur() -> None
 async def test_la_429_est_un_probleme_avec_les_en_tetes_du_brouillon() -> None:
     horloge = Horloge()
     async with client(app_de_test(horloge)) as c:
-        await repete(c, "GET", 120)
+        await repete(c, "GET", 600)
         horloge.avance(10.4)
         r = await repete(c, "GET", 1)
     assert r.status_code == 429
@@ -99,7 +125,7 @@ async def test_la_429_est_un_probleme_avec_les_en_tetes_du_brouillon() -> None:
     assert r.headers["x-request-id"] == r.json()["instance"]
     assert r.headers["cache-control"] == "no-store"
     assert r.headers["retry-after"] == "50"  # 60 - 10,4 arrondi à la seconde supérieure, entier
-    assert r.headers["ratelimit-policy"] == '"read";q=120;w=60'
+    assert r.headers["ratelimit-policy"] == '"read";q=600;w=60'
     assert r.headers["ratelimit"] == '"read";r=0;t=50'
 
 
@@ -108,32 +134,91 @@ async def test_une_reponse_acceptee_dit_ce_qui_reste() -> None:
         premiere = await repete(c, "GET", 1)
         seconde = await repete(c, "GET", 1)
         ecriture = await repete(c, "POST", 1, headers=WEB)
-    assert premiere.headers["ratelimit"] == '"read";r=119;t=60'
-    assert seconde.headers["ratelimit"] == '"read";r=118;t=60'
-    assert ecriture.headers["ratelimit-policy"] == '"write";q=30;w=60'
-    assert ecriture.headers["ratelimit"] == '"write";r=29;t=60'
+    assert premiere.headers["ratelimit"] == '"read";r=599;t=60'
+    assert seconde.headers["ratelimit"] == '"read";r=598;t=60'
+    assert ecriture.headers["ratelimit-policy"] == '"write";q=120;w=60'
+    assert ecriture.headers["ratelimit"] == '"write";r=119;t=60'
 
 
 async def test_la_fenetre_se_libere_avec_le_temps() -> None:
     horloge = Horloge()
     async with client(app_de_test(horloge)) as c:
-        await repete(c, "GET", 121)
+        await repete(c, "GET", 601)
         horloge.avance(59.9)
         encore = await repete(c, "GET", 1)
         horloge.avance(0.1)
         libre = await repete(c, "GET", 1)
     assert (encore.status_code, libre.status_code) == (429, 200)
-    assert libre.headers["ratelimit"] == '"read";r=119;t=60'
+    assert libre.headers["ratelimit"] == '"read";r=599;t=60'
 
 
 async def test_healthz_et_readyz_ne_sont_pas_limites() -> None:
     app = app_de_test(Horloge())
     async with client(app) as c:
         for chemin in ("/api/healthz", "/api/readyz"):
-            for _ in range(LECTURE.quota + 5):
+            for _ in range(LECTURE_PAR_ADRESSE.quota + 5):
                 r = await c.get(chemin)
             assert r.status_code != 429
+            assert "ratelimit" not in r.headers
         assert (await c.get("/api/_test/x")).status_code == 200  # et ils n'ont rien consommé
+
+
+# --- Le limiteur compte aussi ce qu'une dépendance ne voit pas -------------------------------------
+
+
+async def test_les_404_les_405_et_les_json_invalides_sont_comptes_et_portent_les_en_tetes() -> None:
+    async with client(app_de_test(Horloge())) as c:
+        inconnue = await c.get("/api/n-existe-pas")
+        refusee = await c.post(
+            "/api/_test/lecture-seule", headers=WEB
+        )  # 405 : la route existe, pas la méthode
+        invalide = await c.post("/api/_test/json", content=b"{pas du json", headers=WEB | JSON_ENTETE)
+        lecture = await c.get("/api/_test/x")
+    assert (inconnue.status_code, refusee.status_code, invalide.status_code) == (404, 405, 422)
+    assert inconnue.headers["ratelimit"] == '"read";r=599;t=60'
+    assert (
+        refusee.headers["ratelimit"] == '"write";r=119;t=60'
+    )  # `/api/healthz` n'est exempté qu'en lecture ? non :
+    assert invalide.headers["ratelimit"] == '"write";r=118;t=60'
+    assert lecture.headers["ratelimit"] == '"read";r=598;t=60'
+
+
+async def test_une_rafale_de_404_est_arretee() -> None:
+    async with client(app_de_test(Horloge())) as c:
+        for _ in range(600):
+            await c.get("/api/n-existe-pas")
+        r = await c.get("/api/n-existe-pas")
+    assert r.status_code == 429
+
+
+async def test_un_refus_ne_lit_pas_le_corps() -> None:
+    app = app_de_test(Horloge())
+    async with client(app) as c:
+        await repete(c, "POST", 120, headers=WEB)
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/_test/x",
+        "raw_path": b"/api/_test/x",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json"), (b"content-length", b"1048576")],
+        "client": ("127.0.0.1", 123),
+        "server": ("test", 80),
+    }
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        raise AssertionError("le corps ne doit pas être lu avant le refus")
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await app(scope, receive, send)  # type: ignore[arg-type]
+    assert messages[0]["status"] == 429
 
 
 # --- La clé : l'adresse vue par le relais, jamais le cookie -----------------------------------------
@@ -145,7 +230,7 @@ def avec_relais(ip: str | None) -> dict[str, str]:
 
 async def test_chaque_adresse_a_son_compteur() -> None:
     async with client(app_de_test(Horloge(), "essai")) as c:
-        await repete(c, "GET", 121, headers=avec_relais("203.0.113.1"))
+        await repete(c, "GET", 601, headers=avec_relais("203.0.113.1"))
         autre = await repete(c, "GET", 1, headers=avec_relais("203.0.113.2"))
         meme = await repete(c, "GET", 1, headers=avec_relais("203.0.113.1"))
     assert (autre.status_code, meme.status_code) == (200, 429)
@@ -154,7 +239,7 @@ async def test_chaque_adresse_a_son_compteur() -> None:
 async def test_un_cookie_different_a_chaque_requete_n_ouvre_pas_de_compteur_neuf() -> None:
     app = app_de_test(Horloge(), "essai")
     async with client(app) as c:
-        for i in range(121):
+        for i in range(601):
             cookie = {"Cookie": f"__Host-popote_session=inv{i}"}
             r = await c.get("/api/_test/x", headers=avec_relais("203.0.113.1") | cookie)
     assert r.status_code == 429
@@ -162,7 +247,7 @@ async def test_un_cookie_different_a_chaque_requete_n_ouvre_pas_de_compteur_neuf
 
 async def test_sans_adresse_toutes_les_requetes_partagent_une_cle_commune() -> None:
     async with client(app_de_test(Horloge(), "essai")) as c:
-        await repete(c, "GET", 120, headers=avec_relais(None))
+        await repete(c, "GET", 600, headers=avec_relais(None))
         invalide = await repete(c, "GET", 1, headers=avec_relais("pas-une-adresse"))
         valide = await repete(c, "GET", 1, headers=avec_relais("203.0.113.9"))
     assert (invalide.status_code, valide.status_code) == (429, 200)
@@ -171,8 +256,8 @@ async def test_sans_adresse_toutes_les_requetes_partagent_une_cle_commune() -> N
 async def test_hors_relais_l_adresse_vient_de_la_connexion_et_non_de_l_en_tete() -> None:
     """En local, `X-Popote-IP` du client est ignoré : le changer ne donne pas de compteur neuf."""
     async with client(app_de_test(Horloge())) as c:
-        for i in range(121):
-            r = await c.get("/api/_test/x", headers={"X-Popote-IP": f"203.0.113.{i}"})
+        for i in range(601):
+            r = await c.get("/api/_test/x", headers={"X-Popote-IP": f"203.0.113.{i % 250}"})
     assert r.status_code == 429
 
 
@@ -182,6 +267,49 @@ async def test_un_appelant_sans_le_secret_du_relais_est_renvoye_avant_le_limiteu
         r = await c.get("/api/_test/x", headers={"X-Popote-IP": "203.0.113.1"})
     assert r.status_code == 404
     assert app.state.debit.ip._fenetres == {}
+
+
+@pytest.mark.parametrize(
+    ("adresse", "cle"),
+    [
+        ("203.0.113.1", "203.0.113.1"),
+        ("203.0.113.2", "203.0.113.2"),
+        ("2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"),
+        ("2001:db8:1:2::1", "2001:db8:1:2::/64"),
+        ("2001:db8:1:3::1", "2001:db8:1:3::/64"),
+        (None, "sans-ip"),
+        ("pas-une-adresse", "sans-ip"),
+        ("testclient", "sans-ip"),
+    ],
+)
+def test_la_cle_d_une_adresse_regroupe_l_ipv6_par_64(adresse: str | None, cle: str) -> None:
+    assert cle_d_adresse(adresse) == cle
+
+
+async def test_deux_adresses_du_meme_64_partagent_un_compteur() -> None:
+    async with client(app_de_test(Horloge(), "essai")) as c:
+        for i in range(601):
+            r = await c.get("/api/_test/x", headers=avec_relais(f"2001:db8:1:2:{i:x}::{i:x}"))
+        voisine = await repete(c, "GET", 1, headers=avec_relais("2001:db8:1:2:ffff::1"))
+        autre_64 = await repete(c, "GET", 1, headers=avec_relais("2001:db8:1:3::1"))
+        autre_ipv4 = await repete(c, "GET", 1, headers=avec_relais("203.0.113.1"))
+    assert r.status_code == 429  # une seule personne qui tourne dans son /64 n'ouvre pas de compteur neuf
+    assert (voisine.status_code, autre_64.status_code, autre_ipv4.status_code) == (429, 200, 200)
+
+
+async def test_un_64_sature_n_use_qu_une_cle() -> None:
+    app = app_de_test(Horloge(), "essai")
+    async with client(app) as c:
+        for i in range(700):
+            await c.get("/api/_test/x", headers=avec_relais(f"2001:db8:1:2:{i:x}::1"))
+    assert len(app.state.debit.ip._fenetres) == 1
+
+
+async def test_une_adresse_ipv4_dans_ipv6_est_comptee_comme_l_ipv4() -> None:
+    async with client(app_de_test(Horloge(), "essai")) as c:
+        await repete(c, "GET", 601, headers=avec_relais("203.0.113.1"))
+        r = await repete(c, "GET", 1, headers=avec_relais("::ffff:203.0.113.1"))
+    assert r.status_code == 429
 
 
 # --- Le limiteur par personne ---------------------------------------------------------------------
@@ -200,6 +328,47 @@ async def test_la_cle_par_personne_arrete_la_personne_meme_quand_l_adresse_chang
             "/api/_test/personne", headers=avec_relais("198.51.100.2") | {"X-Test-Personne": "bruno"}
         )
     assert (anne.status_code, bruno.status_code) == (429, 200)
+    assert anne.headers["ratelimit-policy"] == '"read";q=120;w=60'
+    assert anne.headers["retry-after"] == "60"
+
+
+async def test_la_personne_garde_30_ecritures_par_minute() -> None:
+    async with client(app_de_test(Horloge(), "essai")) as c:
+        for i in range(30):
+            r = await c.post(
+                "/api/_test/personne",
+                headers=avec_relais(f"203.0.113.{i}") | WEB | {"X-Test-Personne": "anne"},
+            )
+            assert r.status_code == 200
+        r = await c.post(
+            "/api/_test/personne", headers=avec_relais("198.51.100.1") | WEB | {"X-Test-Personne": "anne"}
+        )
+    assert r.status_code == 429
+
+
+async def test_les_en_tetes_de_la_personne_priment_sur_ceux_de_l_adresse() -> None:
+    async with client(app_de_test(Horloge())) as c:
+        r = await c.get("/api/_test/personne", headers={"X-Test-Personne": "anne"})
+    assert r.headers["ratelimit-policy"] == '"read";q=120;w=60'  # et non celui de l'adresse (q=600)
+    assert r.headers["ratelimit"] == '"read";r=119;t=60'
+
+
+def test_les_etats_de_l_adresse_et_de_la_personne_sont_independants() -> None:
+    debit = Debit(Horloge())
+    for _ in range(LECTURE_PAR_ADRESSE.quota):
+        debit.ip.consomme("203.0.113.1", LECTURE_PAR_ADRESSE)
+    assert not _verdict(debit.ip.consomme("203.0.113.1", LECTURE_PAR_ADRESSE)).autorise
+    personne = _verdict(debit.personne.consomme("203.0.113.1", LECTURE))  # même texte de clé, autre limiteur
+    assert (personne.autorise, personne.restant) == (True, LECTURE.quota - 1)
+    for _ in range(LECTURE.quota):
+        debit.personne.consomme("anne", LECTURE)
+    ip = _verdict(debit.ip.consomme("198.51.100.7", LECTURE_PAR_ADRESSE))
+    assert (ip.autorise, ip.restant) == (True, LECTURE_PAR_ADRESSE.quota - 1)
+
+
+def _verdict(verdict: Verdict | None) -> Verdict:
+    assert verdict is not None
+    return verdict
 
 
 async def test_une_personne_arretee_ne_l_est_pas_pour_une_autre() -> None:
