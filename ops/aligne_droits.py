@@ -14,9 +14,12 @@ catalogue protégé) seraient annulés.
 Usage :
     python3 ops/aligne_droits.py                 # à blanc : compte et écrit le SQL
     python3 ops/aligne_droits.py --appliquer     # envoie le SQL, relit, exit 1 s'il reste un écart
+    python3 ops/aligne_droits.py --cible-dsn URL # à blanc, cible lue par psql (la CI) ; jamais --appliquer
 
-Environnement : SUPABASE_ESSAI_TOKEN et ESSAI_REF (jamais affichés).
+Environnement : SUPABASE_ESSAI_TOKEN et ESSAI_REF (jamais affichés), sauf avec --cible-dsn
+(ou ALIGNE_CIBLE_DSN), où seule la chaîne de connexion sert.
 Codes de sortie : 0 aucun écart, 1 écart restant, 2 erreur d'utilisation ou d'accès.
+Le journal ne porte que des noms d'objets et de rôles, jamais une donnée ni la chaîne de connexion.
 """
 
 from __future__ import annotations
@@ -40,6 +43,8 @@ DEFAULT_OUTPUT_PATH = Path("aligne_droits.sql")
 DEFAULT_BATCH_SIZE = 200
 API_TIMEOUT_SECONDS = 60
 PSQL_TIMEOUT_SECONDS = 60
+# Au-delà, le journal dit « et N autres » : il reste lisible, et la sortie SQL écrite a tout.
+MAX_LISTED_DIVERGENCES = 100
 
 # La prod ne doit jamais être une cible, même par une erreur de variable d'environnement.
 FORBIDDEN_PROJECT_REF = "mjlxfffdirlqmmjzhorg"
@@ -432,10 +437,23 @@ def parse_snapshot_output(output: str) -> RawSnapshot:
     return snapshot
 
 
-def read_source(dsn: str) -> Snapshot:
-    """Lecture seule de la base locale : la transaction est refusée si elle écrit."""
+def check_target_dsn(dsn: str) -> None:
+    """Refuse une cible vide, une option déguisée en DSN et le projet de prod."""
+    if not dsn:
+        raise AlignmentError("la chaîne de connexion de la cible est vide")
     if dsn.startswith("-"):
-        raise AlignmentError("le DSN source ne peut pas commencer par un tiret")
+        raise AlignmentError("le DSN de la cible ne peut pas commencer par un tiret")
+    if FORBIDDEN_PROJECT_REF in dsn:
+        raise AlignmentError("la prod n'est jamais une cible")
+
+
+def read_snapshot_by_psql(dsn: str, label: str) -> Snapshot:
+    """Lecture seule d'une base par psql : la transaction est refusée si elle écrit.
+
+    Sert la source (pile locale) et, en CI, la cible (pooler Supavisor en mode session).
+    """
+    if dsn.startswith("-"):
+        raise AlignmentError(f"le DSN {label} ne peut pas commencer par un tiret")
     environment = {**os.environ, "PGOPTIONS": "-c default_transaction_read_only=on"}
     try:
         result = subprocess.run(  # noqa: S603 - arguments en liste, pas de shell
@@ -450,7 +468,7 @@ def read_source(dsn: str) -> Snapshot:
         raise AlignmentError(f"psql inutilisable : {type(error).__name__}") from error
     if result.returncode != 0:
         # La sortie d'erreur de psql peut citer la chaîne de connexion : on ne la relaie pas.
-        raise AlignmentError("lecture de la base source impossible (psql a échoué)")
+        raise AlignmentError(f"lecture de la base {label} impossible (psql a échoué)")
     return build_snapshot(parse_snapshot_output(result.stdout))
 
 
@@ -503,23 +521,52 @@ def read_environment(name: str) -> str:
     return value
 
 
+def privilege_summary(privileges: Privileges) -> str:
+    names = [
+        *privilege_names(privileges, with_grant_option=False),
+        *(f"{name} WITH GRANT OPTION" for name in privilege_names(privileges, with_grant_option=True)),
+    ]
+    return ",".join(names) or "aucun"
+
+
+def describe_divergences(report: Report) -> list[str]:
+    """Une ligne par écart : objet, rôle, droits attendus, droits trouvés. Des noms, jamais des données."""
+    lines = [
+        f"  {d.securable.kind} {d.securable.reference} {d.role} : attendu {privilege_summary(d.source)},"
+        f" trouvé {privilege_summary(d.target)}"
+        for d in sorted(report.to_fix, key=lambda d: (d.securable.kind, d.securable.reference, d.role))
+    ]
+    if len(lines) > MAX_LISTED_DIVERGENCES:
+        left = len(lines) - MAX_LISTED_DIVERGENCES
+        return [*lines[:MAX_LISTED_DIVERGENCES], f"  ... et {left} autres (voir le SQL écrit)"]
+    return lines
+
+
 def print_report(report: Report) -> None:
     counts = report.counts_by_kind
     print(f"écarts à corriger : {sum(counts.values())}")
     for kind, count in sorted(counts.items()):
         print(f"  {kind}: {count}")
-    for title, divergences in (("hors périmètre (rapporté, non corrigé)", report.observed_only),):
-        if divergences:
-            print(f"{title} : {len(divergences)}")
-            for divergence in divergences[:20]:
-                print(f"  {divergence.securable.kind} {divergence.securable.reference} {divergence.role}")
+    for line in describe_divergences(report):
+        print(line)
+    if report.observed_only:
+        print(f"hors périmètre (rapporté, non corrigé) : {len(report.observed_only)}")
+        for divergence in report.observed_only[:20]:
+            print(f"  {divergence.securable.kind} {divergence.securable.reference} {divergence.role}")
     if report.missing_in_target:
         print(f"objets de la source absents de la cible (ignorés) : {len(report.missing_in_target)}")
+        for securable in report.missing_in_target[:20]:
+            print(f"  {securable.kind} {securable.reference}")
 
 
 def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--appliquer", action="store_true", help="envoie le SQL à la cible")
+    parser.add_argument(
+        "--cible-dsn",
+        default=os.environ.get("ALIGNE_CIBLE_DSN"),
+        help="lit la cible par psql au lieu de l'API de gestion (à blanc seulement)",
+    )
     parser.add_argument("--source-dsn", default=os.environ.get("ALIGNE_SOURCE_DSN", DEFAULT_SOURCE_DSN))
     parser.add_argument("--sortie", type=Path, default=DEFAULT_OUTPUT_PATH, help="fichier SQL écrit")
     parser.add_argument("--taille-lot", type=int, default=DEFAULT_BATCH_SIZE)
@@ -527,9 +574,21 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def run(arguments: argparse.Namespace) -> int:
-    api = ManagementApi(read_environment("ESSAI_REF"), read_environment("SUPABASE_ESSAI_TOKEN"))
-    source = read_source(arguments.source_dsn)
-    report = compute_report(source, api.read_snapshot())
+    api: ManagementApi | None = None
+    if arguments.cible_dsn is not None:
+        if arguments.appliquer:
+            raise AlignmentError("--cible-dsn lit seulement : appliquer passe par l'API de gestion")
+        check_target_dsn(arguments.cible_dsn)
+    else:
+        api = ManagementApi(read_environment("ESSAI_REF"), read_environment("SUPABASE_ESSAI_TOKEN"))
+
+    def read_target() -> Snapshot:
+        if api is None:
+            return read_snapshot_by_psql(arguments.cible_dsn, "cible")
+        return api.read_snapshot()
+
+    source = read_snapshot_by_psql(arguments.source_dsn, "source")
+    report = compute_report(source, read_target())
     statements = render_sql(report.to_fix)
     arguments.sortie.write_text(render_script(report, statements), encoding="utf-8")
     print_report(report)
@@ -537,10 +596,12 @@ def run(arguments: argparse.Namespace) -> int:
     if not arguments.appliquer:
         print("à blanc : rien n'est envoyé (--appliquer pour appliquer)")
         return 1 if report.to_fix else 0
+    if api is None:  # inatteignable : --appliquer sans API est refusé plus haut
+        raise AlignmentError("appliquer exige l'API de gestion")
     if statements:
         batch_count = apply_batches(statements, arguments.taille_lot, api.query)
         print(f"{batch_count} lot(s) appliqué(s)")
-    remaining = compute_report(source, api.read_snapshot())
+    remaining = compute_report(source, read_target())
     print_report(remaining)
     return 1 if remaining.to_fix else 0
 
