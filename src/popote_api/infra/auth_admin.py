@@ -14,8 +14,10 @@ sont gardés dans l'exception ; elle se journalise sans risque.
 """
 
 import asyncio
+import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -23,7 +25,7 @@ import httpx
 from fastapi import Request
 from pydantic import SecretStr
 
-from popote_api.config import Settings
+from popote_api.config import Settings, est_valeur_d_en_tete
 
 journal = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ DELAI_CONNEXION_S = 3.0
 DELAI_LECTURE_S = 10.0
 # Les délais d'httpx valent par étape : un serveur qui goutte à goutte les relancerait sans fin.
 DELAI_TOTAL_S = 15.0
+# Une réponse d'administration tient en quelques centaines d'octets : au-delà, ce n'est pas Auth.
+OCTETS_MAX_REPONSE = 64 * 1024
 OCTETS_MAX_MOT_DE_PASSE = 72  # au-delà, bcrypt tronque en silence : Auth refuse, nous aussi, avant l'appel
 MARQUE_CREATEUR = "popote-api"
 CHEMIN_DES_COMPTES = "/auth/v1/admin/users"
@@ -74,13 +78,28 @@ def _transmissible(texte: str) -> bool:
     return "\x00" not in texte
 
 
-def _code_d_auth(reponse: httpx.Response) -> str | None:
-    try:
-        corps: Any = reponse.json()
-    except ValueError:
-        return None
-    code = corps.get("error_code") if isinstance(corps, dict) else None
-    return code if isinstance(code, str) and FORME_D_UN_CODE.fullmatch(code) else None
+@dataclass(frozen=True)
+class Retour:
+    """Ce qu'Auth a répondu : le statut et un corps déjà borné. Pas de lecture sans limite."""
+
+    status: int
+    corps: bytes
+
+    @property
+    def reussi(self) -> bool:
+        return 200 <= self.status < 300
+
+    def objet_json(self) -> dict[str, Any] | None:
+        """Le corps s'il est un objet JSON, sinon `None` (page de mandataire, tableau, texte)."""
+        try:
+            contenu: Any = json.loads(self.corps)
+        except (ValueError, RecursionError):  # RecursionError : un corps de 200 000 crochets imbriqués
+            return None
+        return contenu if isinstance(contenu, dict) else None
+
+    def code_d_auth(self) -> str | None:
+        code = (self.objet_json() or {}).get("error_code")
+        return code if isinstance(code, str) and FORME_D_UN_CODE.fullmatch(code) else None
 
 
 class AuthAdmin:
@@ -98,6 +117,9 @@ class AuthAdmin:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if cle is not None and not est_valeur_d_en_tete(cle.get_secret_value()):
+            # Sinon h11 recopierait la clé dans son message d'erreur, et ce message finirait au journal.
+            raise ValueError("Clé d'administration non transmissible dans un en-tête.")
         self._url = url
         self._cle = cle
         self._transport = transport
@@ -126,14 +148,13 @@ class AuthAdmin:
                 "app_metadata": {"cree_par": MARQUE_CREATEUR},
             },
         )
-        if not reponse.is_success:
+        if not reponse.reussi:
             raise self._echec(reponse)
         try:
-            corps: Any = reponse.json()
-            return UUID(corps["id"])
+            return UUID((reponse.objet_json() or {})["id"])
         except (ValueError, KeyError, TypeError, AttributeError):
             raise ReponseAuthInattendue(
-                reponse.status_code, None, "Réponse d'Auth illisible à la création d'un compte"
+                reponse.status, None, "Réponse d'Auth illisible à la création d'un compte"
             ) from None
 
     async def change_mot_de_passe(self, identifiant: UUID, mot_de_passe: str) -> None:
@@ -143,8 +164,12 @@ class AuthAdmin:
         """
         self._exige_un_mot_de_passe_transmissible(mot_de_passe)
         reponse = await self._appelle("PUT", _chemin_du_compte(identifiant), {"password": mot_de_passe})
-        if not reponse.is_success:
+        if not reponse.reussi:
             raise self._echec(reponse)
+        # Auth rend le compte modifié : sa présence, avec le bon identifiant, distingue un vrai succès
+        # d'une page de mandataire ou de portail captif répondue en 200.
+        if (reponse.objet_json() or {}).get("id") != str(identifiant):
+            raise ReponseAuthInattendue(reponse.status, None, "Réponse d'Auth illisible au changement")
 
     async def supprime_compte(self, identifiant: UUID) -> None:
         """Supprime le compte ; déjà supprimé (`404 user_not_found`) vaut succès. Lève `AuthIndisponible`.
@@ -152,10 +177,12 @@ class AuthAdmin:
         Un `404` d'une autre origine (mauvaise adresse, mandataire) n'est pas un succès.
         """
         reponse = await self._appelle("DELETE", _chemin_du_compte(identifiant), None)
-        if reponse.status_code == 404 and _code_d_auth(reponse) == CODE_COMPTE_INCONNU:
+        if reponse.status == 404 and reponse.code_d_auth() == CODE_COMPTE_INCONNU:
             return
-        if not reponse.is_success:
+        if not reponse.reussi:
             raise self._echec(reponse)
+        if reponse.corps and reponse.objet_json() is None:  # un corps vide est admis, une page HTML non
+            raise ReponseAuthInattendue(reponse.status, None, "Réponse d'Auth illisible à la suppression")
 
     @staticmethod
     def _exige_un_mot_de_passe_transmissible(mot_de_passe: str) -> None:
@@ -163,28 +190,45 @@ class AuthAdmin:
         if not _transmissible(mot_de_passe) or len(mot_de_passe.encode()) > OCTETS_MAX_MOT_DE_PASSE:
             raise MotDePasseRefuseParAuth("Mot de passe non transmissible à Auth (octets, nul ou encodage).")
 
-    async def _appelle(self, methode: str, chemin: str, corps: dict[str, Any] | None) -> httpx.Response:
+    async def _appelle(self, methode: str, chemin: str, corps: dict[str, Any] | None) -> Retour:
         if self._url is None or self._cle is None:
             raise AuthIndisponible("L'administration d'Auth n'est pas configurée.")
-        en_tetes = {"apikey": self._cle.get_secret_value(), "Accept": "application/json"}
+        en_tetes = {
+            "apikey": self._cle.get_secret_value(),
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",  # Auth n'a rien à compresser : on ne le demande pas
+        }
         delais = httpx.Timeout(DELAI_LECTURE_S, connect=DELAI_CONNEXION_S, pool=DELAI_CONNEXION_S)
         try:
             async with asyncio.timeout(DELAI_TOTAL_S):
+                # trust_env=False : ni HTTP(S)_PROXY ni SSL_CERT_* du poste ne détournent la clé secrète.
                 async with httpx.AsyncClient(
-                    timeout=delais, transport=self._transport, follow_redirects=False
+                    timeout=delais, transport=self._transport, follow_redirects=False, trust_env=False
                 ) as client:
-                    return await client.request(methode, self._url + chemin, headers=en_tetes, json=corps)
-        except (httpx.HTTPError, TimeoutError) as erreur:
+                    async with client.stream(
+                        methode, self._url + chemin, headers=en_tetes, json=corps
+                    ) as reponse:
+                        return Retour(reponse.status_code, await _lit_borne(reponse))
+        except (httpx.HTTPError, httpx.InvalidURL, TimeoutError) as erreur:
             raise AuthIndisponible("Auth est injoignable ou trop lent.") from erreur
 
     @staticmethod
-    def _echec(reponse: httpx.Response) -> AuthAdminError:
-        code = _code_d_auth(reponse)
+    def _echec(reponse: Retour) -> AuthAdminError:
+        code = reponse.code_d_auth()
         if code in CODES_COMPTE_EXISTANT:
             return CompteDejaExistant("Un compte existe déjà pour cette adresse.")
         if code == CODE_MOT_DE_PASSE_FAIBLE:
             return MotDePasseRefuseParAuth("Auth a refusé le mot de passe.")
-        return ReponseAuthInattendue(reponse.status_code, code, "Auth a refusé l'opération")
+        return ReponseAuthInattendue(reponse.status, code, "Auth a refusé l'opération")
+
+
+async def _lit_borne(reponse: httpx.Response) -> bytes:
+    corps = bytearray()
+    async for morceau in reponse.aiter_bytes():
+        corps += morceau
+        if len(corps) > OCTETS_MAX_REPONSE:
+            raise ReponseAuthInattendue(reponse.status_code, None, "Réponse d'Auth trop grosse")
+    return bytes(corps)
 
 
 def _chemin_du_compte(identifiant: UUID) -> str:

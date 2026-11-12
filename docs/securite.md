@@ -175,7 +175,12 @@ l'application démarre avec un avertissement et chaque opération rend `503 auth
   seule place où elle voyage ; `Authorization` attend un JWT, et cette clé n'en est pas un.
 - **Délais finis** : connexion 3 s, lecture 10 s, échéance totale 15 s. **Aucune reprise** : un `cree_compte`
   rejoué pourrait créer un compte que l'appelant ne connaît pas. Redirections refusées : la clé ne suit pas un
-  `Location`.
+  `Location`. `trust_env=False` : ni `HTTP(S)_PROXY` ni `SSL_CERT_*` du poste ne détournent la clé. Réponse
+  bornée à 64 Kio, sans décompression demandée.
+- **Un succès se reconnaît à son corps** : la création rend l'identifiant, le changement rend le compte
+  (même identifiant), la suppression rend un objet JSON ou rien ; une page de mandataire répondue en `200`
+  est une erreur, pas un succès. Clé et adresse de base sont validées au démarrage (en-tête transmissible,
+  nom d'hôte ou IP littérale, port 1 à 65535) et la clé à la construction du client.
 - **Le message d'Auth n'est jamais gardé ni journalisé** (il recopie l'adresse). Une exception ne porte que le
   statut HTTP et le `error_code` d'Auth, et seulement s'il a la forme d'un code (`[a-z][a-z0-9_]{0,63}`).
 - **Erreurs** : `email_exists` / `user_already_exists` → `CompteDejaExistant` (`409 compte_existant`) ;

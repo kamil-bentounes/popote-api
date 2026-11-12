@@ -1,4 +1,6 @@
+import re
 from enum import StrEnum
+from ipaddress import ip_address
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -7,12 +9,32 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
 HOTES_LOCAUX = frozenset({"127.0.0.1", "localhost", "::1"})
+FORME_D_UN_NOM_D_HOTE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
+
+
+def est_valeur_d_en_tete(valeur: str) -> bool:
+    """Vrai si la valeur voyage dans un en-tête HTTP sans erreur : ASCII visible, sans espace, non vide.
+
+    Un défaut ferait recopier la valeur, donc la clé, par la bibliothèque HTTP dans son message d'erreur.
+    """
+    return bool(valeur) and valeur.isascii() and valeur.isprintable() and " " not in valeur
 
 
 class Env(StrEnum):
     local = "local"
     essai = "essai"
     prod = "prod"
+
+
+def _est_un_hote(hote: str) -> bool:
+    """Un nom de domaine usuel ou une adresse IP littérale ; rien d'autre n'entre dans une adresse."""
+    if ":" in hote:
+        try:
+            ip_address(hote)
+        except ValueError:
+            return False
+        return True
+    return FORME_D_UN_NOM_D_HOTE.fullmatch(hote) is not None
 
 
 class Settings(BaseSettings):
@@ -48,13 +70,15 @@ class Settings(BaseSettings):
         origine_nue = morceaux.path in ("", "/") and not (
             morceaux.query or morceaux.fragment or morceaux.username or morceaux.password
         )
-        if not hote or not origine_nue or morceaux.scheme not in ("http", "https"):
+        if not hote or not origine_nue or morceaux.scheme not in ("http", "https") or not _est_un_hote(hote):
             raise ValueError("supabase_url : une origine http(s) seule est attendue (sans chemin ni accès).")
         # La clé secrète voyage vers cette adresse : jamais en clair, sauf vers la pile locale.
         if morceaux.scheme == "http" and not (info.data.get("env") is Env.local and hote in HOTES_LOCAUX):
             raise ValueError("supabase_url : https obligatoire (http seulement vers l'hôte local, en local).")
+        if port == 0:  # httpx le prendrait pour le port par défaut
+            raise ValueError("supabase_url : port invalide.")
         origine = f"{morceaux.scheme}://{'[' + hote + ']' if ':' in hote else hote}"
-        return origine + (f":{port}" if port else "")
+        return origine + (f":{port}" if port is not None else "")
 
     @field_validator("supabase_secret_key")
     @classmethod
@@ -62,8 +86,7 @@ class Settings(BaseSettings):
         """La clé voyage dans un en-tête : ASCII visible seulement (un défaut serait recopié par httpx)."""
         if valeur is None:
             return None
-        cle = valeur.get_secret_value()
-        if not cle or not cle.isascii() or not cle.isprintable() or " " in cle:
+        if not est_valeur_d_en_tete(valeur.get_secret_value()):
             raise ValueError("supabase_secret_key : caractères ASCII visibles seulement, non vide.")
         return valeur
 

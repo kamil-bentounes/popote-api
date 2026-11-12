@@ -143,6 +143,17 @@ def test_l_url_d_auth_est_ramenee_a_son_origine(saisie: str, origine: str) -> No
         "https://p.supabase.co/#x",
         "https://nom:motdepasse@p.supabase.co",
         "https://p.supabase.co:abc",
+        "https://p.supabase.co:0",
+        "https://p.supabase.co:70000",
+        "https://<ref>.supabase.co",
+        "https://p supabase.co",
+        "https://p.supabase.co\\",
+        "https://evil.example\\.supabase.co",
+        "https://p.supabase.co%2f",
+        "https://p..supabase.co",
+        "https://-p.supabase.co",
+        "https://p.supabase.co\x00",
+        "https://[zz::1]",
         "",
     ],
 )
@@ -171,7 +182,7 @@ def test_http_n_est_permis_qu_en_local_et_vers_l_hote_local(env: str, url: str) 
         )
 
 
-@pytest.mark.parametrize("cle", ["", "clé-é", "a b", "a\nb", "a\x00b"])
+@pytest.mark.parametrize("cle", ["", "clé-é", "a b", "a\nb", "a\x00b", "a\tb"])
 def test_une_cle_d_auth_non_transmissible_echoue_sans_etre_recopiee(cle: str) -> None:
     with pytest.raises(ValidationError, match="supabase_secret_key") as erreur:
         Settings.model_validate(

@@ -12,6 +12,7 @@ import httpx
 import pytest
 from _commun import reglages
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 from popote_api import errors
 from popote_api.infra import auth_admin
@@ -89,6 +90,7 @@ async def test_la_cle_voyage_dans_apikey_seul_et_nulle_part_ailleurs() -> None:
     assert "authorization" not in requete.headers
     assert CLE not in str(requete.url) and CLE.encode() not in requete.content
     assert requete.headers["content-type"] == "application/json"
+    assert requete.headers["accept-encoding"] == "identity"
 
 
 async def test_change_mot_de_passe_envoie_put_avec_le_seul_mot_de_passe() -> None:
@@ -198,6 +200,20 @@ async def test_le_delai_total_borne_un_serveur_qui_goutte_a_goutte(monkeypatch: 
     assert isinstance(erreur.value.__cause__, TimeoutError)
 
 
+async def test_les_delais_vraiment_passes_au_client_sont_ceux_du_plan() -> None:
+    vus: list[dict[str, float | None]] = []
+
+    def releve(requete: httpx.Request) -> httpx.Response:
+        vus.append(requete.extensions["timeout"])
+        return utilisateur()
+
+    admin, _ = client(releve)
+
+    await admin.cree_compte(EMAIL, MOT_DE_PASSE)
+
+    assert vus == [{"connect": 3.0, "read": 10.0, "write": 10.0, "pool": 3.0}]
+
+
 def test_les_delais_sont_ceux_du_plan() -> None:
     assert (auth_admin.DELAI_CONNEXION_S, auth_admin.DELAI_LECTURE_S, auth_admin.DELAI_TOTAL_S) == (
         3.0,
@@ -255,6 +271,83 @@ async def test_changer_le_mot_de_passe_d_un_compte_inconnu_est_une_erreur() -> N
 
 
 # --- Réponses mal formées ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reponse",
+    [
+        httpx.Response(200, text="<html>portail captif</html>"),
+        httpx.Response(200, json={}),
+        httpx.Response(200, json={"id": "99999999-2222-3333-4444-555555555555"}),
+        httpx.Response(200, json=["id"]),
+        httpx.Response(204),
+    ],
+    ids=["html", "sans-id", "autre-id", "tableau", "204-vide"],
+)
+async def test_un_changement_n_est_un_succes_que_si_auth_rend_le_compte_modifie(
+    reponse: httpx.Response,
+) -> None:
+    admin, _ = client(lambda _: reponse)
+
+    with pytest.raises(ReponseAuthInattendue):
+        await admin.change_mot_de_passe(IDENTIFIANT, MOT_DE_PASSE)
+
+
+@pytest.mark.parametrize("reponse", [httpx.Response(200, json={}), httpx.Response(204)], ids=["json", "vide"])
+async def test_une_suppression_accepte_un_objet_json_ou_un_corps_vide(reponse: httpx.Response) -> None:
+    admin, _ = client(lambda _: reponse)
+
+    assert await admin.supprime_compte(IDENTIFIANT) is None
+
+
+@pytest.mark.parametrize(
+    "reponse",
+    [httpx.Response(200, text="<html>portail captif</html>"), httpx.Response(200, json=["ok"])],
+    ids=["html", "tableau"],
+)
+async def test_une_suppression_n_est_pas_un_succes_si_le_corps_n_est_pas_celui_d_auth(
+    reponse: httpx.Response,
+) -> None:
+    admin, _ = client(lambda _: reponse)
+
+    with pytest.raises(ReponseAuthInattendue):
+        await admin.supprime_compte(IDENTIFIANT)
+
+
+@pytest.mark.parametrize("statut", [200, 500])
+async def test_un_corps_json_imbrique_a_l_exces_reste_une_erreur_typee(statut: int) -> None:
+    profond = httpx.Response(statut, content=b"[" * 20_000 + b"]" * 20_000)
+    admin, _ = client(lambda _: profond)
+
+    with pytest.raises(ReponseAuthInattendue):
+        await admin.cree_compte(EMAIL, MOT_DE_PASSE)
+
+
+async def test_une_reponse_plus_grosse_que_la_borne_est_refusee() -> None:
+    enorme = httpx.Response(200, content=b'{"id": "' + b"a" * (auth_admin.OCTETS_MAX_REPONSE + 1) + b'"}')
+    admin, _ = client(lambda _: enorme)
+
+    with pytest.raises(ReponseAuthInattendue, match="trop grosse"):
+        await admin.cree_compte(EMAIL, MOT_DE_PASSE)
+
+
+async def test_une_adresse_de_base_invalide_leve_auth_indisponible() -> None:
+    admin = AuthAdmin("https://p.supabase.co\x00", auth_admin_cle(), transport=httpx.MockTransport(vide))
+
+    with pytest.raises(AuthIndisponible):
+        await admin.supprime_compte(IDENTIFIANT)
+
+
+def vide(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={})
+
+
+@pytest.mark.parametrize("cle", ["", "clé", "a b", "sb_secret_AAAA\nBBBB", "a\x00b"])
+def test_une_cle_non_transmissible_est_refusee_des_la_construction_sans_etre_recopiee(cle: str) -> None:
+    with pytest.raises(ValueError, match="non transmissible") as erreur:
+        AuthAdmin(URL, SecretStr(cle))
+
+    assert cle == "" or cle not in tout_ce_qui_sort(erreur.value)
 
 
 @pytest.mark.parametrize(
@@ -479,6 +572,18 @@ async def test_auth_indisponible_devient_un_503_sans_detail_d_auth(caplog: pytes
     assert r.headers["cache-control"] == "no-store"
     assert "500" not in r.text and "unexpected_failure" not in r.text
     assert "HTTP 500, code=unexpected_failure" in caplog.text
+
+
+async def test_le_503_journalise_la_cause_de_la_panne(caplog: pytest.LogCaptureFixture) -> None:
+    cause = httpx.ConnectError("refusé")
+    faute = AuthIndisponible("Auth est injoignable ou trop lent.")
+    faute.__cause__ = cause
+
+    with caplog.at_level(logging.WARNING):
+        await appelle(app_qui_leve(faute))
+
+    assert any(r.exc_info is not None for r in caplog.records)
+    assert "ConnectError" in caplog.text
 
 
 async def test_compte_deja_existant_devient_un_409_compte_existant() -> None:
