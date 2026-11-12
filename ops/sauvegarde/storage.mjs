@@ -2,7 +2,10 @@
 // Aucune dépendance : seulement `fetch` de Node.
 
 const ESSAIS = 3
-const DELAI_MS = 60_000
+// Un appel de liste ou de gestion : 60 s. Un objet (téléchargement ou dépôt) : le délai couvre aussi le
+// corps, donc 10 minutes, pour qu'une grosse photo sur une liaison lente ne fasse pas échouer la sauvegarde.
+export const DELAI_MS = 60_000
+export const DELAI_OBJET_MS = 600_000
 
 /** Une réponse d'erreur de l'API. Le message ne cite jamais un nom d'objet (ce serait une donnée). */
 export class ErreurStorage extends Error {
@@ -38,7 +41,7 @@ const reessayable = (statut) => statut === 429 || statut >= 500
  * Appel avec délai fini et trois essais au plus, seulement sur une erreur réseau, un 429 ou un 5xx.
  * `corps` est un Buffer ou une chaîne : il se rejoue sans surprise.
  */
-export async function appeler(client, methode, chemin, { corps, entetes, libelle } = {}) {
+export async function appeler(client, methode, chemin, { corps, entetes, libelle, delai = DELAI_MS } = {}) {
   const nom = libelle ?? methode
   let derniere
   for (let essai = 1; essai <= ESSAIS; essai++) {
@@ -48,7 +51,7 @@ export async function appeler(client, methode, chemin, { corps, entetes, libelle
         method: methode,
         headers: enTetes(client.cle, entetes),
         body: corps,
-        signal: AbortSignal.timeout(DELAI_MS),
+        signal: AbortSignal.timeout(delai),
       })
     } catch (erreur) {
       derniere = new ErreurStorage(`${nom} : ${erreur.name}`, { cause: erreur })

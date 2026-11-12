@@ -92,6 +92,14 @@ dans_snapshot "\\o $travail/comptes.txt" \
 attend FIN-COMPTES > /dev/null
 [ -s "$travail/comptes.txt" ] || echoue "aucun compte lu : manifeste vide"
 
+# La liste des objets, dans le même instantané : la copie des fichiers est comparée à elle, nom et taille.
+dans_snapshot "\\o $travail/objets.jsonl" \
+  "select json_build_object('seau', bucket_id, 'nom', name, 'octets', (metadata->>'size')::bigint)::text
+     from storage.objects order by bucket_id, name;" \
+  "\\o" "select 'FIN-OBJETS';"
+attend FIN-OBJETS > /dev/null
+[ -f "$travail/objets.jsonl" ] || echoue "liste des objets de l'instantané introuvable"
+
 pg_dump --format=custom --no-owner --lock-wait-timeout=60s --snapshot="$instantane" \
   --schema=public --schema=auth --schema=storage > "$travail/base.dump"
 dans_snapshot "commit;"
@@ -106,11 +114,17 @@ if ! pg_dumpall --roles-only --no-role-passwords > "$travail/roles.sql" 2> /dev/
 fi
 
 # --- Les fichiers des seaux ----------------------------------------------------------------------------
-node "$racine/ops/sauvegarde/copie-seaux.mjs" "$travail/seaux"
-copies=$(wc -l < "$travail/seaux/index.jsonl")
-attendus=$(awk -F'\t' '$1 == "storage.objects" { print $2 }' "$travail/comptes.txt")
-[ "$copies" = "$attendus" ] ||
-  echoue "$copies objets copiés mais $attendus dans l'instantané : un dépôt a eu lieu pendant la copie, relancer"
+# Comparés, nom et taille, à la liste de `storage.objects` de l'instantané. Au premier écart (un objet
+# remplacé pendant la copie), un seul nouvel essai de la copie ; au second, échec.
+copie_des_seaux() {
+  rm -rf "$travail/seaux" &&
+    node "$racine/ops/sauvegarde/copie-seaux.mjs" "$travail/seaux" &&
+    node "$racine/ops/sauvegarde/verifie-seaux.mjs" "$travail/seaux" "$travail/objets.jsonl"
+}
+if ! copie_des_seaux; then
+  echo "sauvegarde: les fichiers copiés ne correspondent pas à l'instantané, nouvel essai de la copie"
+  copie_des_seaux || echoue "les fichiers des seaux ne correspondent pas à l'instantané : un dépôt a eu lieu depuis, relancer"
+fi
 
 printf 'format=1\ndate=%s\ncible=%s\npg_dump=%s\n' "$jour" "$CIBLE" "$(pg_dump --version)" > "$travail/meta.txt"
 

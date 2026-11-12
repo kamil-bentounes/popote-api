@@ -8,11 +8,11 @@
 // octets, type). Le journal ne contient que des comptes et des tailles, jamais un nom d'objet.
 import { createWriteStream } from 'node:fs'
 import { appendFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises'
-import { dirname, resolve, sep } from 'node:path'
+import { dirname, posix, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { pathToFileURL } from 'node:url'
-import { appeler, ErreurStorage, lireEnvironnement, segments } from './storage.mjs'
+import { appeler, DELAI_OBJET_MS, ErreurStorage, lireEnvironnement, segments } from './storage.mjs'
 
 export const TAILLE_PAGE = 1000
 
@@ -53,6 +53,32 @@ export function cheminSous(racine, ...parties) {
 }
 
 /** `seaux` limite la copie à ces seaux (les essais) ; sans lui, tous les seaux du projet. */
+/**
+ * Garde les noms d'objets d'un seau qui deviendront des fichiers. Storage accepte des clés que le disque ne
+ * sait pas représenter à l'identique : `a` et `a/b` (un fichier et un dossier du même nom), `a//b`, `a/`,
+ * `./a`. Les copier les confondrait ou les renommerait en silence : on refuse, avec une erreur claire
+ * (le seau seulement, jamais le nom).
+ */
+export function registreDeNoms(seau) {
+  const fichiers = new Set()
+  const dossiers = new Set()
+  return {
+    ajouter(nom) {
+      const normal = posix.normalize(nom)
+      if (normal !== nom || nom.endsWith('/') || nom.startsWith('/') || nom.startsWith('../') || nom === '.' || nom === '') {
+        throw new ErreurStorage(`le seau ${seau} contient un nom d’objet qui ne devient pas le même fichier sur disque (segment vide, « . », « .. » ou barre finale)`)
+      }
+      const parents = []
+      for (let parent = posix.dirname(nom); parent !== '.'; parent = posix.dirname(parent)) parents.push(parent)
+      if (fichiers.has(nom) || dossiers.has(nom) || parents.some((parent) => fichiers.has(parent))) {
+        throw new ErreurStorage(`le seau ${seau} contient deux objets qui se confondent sur disque (un objet et un dossier du même nom)`)
+      }
+      fichiers.add(nom)
+      for (const parent of parents) dossiers.add(parent)
+    },
+  }
+}
+
 export async function copier(client, dossier, { seaux: retenus } = {}) {
   const racine = resolve(dossier)
   await mkdir(racine, { recursive: true })
@@ -64,11 +90,14 @@ export async function copier(client, dossier, { seaux: retenus } = {}) {
     bilan.seaux++
     const racineSeau = cheminSous(resolve(racine, 'fichiers'), seau)
     await mkdir(racineSeau, { recursive: true })
+    const noms = registreDeNoms(seau)
     for await (const objet of listerObjets(client, seau)) {
+      noms.ajouter(objet.nom)
       const cible = cheminSous(racineSeau, objet.nom)
       await mkdir(dirname(cible), { recursive: true })
       const reponse = await appeler(client, 'GET', `/storage/v1/object/${encodeURIComponent(seau)}/${segments(objet.nom)}`, {
         libelle: `téléchargement dans le seau ${seau}`,
+        delai: DELAI_OBJET_MS,
       })
       await pipeline(Readable.fromWeb(reponse.body), createWriteStream(cible))
       const { size: octets } = await stat(cible)

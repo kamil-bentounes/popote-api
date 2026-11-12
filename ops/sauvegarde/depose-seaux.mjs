@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { cheminSous } from './copie-seaux.mjs'
-import { appeler, ErreurStorage, lireEnvironnement, segments } from './storage.mjs'
+import { appeler, DELAI_OBJET_MS, ErreurStorage, lireEnvironnement, segments } from './storage.mjs'
 
 export async function deposer(client, dossier) {
   const racine = resolve(dossier)
@@ -22,6 +22,7 @@ export async function deposer(client, dossier) {
       corps: contenu,
       entetes: { 'Content-Type': type ?? 'application/octet-stream', 'x-upsert': 'true' },
       libelle: `dépôt dans le seau ${seau}`,
+      delai: DELAI_OBJET_MS,
     })
     bilan.objets++
     bilan.octets += octets
