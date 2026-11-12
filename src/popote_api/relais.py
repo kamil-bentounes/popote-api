@@ -4,6 +4,8 @@ La garde refuse par défaut : tout scope `http` ou `websocket`, quel que soit le
 """
 
 import hmac
+import logging
+from ipaddress import ip_address
 
 from fastapi import Request
 from starlette.datastructures import Headers
@@ -11,6 +13,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from popote_api.config import Settings
 from popote_api.errors import reponse
+
+journal = logging.getLogger(__name__)
 
 EN_TETE = "x-popote-relais"
 EN_TETE_IP = "x-popote-ip"
@@ -30,12 +34,23 @@ def relais_valide(headers: Headers, settings: Settings) -> bool:
     return hmac.compare_digest(recu.encode(), attendu.encode())
 
 
-def ip_de(request: Request) -> str:
-    """L'adresse de la personne : celle que le relais a vue, seulement si le relais est authentique."""
+def ip_de(request: Request) -> str | None:
+    """L'adresse de la personne, telle que le relais l'a vue.
+
+    Hors local, rend `None` plutôt que l'adresse de la connexion (celle du relais) quand
+    `X-Popote-IP` manque ou n'est pas une adresse : une limite par IP ne doit jamais compter
+    tout le monde sur l'adresse du relais.
+    """
     settings: Settings = request.app.state.settings
-    if relais_valide(request.headers, settings) and request.headers.get(EN_TETE_IP):
-        return request.headers[EN_TETE_IP]
-    return request.client.host if request.client else ""
+    if not settings.relais_exige:
+        return request.client.host if request.client else None
+    if not relais_valide(request.headers, settings):
+        return None
+    try:
+        return str(ip_address(request.headers.get(EN_TETE_IP, "").strip()))
+    except ValueError:
+        journal.warning("X-Popote-IP absente ou invalide malgré un relais authentique.")
+        return None
 
 
 class Garde:

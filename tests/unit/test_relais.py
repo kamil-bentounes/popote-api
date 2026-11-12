@@ -3,23 +3,17 @@ import json
 import httpx
 import pytest
 from _commun import RELAIS, SECRET, appeler, appeler_websocket, reglages
-from fastapi import Request
 from pydantic import SecretStr
 from starlette.datastructures import Headers
 
 from popote_api import relais
 from popote_api.config import Env, Settings
 from popote_api.main import create_app
-from popote_api.relais import REFUS_WEBSOCKET, ip_de, relais_valide
+from popote_api.relais import REFUS_WEBSOCKET, relais_valide
 
 
 def client(env: str) -> httpx.AsyncClient:
     app = create_app(reglages(env))
-
-    @app.get("/api/_test/ip")
-    async def ip(request: Request) -> dict[str, str]:
-        return {"ip": ip_de(request)}
-
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
@@ -46,18 +40,6 @@ async def test_le_refus_est_un_probleme_qui_porte_son_identifiant() -> None:
     assert r.headers["content-type"].startswith("application/problem+json")
     assert r.headers["x-request-id"] == r.json()["instance"]
     assert r.json()["code"] == "introuvable"
-
-
-async def test_lip_annoncee_est_crue_avec_le_bon_relais() -> None:
-    r = await client("essai").get(
-        "/api/_test/ip", headers={"X-Popote-Relais": SECRET, "X-Popote-IP": "203.0.113.7"}
-    )
-    assert r.json() == {"ip": "203.0.113.7"}
-
-
-async def test_lip_annoncee_est_ignoree_sans_relais_authentique() -> None:
-    r = await client("local").get("/api/_test/ip", headers={"X-Popote-IP": "203.0.113.7"})
-    assert r.json() == {"ip": "127.0.0.1"}
 
 
 CHEMINS = ["/api/healthz", "/api", "//api/healthz", "/API/healthz", "/api/%2e%2e/healthz", "/", "/autre"]

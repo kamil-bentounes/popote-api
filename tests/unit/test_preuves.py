@@ -38,3 +38,8 @@ async def test_la_lecture_dit_le_cookie_et_lip() -> None:
 async def test_la_lecture_sans_cookie_le_dit() -> None:
     r = await client("essai").get("/api/_preuves/cookie", headers=RELAIS)
     assert r.json()["cookie_recu"] is False
+
+
+async def test_la_lecture_sans_ip_annoncee_rend_une_ip_nulle() -> None:
+    r = await client("essai").get("/api/_preuves/cookie", headers=RELAIS)
+    assert r.json()["ip"] is None
