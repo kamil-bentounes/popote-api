@@ -1,9 +1,13 @@
 """L'identifiant de chaque requête, posé par un middleware ASGI pur."""
 
+from contextvars import ContextVar
 from uuid import uuid4
 
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Lu par le journal, qui ne reçoit pas la requête.
+request_id_courant: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
 class Identifiant:
@@ -27,4 +31,8 @@ class Identifiant:
                 MutableHeaders(scope=message)["X-Request-Id"] = identifiant
             await send(message)
 
-        await self.app(scope, receive, envoie_avec_identifiant)
+        jeton = request_id_courant.set(identifiant)
+        try:
+            await self.app(scope, receive, envoie_avec_identifiant)
+        finally:
+            request_id_courant.reset(jeton)

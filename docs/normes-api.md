@@ -54,12 +54,41 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   pour un paramètre).
 - Jamais de trace, de requête SQL, de message de fournisseur ni de texte en anglais dans une réponse. L'erreur
   d'origine va au journal, reliée par `instance`.
+- **Erreurs de la base** (`erreurs_base.py`, traduites une fois, à la frontière) : `23505` → `409 conflit` ;
+  `23503`, `23514`, `22P02` → `422 donnees_invalides` sans pointeur ; `40001`, `40P01`, `55P03` → `503 reessayer`
+  avec `Retry-After: 1` ; `57014` (`statement_timeout`, requête annulée) → `503 delai_depasse` ; pool épuisé,
+  connexion coupée ou refusée → `503 base_indisponible` ; pas de pool `popote_internal` → `503
+  service_indisponible`. `42501` (droit refusé) vaut `404 introuvable` seulement dans `refus_vaut_introuvable()`,
+  autour d'une lecture ou d'une écriture ciblée d'un élément ; ailleurs c'est un droit manquant, donc
+  `500 erreur_interne`. Dans tous les cas il est journalisé en avertissement avec l'objet (table ou fonction).
+  Le journal reçoit `sqlstate`, contrainte et table, jamais le message de la base (son `DETAIL` recopie des
+  valeurs). Les codes métier propres à une fonction SQL arrivent avec leur domaine (0.5).
 
 ## 3.4 Listes
 
 - Pagination par curseur : `?limit=` (20 par défaut, 100 au plus) et `?cursor=` ; réponse
   `{"items": [...], "next_cursor": "…" | null}`. Jamais de troncature silencieuse.
 - Filtres et tris explicites, sur des champs nommés dans le contrat.
+- **Outillage** : `popote_api/pagination.py`. `parametres_de_page` (dépendance FastAPI) : `limit` de 1 à 100,
+  20 par défaut ; au-delà ou en deçà, `422` (jamais de troncature silencieuse). `Page[T]` est le modèle de
+  réponse, `{"items": [...], "next_cursor": str | null}` (les deux champs sont toujours présents). La route
+  demande `limit + 1` lignes : la ligne en trop dit qu'il y a une suite (`construit_page`), sans `count`.
+- **Pagination par clé, jamais par `offset`** : `clause_apres` écrit `(cle, id) > (%s, %s)` (`<` en ordre
+  descendant) et `ordre` le `ORDER BY cle, id` ; l'identifiant départage les égalités, donc aucune ligne n'est
+  sautée ni répétée quand la liste change entre deux pages. Un index `(cle, id)` sert la requête. La clé de tri
+  et l'identifiant sont `not null` ; leurs noms sont écrits dans le code (`Tri`), jamais pris à la requête.
+- **Le curseur est validé, pas signé.** Choix et raison : le périmètre d'une liste (foyer, personne) vient du
+  `WHERE` de la route, pas du curseur, qui n'est qu'une position dans un ordre. Un curseur forgé ne peut donc
+  que changer de page parmi des lignes que la personne lit déjà ; un test le montre sur Postgres (curseur
+  pointant sur une ligne d'un autre foyer). Un HMAC n'ajouterait que l'intégrité de cette position, au prix
+  d'un secret de plus à poser et à tourner dans chaque environnement (sans lui le conteneur ne démarre pas).
+  Le décodage est complet : alphabet et taille bornés ; JSON d'un objet aux seules clés `v`, `t` (nom du tri),
+  `k` (clé), `i` (UUID) ; version, nom du tri et type de la clé vérifiés (un curseur d'une autre liste est
+  refusé) ; clé acceptée par Postgres (entier `bigint`, texte de 200 caractères au plus sans NUL, instant avec
+  décalage) ; enfin le curseur doit se ré-encoder **à l'identique**, ce qui écarte toute forme que nous
+  n'aurions pas écrite. Tout échec rend `400 curseur_invalide`. Conséquence : le curseur est lisible par le
+  client (base64url d'un JSON) ; n'y mettre que la clé de tri d'une ligne qu'il a déjà reçue, et borner à 200
+  caractères (`max_length`) tout texte qui sert de clé de tri.
 
 ## 3.5 Écritures sûres
 
@@ -138,6 +167,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 - Instants en RFC 3339 avec décalage ; jours du calendrier en `YYYY-MM-DD`, toujours au sens de
   `Europe/Paris` ; argent en centimes entiers avec `currency: "EUR"` ; quantités avec leur unité.
+- **Types à réutiliser** (`popote_api/formats.py`), dans tout modèle d'entrée ou de sortie :
+  - `Instant` : texte RFC 3339 **avec** décalage (`Z` ou `+01:00`). Un instant sans décalage, un horodatage
+    Unix, un espace à la place du `T`, un décalage sans deux-points, une seconde `60` sont refusés (`422`).
+    En sortie, toujours en UTC avec le décalage écrit (`2026-11-12T09:00:00+00:00`) : l'écran convertit.
+  - `Jour` : `YYYY-MM-DD` seul (un instant ou un `datetime` est refusé), au sens de `Europe/Paris`.
+    `jour_a_paris(instant)` donne le jour de Paris d'un instant (heure d'été comprise : des journées de 23,
+    24 ou 25 h) ; `aujourdhui_a_paris()` prend une horloge en paramètre pour les tests. Jamais `date.today()`,
+    qui suit le fuseau du serveur.
+  - `Montant` : `{"amount_cents": int, "currency": "EUR"}`. Entier strict (ni `12.5`, ni `12.0`, ni `"1250"`),
+    de ±(2^53 − 1) (au-delà, un nombre JSON n'est plus exact dans le navigateur), négatif pour un avoir ;
+    `currency` obligatoire et seulement `"EUR"` (casse comprise) ; champ inconnu refusé.
 
 ## 3.9 Cache, versions, contrat
 
@@ -180,10 +220,23 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.11 Suivi
 
-- En-tête `traceparent` (W3C Trace Context) accepté et propagé ; journaux JSON sur la sortie standard, avec
-  l'identifiant de trace ; aucune donnée personnelle dans les journaux (pas de montant, pas de prénom, pas
-  d'e-mail en clair).
-- `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
+- En-tête `traceparent` (W3C Trace Context niveau 1, Recommandation du 23/11/2021, § 3.2) lu, et son `trace-id`
+  repris ; journaux JSON sur la sortie standard, avec l'identifiant de trace ; aucune donnée personnelle dans les
+  journaux (pas de montant, pas de prénom, pas d'e-mail en clair).
+- `traceparent` valide : version `00` de 55 caractères exactement, ou version inconnue (`01` à `fe`) d'au moins 55
+  caractères dont la suite commence par `-` ; `trace-id` 32 et `parent-id` 16 chiffres hexadécimaux **minuscules**,
+  non nuls ; drapeaux sur 2 chiffres. Version `ff`, majuscule, mauvaise longueur, tout à zéro, deux lignes
+  `traceparent`, plus de 512 caractères : l'en-tête est **ignoré** et une trace neuve commence. Le `span-id` est
+  toujours celui de la requête (neuf), jamais le `parent-id` reçu ; `tracestate` n'est pas interprété. Pas de SDK
+  OpenTelemetry à cette étape : le format est le sien, l'export viendra avec D4.
+- Journaux : une ligne = un objet JSON (`ts`, `level`, `logger`, `msg`, `request_id`, `trace_id`, `span_id`).
+  L'accès n'écrit que le gabarit de la route (jamais le chemin brut, la requête, l'IP, l'agent utilisateur). Aucune exception n'est
+  écrite par son message, quel que soit son type (il peut recopier une valeur) : seulement son type et sa pile ;
+  pour `psycopg.Error`, en plus `sqlstate`, contrainte, table. La forme exacte d'une ligne :
+  [`exploitation.md`](exploitation.md) § 10.
+- `suivi.signale(exc, request_id)` : la prise du suivi hébergé (D4), sans effet ; elle ne fait jamais échouer
+  la réponse d'une 500.
+- `/api/healthz` (le processus vit ; rend aussi `version`, le SHA du commit de l'image) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
   La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun
   droit sur les tables) et lit une ligne de `public.instance_setting` : table de référence lisible sans foyer,

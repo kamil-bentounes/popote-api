@@ -33,7 +33,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: ./.github/actions/outils-sauvegarde
+      # La forme `$/` (syntaxe « dépôt courant ») n'a pas été éprouvée sur une vraie sauvegarde : on garde `./`.
+      - uses: ./.github/actions/outils-sauvegarde # zizmor: ignore[self-repository]
       - name: Vérifier les secrets
         env:
           AGE_ESSAI_KEY: ${{ secrets.AGE_ESSAI_KEY }}

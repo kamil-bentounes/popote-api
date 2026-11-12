@@ -263,23 +263,97 @@ class TestBatches:
         assert len(sent) == 2
 
 
+ESSAI = "abcdefghijklmnopqrst"
+AUTRE = "tsrqponmlkjihgfedcba"
+
+
 class TestApi:
-    def test_prod_is_refused(self) -> None:
-        with pytest.raises(tool.AlignmentError):
-            tool.ManagementApi(tool.FORBIDDEN_PROJECT_REF, "jeton")
+    def test_prod_is_refused_even_if_someone_allows_it(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="prod"):
+            tool.ManagementApi(tool.FORBIDDEN_PROJECT_REF, "jeton", {tool.FORBIDDEN_PROJECT_REF})
 
     def test_malformed_reference_is_refused(self) -> None:
         with pytest.raises(tool.AlignmentError):
-            tool.ManagementApi("../x", "jeton")
+            tool.ManagementApi("../x", "jeton", {"../x"})
+
+    def test_target_outside_the_allowlist_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.ManagementApi(AUTRE, "jeton", {ESSAI})
+
+    def test_empty_allowlist_refuses_everything(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.ManagementApi(ESSAI, "jeton", set())
+
+    def test_target_in_the_allowlist_is_accepted(self) -> None:
+        api = tool.ManagementApi(ESSAI, "jeton", {ESSAI})
+        assert repr(api) == "ManagementApi(<projet d'essai>)"
 
     def test_token_is_not_in_repr(self) -> None:
-        assert "jeton-secret" not in repr(tool.ManagementApi("abcdefghijklmnopqrst", "jeton-secret"))
+        assert "jeton-secret" not in repr(tool.ManagementApi(ESSAI, "jeton-secret", {ESSAI}))
 
     def test_snapshot_output_shape_is_checked(self) -> None:
         with pytest.raises(tool.AlignmentError):
             tool.parse_snapshot_output('{"schemas": []}')
         with pytest.raises(tool.AlignmentError):
             tool.parse_snapshot_output("pas du json")
+
+
+class TestSourceLocale:
+    @pytest.mark.parametrize(
+        "dsn",
+        [
+            "postgresql://postgres:postgres@127.0.0.1:54322/postgres",
+            "postgresql://postgres:postgres@localhost:54322/postgres",
+            "postgres://u@[::1]:5432/postgres",
+        ],
+    )
+    def test_local_hosts_are_accepted(self, dsn: str) -> None:
+        tool.check_source_dsn(dsn)
+
+    @pytest.mark.parametrize(
+        "dsn",
+        [
+            "postgresql://postgres:x@db.abcdefghijklmnopqrst.supabase.co:5432/postgres",
+            "postgresql://u@127.0.0.1.evil.example/postgres",
+            "postgresql://u@localhost.evil.example/postgres",
+            "postgresql:///postgres?host=db.example.com",
+            "host=db.example.com dbname=postgres",
+            "postgresql://postgres@/postgres",
+            "",
+        ],
+    )
+    def test_any_other_host_is_refused(self, dsn: str) -> None:
+        with pytest.raises(tool.AlignmentError):
+            tool.check_source_dsn(dsn)
+
+
+class TestCible:
+    def environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ESSAI_REF", ESSAI)
+        monkeypatch.setenv("SUPABASE_ESSAI_TOKEN", "jeton")
+
+    def test_the_target_defaults_to_the_trial_reference(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.environment(monkeypatch)
+        api = tool.open_target(tool.parse_arguments([]))
+        assert api._url.startswith(f"https://api.supabase.com/v1/projects/{ESSAI}/")
+
+    def test_another_reference_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.environment(monkeypatch)
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.open_target(tool.parse_arguments(["--cible", AUTRE]))
+
+    def test_the_prod_is_refused_even_when_the_environment_names_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.environment(monkeypatch)
+        monkeypatch.setenv("ESSAI_REF", tool.FORBIDDEN_PROJECT_REF)
+        with pytest.raises(tool.AlignmentError, match="prod"):
+            tool.open_target(tool.parse_arguments([]))
+
+    def test_the_exit_code_is_two_for_a_foreign_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.environment(monkeypatch)
+        code = tool.main(["--source-dsn", "postgresql://u@db.example.com/postgres"])
+        assert code == 2
 
 
 class TestListing:
@@ -381,6 +455,7 @@ class TestTargetByDsn:
             return source if label == "source" else target
 
         monkeypatch.setattr(tool, "read_snapshot_by_psql", fake_read)
+        monkeypatch.setenv("ESSAI_REF", ESSAI)  # TARGET_DSN est le projet `abcdefghijklmnopqrst`
         sortie = tmp_path / "droits.sql"
         return tool.main(["--cible-dsn", TARGET_DSN, "--sortie", str(sortie)])
 
@@ -402,3 +477,59 @@ class TestTargetByDsn:
     def test_dsn_comes_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ALIGNE_CIBLE_DSN", TARGET_DSN)
         assert tool.parse_arguments([]).cible_dsn == TARGET_DSN
+
+
+class TestCibleParDsnEnListeBlanche:
+    """`--cible-dsn` obéit à la même liste blanche que la cible par l'API de gestion."""
+
+    def test_the_trial_project_is_accepted(self) -> None:
+        tool.check_target_dsn_allowed(TARGET_DSN, {ESSAI})
+
+    def test_another_project_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.check_target_dsn_allowed(TARGET_DSN, {AUTRE})
+
+    def test_without_any_allowed_reference_everything_remote_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.check_target_dsn_allowed(TARGET_DSN, set())
+
+    def test_a_dsn_without_a_project_reference_is_refused(self) -> None:
+        with pytest.raises(tool.AlignmentError, match="liste blanche"):
+            tool.check_target_dsn_allowed("postgresql://postgres:x@hote.exemple:5432/postgres", {ESSAI})
+
+    def test_the_direct_host_form_is_read(self) -> None:
+        dsn = f"postgresql://postgres:x@db.{ESSAI}.supabase.co:5432/postgres"
+        tool.check_target_dsn_allowed(dsn, {ESSAI})
+        with pytest.raises(tool.AlignmentError):
+            tool.check_target_dsn_allowed(dsn, {AUTRE})
+
+    def test_a_local_host_is_accepted(self) -> None:
+        tool.check_target_dsn_allowed("postgresql://postgres:postgres@127.0.0.1:54322/postgres", set())
+
+    def test_a_host_parameter_cannot_redirect_the_connection(self) -> None:
+        dsn = f"postgresql://postgres.{ESSAI}:x@127.0.0.1/postgres?host=db.example.com"
+        with pytest.raises(tool.AlignmentError):
+            tool.check_target_dsn_allowed(dsn, {ESSAI})
+
+    def test_the_reference_comes_from_essai_ref_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ESSAI_REF", ESSAI)
+        monkeypatch.setenv("ESSAI_SUPABASE_URL", f"https://{AUTRE}.supabase.co")
+        assert tool.allowed_refs_for_dsn() == {ESSAI}
+
+    def test_the_reference_falls_back_to_the_trial_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ESSAI_REF", raising=False)
+        monkeypatch.setenv("ESSAI_SUPABASE_URL", f"https://{ESSAI}.supabase.co")
+        assert tool.allowed_refs_for_dsn() == {ESSAI}
+
+    def test_nothing_in_the_environment_allows_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ESSAI_REF", raising=False)
+        monkeypatch.delenv("ESSAI_SUPABASE_URL", raising=False)
+        assert tool.allowed_refs_for_dsn() == frozenset()
+
+    def test_main_refuses_a_foreign_project_before_any_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def no_read(dsn: str, label: str) -> tool.Snapshot:
+            raise AssertionError("aucune lecture ne doit partir")
+
+        monkeypatch.setattr(tool, "read_snapshot_by_psql", no_read)
+        monkeypatch.setenv("ESSAI_REF", AUTRE)
+        assert tool.main(["--cible-dsn", TARGET_DSN]) == 2

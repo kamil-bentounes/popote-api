@@ -328,7 +328,7 @@ async def test_la_500_est_journalisee_avec_l_identifiant(caplog: pytest.LogCaptu
             r = await c.get("/api/_test/boom")
     enregistrements = [e for e in caplog.records if e.name == "popote_api.errors"]
     assert len(enregistrements) == 1
-    assert r.json()["instance"] in enregistrements[0].getMessage()
+    assert enregistrements[0].request_id == r.json()["instance"]  # type: ignore[attr-defined]
     assert enregistrements[0].exc_info is not None
     assert "secret interne" not in r.text
 

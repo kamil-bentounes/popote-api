@@ -86,9 +86,26 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   que de `service_role`, tous deux `NOINHERIT` et sans super-utilisateur. Le pool de `popote_internal` n'est
   monté que par le code des routes internes, de l'invitation et des purges. Un `set role` oublié ou une
   injection dans une requête de personne ne peut donc pas atteindre le contournement de la RLS.
+- **Un contexte = une transaction.** `Base.personne(id)` et `Base.service()` (`infra/db.py`) ouvrent chacun une
+  transaction dans le bon rôle ; tout y est posé par `set local` ou `set_config(…, true)` et meurt au `commit`
+  ou au `rollback` (aussi sur une annulation côté client : la connexion rendue au pool est propre).
+  `POPOTE_DATABASE_URL` est le rôle `popote_api`, exigé hors local ; `POPOTE_DATABASE_URL_INTERNAL`, le rôle
+  `popote_internal`, est facultative pour l'instant : sans elle l'application démarre avec un avertissement et
+  `Base.service()` lève `ServiceIndisponibleError`, rendue `503 service_indisponible`.
+- **Délais côté base** (migration `0132`), parce que l'annulation côté client ne coupe pas la requête sous
+  Supavisor : `popote_api` 8 s de requête, 5 s d'attente de verrou, 15 s de transaction inactive ;
+  `popote_internal` 30 s, 10 s, 15 s. `set role` n'applique pas les réglages du rôle emprunté : le code répète les
+  mêmes valeurs par `set local` à chaque transaction (un test compare les deux).
 - La clé secrète Supabase (API d'administration d'Auth et Storage) vit dans le gestionnaire de secrets, lue
   seulement par les modules de connexion et de photos.
-- `auth.uid()` lit `request.jwt.claims` : le contexte « personne » le satisfait.
+- **Revendications posées par le contexte personne** : `sub`, `role = authenticated` et `iss`
+  (`<POPOTE_SUPABASE_URL>/auth/v1`), les trois seules que le SQL lit (inventaire des migrations :
+  `auth.uid()` lit `sub` ; `is_service_role()` et `auth.role()` lisent `role` ; `tg_recipe_photo` lit `iss`
+  pour reconnaître l'adresse d'une photo du projet). PostgREST pose le JWT entier de GoTrue (`aud`, `exp`, `iat`,
+  `email`, `phone`, `app_metadata`, `user_metadata`, `aal`, `amr`, `session_id`, `is_anonymous` en plus) : aucune
+  requête ne lit ces autres champs. `tests/unit/test_revendications.py` échoue si une migration lit une
+  revendication de plus. Sans `POPOTE_SUPABASE_URL` (facultative), `iss` manque et `tg_recipe_photo` refuse
+  toute photo : elle devient nécessaire avec les photos de recettes (0.5).
 - **La porte du service ne se fie plus à une revendication** (migration `0131`). `is_service_role()` lit
   `session_user`, le rôle de connexion, que ni un `set role`, ni une fonction `security definer`, ni un
   paramètre ne changent. Vraie pour `popote_internal` et, **jusqu'à la fermeture (J+2)**, pour `authenticator`
