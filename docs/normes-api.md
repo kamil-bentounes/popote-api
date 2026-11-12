@@ -187,6 +187,34 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`.
 - Les routes `/internal/*` (rappels, purges) n'acceptent ni cookie ni session : seulement une signature
   HMAC de la requête, avec horodatage (5 minutes de validité), clé propre à chaque environnement.
+  - **Format** : `X-Popote-Signature: t=<secondes unix>,v1=<hex>`, avec `v1 = HMAC-SHA256(secret,
+    "<t>.<MÉTHODE>.<chemin>.<sha256 hex du corps>")`. Le chemin est celui des **octets reçus** (`raw_path`),
+    non décodé ; toute chaîne de requête est refusée (une route interne n'en prend pas) ; un écart d'horloge de
+    plus de 300 s dans un sens ou l'autre est refusé ; plusieurs `v1` sont admis ; la comparaison se fait en temps
+    constant sur des octets. Un instant ou un `v1` hors forme (signe, chiffres non ASCII, majuscules), un champ
+    inconnu ou répété, ou deux en-têtes `X-Popote-Signature` : refus.
+  - **Tout refus est un `404`** `introuvable`, jamais `401` ou `403` : on ne révèle pas la route. Pour la même
+    raison, une `405` (mauvaise méthode) ou une `422` (corps JSON invalide, lu par FastAPI avant les dépendances)
+    qui précède la vérification se rend `404` ; la raison du refus (`signature_fausse`, `hors_fenetre`…) va au
+    journal, jamais une valeur reçue. Un corps de mauvais type, signé, rend `422`.
+  - **Fermé par défaut** : `POPOTE_INTERNAL_SECRET` est facultatif pour l'instant. Sans lui, toute route interne
+    répond `404`, même bien signée, et le démarrage journalise un avertissement. Posé, il fait 32 caractères ASCII
+    au moins (sinon l'application ne démarre pas). **Rotation** : le nouveau secret va dans
+    `POPOTE_INTERNAL_SECRET`, l'ancien dans `POPOTE_INTERNAL_SECRET_PRECEDENT` (les deux sont acceptés), puis on
+    retire l'ancien une fois les appelants à jour.
+  - **Une dépendance sur le routeur** (`api/internes.py`, `nouveau_routeur()`), pas route par route : une route
+    ajoutée à ce routeur ne peut pas y échapper. Un test énumère toutes les routes de l'application sous
+    `/internal` et échoue si l'une n'a pas la dépendance. `relais.EXEMPTIONS = ("/internal/",)` : `/internal` et
+    `/internalx` restent derrière le relais.
+  - **Toute route interne est idempotente par construction.** La signature ne se consomme pas : une requête
+    interceptée se rejoue pendant 300 s, et un appelant sans réponse renvoie la sienne. Une route interne ne
+    change donc rien de plus la seconde fois (clé naturelle, `upsert`, purge qui retrouve la même chose).
+  - **Hors du contrat OpenAPI** (`include_in_schema=False`), comme les routes de preuve : elles ne passent pas par
+    le relais, ne sont pas publiques, n'ont pas de client généré, et leurs changements ne cassent personne que
+    nous ne maîtrisons pas ; le garde de rupture (`oasdiff`) sert l'API que le front consomme. Leurs règles sont
+    ici et dans `api/internes.py`, leurs tests dans `tests/unit/test_internes.py`.
+  - Outil : `ops/signe_interne.py` signe une requête (secret lu dans l'environnement, jamais en argument).
+    Comment `pg_cron` signera : [`exploitation.md`](exploitation.md).
 - Les modèles d'entrée refusent les champs inconnus (`extra="forbid"`) ; les modèles de sortie ne listent que
   les champs à montrer.
 - Pas de CORS : une seule origine. Une écriture dont l'`Origin` n'est pas celle de l'environnement est refusée ;

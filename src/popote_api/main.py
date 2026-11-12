@@ -1,6 +1,7 @@
 """La fabrique de l'application. Lancement : `uvicorn --factory popote_api.main:create_app`."""
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,7 +9,7 @@ from fastapi import FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, errors, journal, relais
-from popote_api.api import health, preuves
+from popote_api.api import health, internes, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import Base, SondeBase
@@ -34,6 +35,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             avertissements.warning(
                 "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
             )
+        if not settings.secrets_internes:
+            avertissements.warning(
+                "POPOTE_INTERNAL_SECRET absente : toute route /internal/* répond 404 (fermée par défaut)."
+            )
         try:
             await base.ouvre()  # sans attendre de connexion : le démarrage ne dépend pas de la base
             yield
@@ -53,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.base = base
+    app.state.horloge = time.time  # les tests la remplacent pour figer l'instant de la signature
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
@@ -65,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(Identifiant)
 
     app.include_router(health.router)
+    app.include_router(internes.router)
     if settings.env is Env.essai:
         app.include_router(preuves.router)
     errors.installe(app)

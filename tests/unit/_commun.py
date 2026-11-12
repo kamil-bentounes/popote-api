@@ -39,7 +39,12 @@ def _en_tetes_asgi(en_tetes: EnTetes | None) -> list[tuple[bytes, bytes]]:
 
 
 async def appeler(
-    app: FastAPI, methode: str, chemin: str, en_tetes: EnTetes | None = None, requete: str = ""
+    app: FastAPI,
+    methode: str,
+    chemin: str,
+    en_tetes: EnTetes | None = None,
+    requete: str = "",
+    corps: bytes = b"",
 ) -> Retour:
     """Appelle l'application en ASGI brut, pour maîtriser le chemin exact (httpx le normalise)."""
     scope = {
@@ -59,18 +64,18 @@ async def appeler(
     messages: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.request", "body": corps, "more_body": False}
 
     async def send(message: dict[str, Any]) -> None:
         messages.append(message)
 
     await app(scope, receive, send)  # type: ignore[arg-type]
     debut = next(m for m in messages if m["type"] == "http.response.start")
-    corps = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+    reponse = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
     return Retour(
         debut["status"],
         {k.decode().lower(): v.decode() for k, v in debut["headers"]},
-        corps,
+        reponse,
     )
 
 
