@@ -1,7 +1,7 @@
 .git
-.env*
-*.pem
-*.key
+**/.env*
+**/*.pem
+**/*.key
 node_modules
 supabase
 tests

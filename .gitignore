@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 .env.local
+.env.*
+# Les deux seuls fichiers d'environnement suivis : des modèles, sans secret.
+!.env.example
+!.env.production
 .scaffold/
 supabase/.temp/
 supabase/functions/.env
