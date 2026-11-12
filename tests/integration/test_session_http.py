@@ -247,6 +247,19 @@ async def test_la_limite_par_personne_compte_par_session_et_arrete_la_cent_vingt
     assert intacte.status_code == 200
 
 
+async def test_la_limite_par_personne_compte_toutes_les_sessions_de_la_meme_personne(
+    base: Base, monkeypatch: pytest.MonkeyPatch, fabrique: Fabrique
+) -> None:
+    personne = fabrique.personne(fabrique.foyer())
+    premiere, seconde = fabrique.session(personne.id), fabrique.session(personne.id)
+    app = application_de_test(base, monkeypatch, routeur)
+    async with client_de(app) as client:
+        for _ in range(120):
+            await client.get(URL, headers=cookie(premiere))
+        autre_session = await client.get(URL, headers=cookie(seconde))
+    assert autre_session.status_code == 429
+
+
 async def test_un_cookie_invente_n_ouvre_aucun_compteur_par_personne(
     base: Base, monkeypatch: pytest.MonkeyPatch
 ) -> None:
