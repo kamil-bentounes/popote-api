@@ -22,6 +22,8 @@ build-backend = "hatchling.build"
 packages = ["src/popote_api"]
 
 [tool.uv]
+# Même version que l'image (Dockerfile) : un uv plus récent écrit un uv.lock que l'image ne lirait pas.
+required-version = "==0.10.7"
 # Hygiène de la chaîne d'approvisionnement : rien de publié depuis moins de deux semaines.
 exclude-newer = "2026-10-29T00:00:00Z"
 
