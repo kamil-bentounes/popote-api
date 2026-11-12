@@ -1,12 +1,13 @@
 """La fabrique de l'application. Lancement : `uvicorn --factory popote_api.main:create_app`."""
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from popote_api import errors, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import SondeBase
+from popote_api.security.origine import garde_origine
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -21,6 +22,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url=None if settings.env is Env.prod else "/api/openapi.json",
         redirect_slashes=False,
+        # Fermé par défaut : toute route d'écriture, présente ou future, passe par la garde d'origine.
+        dependencies=[Depends(garde_origine)],
     )
     app.state.settings = settings
     dsn = settings.database_url.get_secret_value() if settings.database_url else None

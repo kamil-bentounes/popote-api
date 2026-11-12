@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 import pytest
-from _commun import reglages
+from _commun import ECRITURE_LOCALE, reglages
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
@@ -130,7 +130,7 @@ def app_de_test() -> FastAPI:
 async def poste(chemin: str, **requete: Any) -> httpx.Response:
     transport = httpx.ASGITransport(app=app_de_test())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        return await c.post(chemin, **requete)
+        return await c.post(chemin, headers=ECRITURE_LOCALE | requete.pop("headers", {}), **requete)
 
 
 @pytest.mark.parametrize(

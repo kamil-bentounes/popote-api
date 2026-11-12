@@ -124,6 +124,30 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   les champs à montrer.
 - Pas de CORS : une seule origine. Une écriture dont l'`Origin` n'est pas celle de l'environnement est refusée ;
   sur l'essai, la liste admet aussi le motif des adresses d'aperçu.
+- **Garde d'origine** (`security/origine.py`, dépendance de l'application entière : une route d'écriture
+  future est gardée sans y penser). Sur `POST`, `PUT`, `PATCH`, `DELETE`, trois preuves, toutes exigées, sinon
+  `403 origine_refusee` (un seul message, pour ne pas dire laquelle manque) :
+  1. `Origin` est exactement l'une des origines de l'environnement (`Settings.origines` : prod
+     `https://notre-popote.fr` ; essai `https://essai.notre-popote.fr` ; local `http://localhost:5173` et
+     `http://127.0.0.1:5173`) ; absente, `null` ou en double, elle est refusée ;
+  2. `Sec-Fetch-Site`, s'il est présent, vaut `same-origin` (le navigateur le pose, la page ne peut pas le
+     modifier) ;
+  3. `X-Popote-Client: web` (une requête inter-sites « simple », comme un formulaire, ne peut pas poser
+     d'en-tête personnalisé sans demande préalable que l'API ne permet pas).
+  Les routes `/internal/*` en sont exemptées : sans cookie ni navigateur, leur signature HMAC les garde.
+  Le relais Cloudflare retransmet ces trois en-têtes tels quels (il copie ceux de la requête et n'écrase que
+  `Host`, `X-Popote-Relais` et `X-Popote-IP`).
+  **Les aperçus de fusion** (essai seulement) : `POPOTE_APERCU_COMPTE` donne le sous-domaine `workers.dev` du
+  compte Cloudflare ; l'origine admise est alors `https://<préfixe>-popote-web-essai.<compte>.workers.dev`
+  (format des « Preview URLs » de Cloudflare Workers : `<préfixe>-<nom du Worker>.<sous-domaine>.workers.dev`,
+  préfixe = alias ou empreinte de version, étiquette de 63 caractères au plus). Le nom du Worker et le compte
+  sont écrits en entier dans le motif : le Worker homonyme d'un autre compte ne passe pas. La variable est
+  refusée au démarrage hors de l'essai (la prod n'a pas d'aperçu), et sans elle aucun aperçu n'est admis.
+  **Ce que cela protège** : la falsification de requête depuis un navigateur (CSRF), c'est-à-dire un site
+  tiers qui fait écrire le navigateur d'une personne connectée avec son cookie. **Ce que cela ne protège pas** :
+  un client hors navigateur (curl, un script, un programme) écrit les trois en-têtes à la main. Ce client
+  n'est arrêté que par la session (`401`), le secret du relais et les limites ; la garde d'origine n'est
+  pas une authentification. Une erreur de corps (`422`, JSON mal formé) précède la garde : elle ne change rien.
 
 ## 3.11 Suivi
 
