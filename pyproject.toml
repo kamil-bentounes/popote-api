@@ -34,7 +34,9 @@ required-version = "==0.10.7"
 exclude-newer = "2026-10-29T00:00:00Z"  # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
 
 [tool.pytest.ini_options]
-testpaths = ["tests/unit", "tests/integration", "tests/contract"]
+testpaths = ["tests/unit", "tests/integration", "tests/authz", "tests/contract"]
+# Les aides de tests (`_commun`, `_routes`, `_fabrique`, `_client`, `_fixtures`) servent aussi à `tests/authz`.
+pythonpath = ["tests/unit", "tests/integration"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 strict_markers = true

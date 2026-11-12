@@ -53,6 +53,78 @@
         "title": "Etat",
         "type": "object"
       },
+      "FoyerResume": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "FoyerResume",
+        "type": "object"
+      },
+      "Moi": {
+        "description": "La personne connectée, telle qu'elle se voit : de quoi afficher son nom, son foyer et son adresse.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Le prénom affiché ; absent sans profil.",
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "L'adresse de connexion ; absente si le compte n'en a pas.",
+            "title": "Email"
+          },
+          "household": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FoyerResume"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Le foyer de la personne ; absent sans profil."
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "household"
+        ],
+        "title": "Moi",
+        "type": "object"
+      },
       "ParametreEnCause": {
         "description": "Le paramètre de requête, d'en-tête ou de chemin que la validation a refusé.",
         "properties": {
@@ -150,6 +222,13 @@
         "title": "Sante",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "session": {
+        "in": "cookie",
+        "name": "__Host-popote_session",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
@@ -227,6 +306,101 @@
         "summary": "Le processus et sa base répondent",
         "tags": [
           "santé"
+        ]
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "operationId": "get_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Moi"
+                }
+              }
+            },
+            "description": "La personne, son adresse et son foyer.",
+            "headers": {
+              "ETag": {
+                "description": "Empreinte du contenu (fort).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Non modifiée : `If-None-Match` correspond à l'`ETag` actuel."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Requête mal formée"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Précondition échouée"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "La personne connectée",
+        "tags": [
+          "moi"
         ]
       }
     }

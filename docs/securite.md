@@ -285,6 +285,9 @@ refusent de démarrer avec autre chose que `hibp`.
 
 ### 7.4 Secrets
 
+- Clé des routes internes : `POPOTE_INTERNAL_SECRET` (et `POPOTE_INTERNAL_SECRET_PRECEDENT` pendant une
+  rotation), propre à chaque environnement, 32 caractères ASCII au moins, posée comme variable secrète du
+  conteneur. Sans elle, `/internal/*` répond `404` à tout. Format et règles : `normes-api.md` § 3.10.
 - Dans le gestionnaire de secrets de l'hébergeur, jamais dans un dépôt ; `gitleaks` à chaque envoi.
 - Déploiement par identité fédérée (OIDC) quand l'hébergeur le permet ; sinon une clé limitée au projet, à
   durée courte, renouvelée. Procédure écrite pour changer chaque secret.
