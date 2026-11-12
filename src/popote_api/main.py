@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from fastapi import Depends, FastAPI
 
-from popote_api import errors, relais
+from popote_api import contrat, errors, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
@@ -42,4 +42,5 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     if settings.env is Env.essai:
         app.include_router(preuves.router)
     errors.installe(app)
+    contrat.installe(app)
     return app
