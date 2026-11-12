@@ -6,7 +6,8 @@ from fastapi import APIRouter, Request, Response
 
 from popote_api.relais import ip_de
 
-router = APIRouter(prefix="/api/_preuves", tags=["preuves"])
+# Hors contrat : routes provisoires de l'essai, retirées en 0.3.
+router = APIRouter(prefix="/api/_preuves", tags=["preuves"], include_in_schema=False)
 NOM = "__Host-popote_preuve"
 
 
