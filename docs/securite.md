@@ -26,10 +26,21 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
   avec `crypt()` le hachage bcrypt de `auth.users` (prouvé en local le 12/11 sur des comptes réels de banc :
   bon mot de passe accepté, mauvais refusé). L'API n'appelle donc pas le point de connexion public de Supabase
   Auth : ni ses limites par IP partagées, ni des jetons à révoquer. La fonction :
-  - refuse un compte sans hachage, banni (`banned_until` dans le futur) ou supprimé (`deleted_at`), et tout
-    hachage qui ne commence pas par `$2a$` ou `$2b$` ;
-  - compare contre un hachage factice quand l'e-mail est inconnu, pour un temps de réponse identique ;
-  - reçoit un mot de passe déjà borné à 72 octets par l'API (pgcrypto ne lit pas au-delà).
+  - refuse sans exception et sans dire pourquoi : adresse inconnue, deux comptes pour la même adresse (à la casse
+    près), compte SSO ou anonyme, banni (`banned_until` dans le futur), supprimé (`deleted_at`), hachage vide, nul ou
+    mal formé, mot de passe vide, nul ou de plus de 72 octets ;
+  - **n'accepte que `$2a$`** (B15, migration 0137) : pgcrypto ne reconnaît pas `$2b$` ni `$2y$` et, devant un préfixe
+    inconnu, retombe sur l'ancien `crypt` DES sans erreur (vérifié). Un compte à un autre préfixe passe par « mot
+    de passe oublié » (il a un profil) ; les préfixes de la prod sont comptés à la répétition de la bascule ;
+  - fait **exactement un `crypt()` dans toutes les branches** : le vrai hachage, ou un hachage factice de même
+    coût (`$2a$10$`) pour un compte inconnu, banni, supprimé, sans hachage ou mal formé. Mesuré en local le 12/11 :
+    58,7 ms pour un compte connu et un mauvais mot de passe, 59,5 ms pour une adresse inconnue (médiane de 25) ;
+  - reçoit un mot de passe déjà borné à 72 octets par l'API (`candidats_de_connexion`) et le refuse au-delà, **sans
+    le tronquer** (une troncature accepterait un mot de passe qui n'est pas le bon) ;
+  - cherche l'e-mail sous la forme de l'API (`email_normalise`, la même que la clé de limite : B24), en égalité
+    après `lower(btrim())`, jamais en motif (`ilike`) ;
+  - `popote_api` seul l'exécute (`Base.connexion()`) ; la variante `verifie_mot_de_passe_de(personne, mot de
+    passe)` sert la réauthentification. Une fonction interne (`private.mot_de_passe_correspond`) porte le `crypt()`.
 - **Comptes sans mot de passe** (nés d'un lien magique, qui disparaît) : ils passent par « mot de passe
   oublié » pour en choisir un. Leur nombre est compté sur la copie de la prod pendant la répétition, et Kamil
   est prévenu s'il y en a dans le foyer.
