@@ -37,9 +37,22 @@ REFUS_A_SIGNALER = frozenset(
 )
 
 
-def _journalise_le_refus(raison: RaisonDeRefus) -> None:
-    niveau = logging.WARNING if raison in REFUS_A_SIGNALER else logging.INFO
-    journal.log(niveau, "Requête interne refusée : %s.", raison.value)
+SECONDES_ENTRE_DEUX_AVERTISSEMENTS = 60.0
+
+
+def _journalise_le_refus(request: Request, raison: RaisonDeRefus) -> None:
+    """Un avertissement par fenêtre et par motif : un inconnu qui martèle l'URL ne noie pas le journal."""
+    if raison not in REFUS_A_SIGNALER:
+        journal.info("Requête interne refusée : %s.", raison.value)
+        return
+    derniers: dict[RaisonDeRefus, float] = request.app.state.derniers_avertissements_internes
+    maintenant = request.app.state.horloge_debit()
+    depuis = maintenant - derniers.get(raison, -SECONDES_ENTRE_DEUX_AVERTISSEMENTS)
+    if depuis < SECONDES_ENTRE_DEUX_AVERTISSEMENTS:
+        journal.info("Requête interne refusée : %s (avertissement déjà émis).", raison.value)
+        return
+    derniers[raison] = maintenant
+    journal.warning("Requête interne refusée : %s.", raison.value)
 
 
 def _refus_de_forme(request: Request) -> RaisonDeRefus | None:
@@ -77,7 +90,7 @@ async def exige_la_signature(request: Request) -> None:
     try:
         await _controle(request)
     except SignatureRefusee as refus:
-        _journalise_le_refus(refus.raison)
+        _journalise_le_refus(request, refus.raison)
         raise Probleme(404, "introuvable", "Cette adresse n'existe pas.") from refus
     setattr(request.state, signature.ETAT_SIGNATURE_VERIFIEE, True)
 

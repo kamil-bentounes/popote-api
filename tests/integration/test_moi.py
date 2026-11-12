@@ -291,3 +291,14 @@ async def test_deux_membres_d_un_foyer_ne_recoivent_chacun_que_leur_prenom(
         corps = (await application.get(URL, headers=cookie(fabrique.session(personne.id)))).json()
         assert corps["display_name"] == prenom_et_foyer(fabrique, personne.id)[0]
     assert prenom_et_foyer(fabrique, premiere.id)[0] != prenom_et_foyer(fabrique, seconde.id)[0]
+
+
+async def test_head_n_est_pas_servi_sur_me_meme_avec_une_session(
+    application: httpx.AsyncClient, fabrique: Fabrique
+) -> None:
+    """Choix de `docs/normes-api.md` § 3.4 : les lectures ne servent que `GET`. Sous `/api/v1`, une méthode
+    non servie rend `401` (fermé par défaut), avec ou sans session, jamais `405` ni `Allow`."""
+    entetes = cookie(fabrique.session(fabrique.personne(fabrique.foyer()).id))
+    reponse = await application.head(URL, headers=entetes)
+    assert reponse.status_code == 401
+    assert "allow" not in reponse.headers

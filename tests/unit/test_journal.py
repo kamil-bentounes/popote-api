@@ -268,6 +268,23 @@ def gestionnaires_du_journal(logger: logging.Logger) -> list[logging.Handler]:
     return [h for h in logger.handlers if isinstance(h.formatter, journal.Formateur)]
 
 
+@pytest.fixture
+def journal_httpx_remis_a_zero() -> Iterator[None]:
+    """`infra.fuites` pose le niveau de `httpx` à l'import : on l'efface, puis on le rend."""
+    logger = logging.getLogger("httpx")
+    niveau = logger.level
+    logger.setLevel(logging.NOTSET)
+    yield
+    logger.setLevel(niveau)
+
+
+def test_configure_tait_le_journal_de_httpx_sans_que_fuites_soit_importe(
+    etat_du_journal: None, journal_httpx_remis_a_zero: None
+) -> None:
+    journal.configure()
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+
+
 def test_configure_est_idempotente(etat_du_journal: None, capsys: pytest.CaptureFixture[str]) -> None:
     for _ in range(3):
         journal.configure()
@@ -508,3 +525,14 @@ async def test_l_identifiant_courant_est_rendu_apres_la_requete(etat_du_journal:
     await appeler(app_journalisee(), "GET", "/api/x/1")
     assert request_id_courant.get() is None
     assert trace.trace_id_courant.get() is None
+
+
+async def test_la_ligne_d_acces_d_une_route_du_routeur_v1_porte_le_gabarit_complet(
+    etat_du_journal: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    journal.configure()
+    app = create_app(reglages("local"))
+    retour = await appeler(app, "GET", "/api/v1/me", {"X-Popote-Client": "web"})
+    acces = [ligne for ligne in lignes(capsys.readouterr().out) if ligne["logger"] == "popote_api.acces"]
+    assert retour.status == 401
+    assert [ligne["route"] for ligne in acces] == ["/api/v1/me"]

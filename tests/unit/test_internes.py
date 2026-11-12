@@ -591,3 +591,29 @@ async def test_un_en_tete_absent_est_journalise_en_info_une_signature_fausse_en_
 def test_les_routes_internes_sont_hors_du_contrat() -> None:
     chemins = app_interne("local").openapi()["paths"]
     assert [c for c in chemins if c.startswith("/internal")] == []
+
+
+async def test_un_flot_de_requetes_non_signees_ne_fait_pas_rendre_429_a_un_appel_signe() -> None:
+    app = app_interne()
+    for _ in range(125):  # plus que le plafond d'écriture par adresse (120), sans relais ni adresse
+        await appel(app, "POST", "/internal/echo", b"x", {signature.EN_TETE: "t=1,v1=" + "0" * 64})
+    retour = await appel(app, "POST", "/internal/echo", CORPS, signee("POST", "/internal/echo", CORPS))
+    assert retour.status == 200
+
+
+async def test_les_avertissements_de_signature_refusee_sont_plafonnes_par_fenetre_et_par_motif(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = app_interne()
+    maintenant = [100.0]
+    app.state.horloge_debit = lambda: maintenant[0]
+    fausse = {signature.EN_TETE: "t=" + str(T0) + ",v1=" + "0" * 64}
+    with caplog.at_level(logging.WARNING, logger="popote_api.api.internes"):
+        for _ in range(5):
+            await appel(app, "POST", "/internal/echo", b"x", fausse)
+        assert caplog.text.count("signature_fausse") == 1
+        maintenant[0] += internes.SECONDES_ENTRE_DEUX_AVERTISSEMENTS
+        await appel(app, "POST", "/internal/echo", b"x", fausse)
+        assert caplog.text.count("signature_fausse") == 2
+        await appel(app, "POST", "/internal/echo", b"x", {})  # un autre motif : son niveau est `info`
+    assert caplog.text.count("signature_fausse") == 2

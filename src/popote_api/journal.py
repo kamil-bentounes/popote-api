@@ -97,7 +97,8 @@ def configure(flux: TextIO | None = None) -> None:
 
     Uvicorn configure ses journaux avant d'appeler la fabrique, avec son format texte : on lui retire ses
     gestionnaires, et ses lignes passent par la racine. Son journal d'accès, qui écrit le chemin brut et
-    l'adresse IP, est éteint (`--no-access-log` aussi, au lancement). Seuls nos propres gestionnaires
+    l'adresse IP, est éteint (`--no-access-log` aussi, au lancement), et celui de `httpx` est réduit aux
+    avertissements. Seuls nos propres gestionnaires
     sont retirés de la racine : ceux d'un autre outil restent.
     """
     gestionnaire = logging.StreamHandler(flux or sys.stdout)
@@ -114,6 +115,19 @@ def configure(flux: TextIO | None = None) -> None:
         logger.propagate = True
         logger.setLevel(logging.NOTSET)
     logging.getLogger("uvicorn.access").disabled = True
+    # httpx écrit chaque requête à INFO, adresse comprise : celle de l'API des mots de passe divulgués
+    # porte la plage SHA-1 du mot de passe. Le silence ne dépend donc pas de l'import de `infra.fuites`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def gabarit_de_la_route(scope: Scope) -> str | None:
+    """Le gabarit complet de la route (`/api/v1/me`), préfixe du routeur inclus compris.
+
+    Depuis FastAPI 0.16x, `scope["route"].path_format` est relatif au routeur inclus (`/me`) : le gabarit
+    complet est dans le contexte de route effectif posé par FastAPI. Sans lui, on retombe sur la route.
+    """
+    contexte = scope.get("fastapi", {}).get("effective_route_context")
+    return getattr(contexte, "path_format", None) or getattr(scope.get("route"), "path_format", None)
 
 
 class Acces:
@@ -145,7 +159,7 @@ class Acces:
             raise
         finally:
             if statut is not None:
-                gabarit = getattr(scope.get("route"), "path_format", None)
+                gabarit = gabarit_de_la_route(scope)
                 journal_acces.info(
                     "Requête traitée",
                     extra={

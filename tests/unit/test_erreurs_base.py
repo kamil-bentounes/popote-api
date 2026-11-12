@@ -51,6 +51,7 @@ async def appeler_une_route_qui_leve(erreur: Exception) -> httpx.Response:
         ("40001", 503, "reessayer"),
         ("40P01", 503, "reessayer"),
         ("55P03", 503, "reessayer"),
+        ("25P03", 503, "reessayer"),
         ("57014", 503, "delai_depasse"),
         ("08006", 503, "base_indisponible"),
         ("08001", 503, "base_indisponible"),
@@ -67,7 +68,7 @@ async def test_un_sqlstate_connu_est_rendu_avec_son_statut_et_son_code(
     assert VALEUR_SECRETE not in reponse.text
 
 
-@pytest.mark.parametrize("sqlstate", ["40001", "40P01", "55P03"])
+@pytest.mark.parametrize("sqlstate", ["40001", "40P01", "55P03", "25P03"])
 async def test_une_erreur_transitoire_demande_de_reessayer_apres_une_seconde(sqlstate: str) -> None:
     reponse = await appeler_une_route_qui_leve(erreur_sql(sqlstate))
     assert reponse.headers["retry-after"] == "1"

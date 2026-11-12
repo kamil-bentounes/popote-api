@@ -16,6 +16,7 @@ from _connexions import DSN_ADMIN, DSN_API, DSN_API_DISTANT
 from _fabrique import Fabrique
 from psycopg_pool import PoolTimeout
 
+from popote_api import limites
 from popote_api.infra import db
 from popote_api.infra.db import Base, Pool, ServiceIndisponibleError, cree_pool
 
@@ -203,6 +204,8 @@ async def test_chaque_contexte_pose_ses_delais(base: Base, fabrique: Fabrique, c
         base.personne(fabrique.personne(fabrique.foyer()).id) if contexte == "personne" else base.service()
     )
     attendu = delais_du_code(db.DELAIS_API if contexte == "personne" else db.DELAIS_INTERNE)
+    if contexte == "service":
+        attendu["statement_timeout"] = db.DELAI_DE_LA_BASE_DU_SERVICE
     async with ouvert as curseur:
         await curseur.execute(
             "select current_setting('statement_timeout') as statement_timeout,"
@@ -210,6 +213,16 @@ async def test_chaque_contexte_pose_ses_delais(base: Base, fabrique: Fabrique, c
             " current_setting('idle_in_transaction_session_timeout') as idle_in_transaction_session_timeout"
         )
         assert await curseur.fetchone() == attendu
+
+
+async def test_le_contexte_service_coupe_la_requete_avant_le_delai_de_l_api(base: Base) -> None:
+    async with base.service() as curseur:
+        await curseur.execute(
+            "select current_setting('statement_timeout')::interval <= interval '20 seconds' as borne,"
+            " current_setting('statement_timeout')::interval < make_interval(secs => %s) as avant_l_api",
+            (limites.DELAI_SECONDES,),
+        )
+        assert await curseur.fetchone() == {"borne": True, "avant_l_api": True}
 
 
 async def test_le_delai_de_la_base_coupe_une_requete_longue_en_sqlstate_57014(
