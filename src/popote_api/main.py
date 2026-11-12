@@ -66,9 +66,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
-    # `Trace`, `Acces`, `Garde`. Le refus de la garde porte donc son identifiant et sa trace, et sa ligne
-    # d'accès aussi. Le gestionnaire des 500 s'exécute encore au-dessus de tous : il lit les identifiants dans
-    # l'état de la requête, pas dans les `ContextVar` (voir `errors._inattendue`).
+    # `Trace`, `Acces`, `Garde`, `CorpsBorne`. Le refus de la garde porte donc son identifiant et sa trace,
+    # et sa ligne d'accès aussi. Le gestionnaire des 500 s'exécute encore au-dessus de tous : il lit les
+    # identifiants dans l'état de la requête, pas dans les `ContextVar` (voir `errors._inattendue`).
+    app.add_middleware(internes.CorpsBorne)
     app.add_middleware(relais.Garde, settings=settings)
     app.add_middleware(journal.Acces)
     app.add_middleware(Trace)

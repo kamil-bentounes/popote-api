@@ -75,6 +75,11 @@ def _v1() -> str:
         f"t={T0},v1={'0' * 64}," * (signature.NOMBRE_MAX_DE_V1 + 1),
         f"t={T0},v1={'0' * 64},v1={'0' * 64},v1={'0' * 64},v1={'0' * 64},v1={'0' * 64}",
         f"t={T0},v1={_v1()},inconnu=1",
+        f"t=+{T0},v1={_v1()}",
+        f"t=-{T0},v1={_v1()}",
+        f"t={T0}.0,v1={_v1()}",
+        f"t=0{T0},v1={_v1()}",  # une seule écriture par instant : pas de zéro de tête
+        f"t={'9' * 13},v1={_v1()}",
         f"t={T0},v1={_v1().upper()}",
         f"t={T0} ,v1={_v1()}",
         f"t={T0},v1={_v1()}" + " " * 600,
@@ -84,3 +89,10 @@ def test_un_en_tete_mal_forme_est_refuse_pour_sa_forme(valeur: str) -> None:
     with pytest.raises(SignatureRefusee) as refus:
         signature.lit_l_en_tete(valeur, T0)
     assert refus.value.raison is RaisonDeRefus.EN_TETE_MAL_FORME
+
+
+def test_l_instant_zero_est_bien_forme_mais_il_est_perime() -> None:
+    assert signature.lit_l_en_tete(f"t=0,v1={_v1()}", 0).instant == 0
+    with pytest.raises(SignatureRefusee) as refus:
+        signature.lit_l_en_tete(f"t=0,v1={_v1()}", T0)
+    assert refus.value.raison is RaisonDeRefus.HORS_FENETRE

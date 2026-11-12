@@ -45,8 +45,13 @@ async def appeler(
     en_tetes: EnTetes | None = None,
     requete: str = "",
     corps: bytes = b"",
+    receptions: list[dict[str, Any]] | None = None,
 ) -> Retour:
-    """Appelle l'application en ASGI brut, pour maîtriser le chemin exact (httpx le normalise)."""
+    """Appelle l'application en ASGI brut, pour maîtriser le chemin exact (httpx le normalise).
+
+    `receptions` remplace le corps par une suite de messages ASGI (corps par morceaux, déconnexion) ; une fois
+    épuisée, le client est déconnecté. La liste est consommée.
+    """
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -63,8 +68,12 @@ async def appeler(
     }
     messages: list[dict[str, Any]] = []
 
+    restantes = receptions  # consommée au fil des lectures : l'appelant voit ce qui reste
+
     async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": corps, "more_body": False}
+        if restantes is None:
+            return {"type": "http.request", "body": corps, "more_body": False}
+        return restantes.pop(0) if restantes else {"type": "http.disconnect"}
 
     async def send(message: dict[str, Any]) -> None:
         messages.append(message)

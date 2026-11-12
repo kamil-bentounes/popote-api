@@ -3,13 +3,15 @@ les tests montent les leurs sur un routeur de `nouveau_routeur()`."""
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 import pytest
 from _commun import RELAIS, Retour, appeler, reglages
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.dependencies.models import Dependant
 from pydantic import BaseModel, ConfigDict
+from starlette.routing import BaseRoute
+from starlette.types import Message, Receive, Scope, Send
 
 from popote_api import relais
 from popote_api.api import internes
@@ -432,18 +434,41 @@ def _appels(dependant: Dependant) -> Iterator[object]:
         yield from _appels(sous)
 
 
+def routes_effectives(
+    routes: Sequence[BaseRoute], prefixe: str = "", appels: tuple[object, ...] = ()
+) -> Iterator[tuple[str, BaseRoute, tuple[object, ...]]]:
+    """Les routes de l'application, routeurs inclus compris, avec leur adresse complète et les dépendances
+    de leur inclusion. FastAPI 0.162 range un routeur inclus dans un `_IncludedRouter`, qui n'a ni `path` ni
+    `dependant` : sans cette descente, une route montée par `include_router` serait invisible."""
+    for route in routes:
+        if hasattr(route, "original_router"):
+            inclusion = route.include_context
+            yield from routes_effectives(
+                route.original_router.routes,
+                prefixe + inclusion.prefix,
+                appels + tuple(d.dependency for d in inclusion.dependencies),
+            )
+        else:
+            yield prefixe + getattr(route, "path", ""), route, appels
+
+
 def routes_internes_sans_signature(app: FastAPI) -> list[str]:
     """Les routes dont l'adresse peut tomber sous `/internal` et qui n'ont pas `exige_la_signature`."""
     fautes = []
-    for route in app.routes:
-        chemin = getattr(route, "path", "")
+    for chemin, route, appels_de_l_inclusion in routes_effectives(app.routes):
         regex = getattr(route, "path_regex", None)
         if not (chemin.startswith("/internal") or (regex and regex.match("/internal/sonde"))):
             continue
         dependant = getattr(route, "dependant", None)  # `Mount` et routes brutes n'en ont pas
-        if dependant is None or internes.exige_la_signature not in _appels(dependant):
+        appels = {*appels_de_l_inclusion, *(_appels(dependant) if dependant else ())}
+        if dependant is None or internes.exige_la_signature not in appels:
             fautes.append(chemin)
     return fautes
+
+
+def test_l_enumeration_voit_les_routes_internes_de_l_application() -> None:
+    chemins = [c for c, _, _ in routes_effectives(app_interne().routes) if c.startswith("/internal/")]
+    assert sorted(chemins) == ["/internal/charge", "/internal/echo", "/internal/lecture"]
 
 
 def test_toute_route_interne_de_l_application_exige_la_signature() -> None:
@@ -462,16 +487,148 @@ def test_l_enumeration_attrape_une_route_interne_sans_signature() -> None:
     assert routes_internes_sans_signature(app) == ["/internal/oubli", "/internal/statique", "/{reste:path}"]
 
 
+def test_l_enumeration_attrape_un_routeur_ordinaire_inclus_sous_internal() -> None:
+    app = app_interne()
+    ordinaire = APIRouter(prefix="/internal")
+
+    @ordinaire.get("/oubli")
+    async def oubli() -> dict[str, bool]:
+        return {"ok": True}
+
+    sans_prefixe = APIRouter()
+
+    @sans_prefixe.get("/autre")
+    async def autre() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.include_router(ordinaire)
+    app.include_router(sans_prefixe, prefix="/internal")
+    assert routes_internes_sans_signature(app) == ["/internal/oubli", "/internal/autre"]
+
+
+def test_l_enumeration_accepte_la_dependance_posee_a_l_inclusion() -> None:
+    app = app_interne()
+    sans_dependance = APIRouter()
+
+    @sans_dependance.get("/ok")
+    async def ok() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.include_router(
+        sans_dependance, prefix="/internal/via", dependencies=[Depends(internes.exige_la_signature)]
+    )
+    assert routes_internes_sans_signature(app) == []
+
+
 async def test_aucune_route_interne_ne_repond_sans_signature() -> None:
     app = app_interne()
-    for route in app.routes:
-        chemin = getattr(route, "path", "")
+    vues = 0
+    for chemin, route, _ in routes_effectives(app.routes):
         if not chemin.startswith("/internal/"):
             continue
         for methode in sorted(getattr(route, "methods", None) or []):
             assert introuvable(await appel(app, methode, chemin, en_tetes={})), (methode, chemin)
+            vues += 1
+    assert vues == 3
+
+
+# --- le corps est borné avant toute lecture ---------------------------------------------------------------
+
+
+def _morceau(octets: int, *, suite: bool = True) -> dict[str, object]:
+    return {"type": "http.request", "body": b"x" * octets, "more_body": suite}
+
+
+async def test_un_corps_par_morceaux_qui_depasse_la_borne_est_coupe_sans_lire_le_reste() -> None:
+    en_tetes = signee("POST", "/internal/echo")
+    quart = signature.CORPS_MAX_OCTETS // 4
+    morceaux = [_morceau(quart) for _ in range(5)] + [_morceau(1, suite=False)]
+    retour = await appeler(app_interne(), "POST", "/internal/echo", en_tetes, receptions=morceaux)
+    assert introuvable(retour)
+    assert len(morceaux) == 1  # coupé au cinquième morceau : le dernier n'a jamais été lu
+
+
+async def test_un_corps_par_morceaux_dans_la_borne_passe() -> None:
+    corps = b"x" * 1000
+    en_tetes = signee("POST", "/internal/echo", corps)
+    recus = [_morceau(400), _morceau(600, suite=False)]
+    retour = await appeler(app_interne(), "POST", "/internal/echo", en_tetes, receptions=recus)
+    assert retour.status == 200
+
+
+async def test_un_corps_declare_trop_gros_sur_une_route_a_corps_typé_est_refuse_sans_etre_lu() -> None:
+    # FastAPI lit le corps de cette route avant ses dépendances : seule la borne d'amont l'arrête.
+    en_tetes = {"Content-Type": "application/json", "Content-Length": str(signature.CORPS_MAX_OCTETS + 1)}
+    retour = await appeler(app_interne(), "POST", "/internal/charge", en_tetes, receptions=[])
+    assert introuvable(retour)
+
+
+async def test_un_corps_par_morceaux_trop_gros_sur_une_route_a_corps_type_rend_404() -> None:
+    en_tetes = {"Content-Type": "application/json"}
+    recus = [_morceau(signature.CORPS_MAX_OCTETS), _morceau(1)]
+    retour = await appeler(app_interne(), "POST", "/internal/charge", en_tetes, receptions=recus)
+    assert introuvable(retour)
+
+
+async def test_la_borne_ne_s_applique_pas_hors_de_l_interne() -> None:
+    app = app_interne()
+
+    @app.post("/api/_test/gros")
+    async def gros(request: Request) -> dict[str, int]:
+        return {"octets": len(await request.body())}
+
+    corps = [_morceau(signature.CORPS_MAX_OCTETS), _morceau(10, suite=False)]
+    retour = await appeler(app, "POST", "/api/_test/gros", RELAIS, receptions=corps)
+    assert json.loads(retour.corps) == {"octets": signature.CORPS_MAX_OCTETS + 10}
+
+
+async def test_une_deconnexion_pendant_la_lecture_du_corps_rend_404_sans_erreur(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    en_tetes = {**signee("POST", "/internal/echo"), "Content-Length": "10"}
+    with caplog.at_level(logging.INFO):
+        retour = await appeler(app_interne(), "POST", "/internal/echo", en_tetes, receptions=[])
+    assert introuvable(retour)
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert "corps_incomplet" in caplog.text
+
+
+# --- le niveau du journal -------------------------------------------------------------------------------
+
+
+async def test_un_en_tete_absent_est_journalise_en_info_une_signature_fausse_en_avertissement(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = app_interne()
+    with caplog.at_level(logging.INFO, logger="popote_api.api.internes"):
+        await appel(app, "GET", "/internal/lecture", en_tetes={})
+        await appel(
+            app, "GET", "/internal/lecture", en_tetes=signee("GET", "/internal/lecture", secret="x" * 32)
+        )
+    niveaux = {r.getMessage().split(": ")[1]: r.levelno for r in caplog.records}
+    assert niveaux == {"en_tete_absent.": logging.INFO, "signature_fausse.": logging.WARNING}
 
 
 def test_les_routes_internes_sont_hors_du_contrat() -> None:
     chemins = app_interne("local").openapi()["paths"]
     assert [c for c in chemins if c.startswith("/internal")] == []
+
+
+async def test_une_reponse_deja_commencee_n_en_recoit_pas_un_404_de_plus() -> None:
+    async def route_qui_lit_apres_avoir_repondu(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        while True:
+            await receive()
+
+    scope = {"type": "http", "path": "/internal/x", "headers": [], "query_string": b""}
+    envoyes: list[Message] = []
+
+    async def receive() -> Message:
+        return _morceau(signature.CORPS_MAX_OCTETS + 1)  # type: ignore[return-value]
+
+    async def send(message: Message) -> None:
+        envoyes.append(message)
+
+    with pytest.raises(internes.CorpsTropGros):
+        await internes.CorpsBorne(route_qui_lit_apres_avoir_repondu)(scope, receive, send)
+    assert [m["type"] for m in envoyes] == ["http.response.start"]

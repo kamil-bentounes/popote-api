@@ -78,6 +78,11 @@ class Settings(BaseSettings):
                 raise ValueError(f"{nom} : caractères ASCII uniquement.")
             if secret and len(secret) < LONGUEUR_MINIMALE_DU_SECRET:
                 raise ValueError(f"{nom} : {LONGUEUR_MINIMALE_DU_SECRET} caractères au moins.")
+        secrets = self.secrets_internes
+        relais = self.relay_secret.get_secret_value().encode() if self.relay_secret else b""
+        if len(set(secrets)) < len(secrets) or (relais and relais in secrets):
+            # Le Worker du relais connaît `relay_secret` : égal à la clé interne, il pourrait signer.
+            raise ValueError("Les secrets internes et celui du relais doivent être trois valeurs distinctes.")
         if len(self.secrets_internes) == 1 and self.internal_secret_precedent:
             raise ValueError("internal_secret_precedent sans internal_secret : la rotation pose les deux.")
         return self

@@ -4,7 +4,8 @@
 `v1 = HMAC-SHA256(secret, "<t>.<MÉTHODE>.<chemin brut>.<sha256 hex du corps>")`.
 Le chemin est celui des octets reçus (`raw_path`), jamais le chemin décodé : deux écritures d'une même adresse
 ne se confondent pas. Ce module est pur (ni requête, ni horloge, ni journal) ; la dépendance FastAPI qui s'en
-sert est `api.internes`.
+sert est `api.internes`. Le message est séparé par des points ; la méthode et le chemin n'en sont pas
+protégés, mais aucune route n'accepte une méthode inventée et le chemin commence toujours par `/internal/`.
 """
 
 import hashlib
@@ -24,7 +25,7 @@ CORPS_MAX_OCTETS = 1024 * 1024
 # s'en servent : une erreur qui précède la dépendance (méthode, corps mal formé) ne révèle pas la route.
 ETAT_SIGNATURE_VERIFIEE = "signature_verifiee"
 
-_INSTANT = re.compile(r"[0-9]{1,12}")
+_INSTANT = re.compile(r"0|[1-9][0-9]{0,11}")  # sans zéro de tête : une seule écriture par instant
 _EMPREINTE = re.compile(r"[0-9a-f]{64}")
 _CLE_DE_VERSION = re.compile(r"v[0-9]+")
 
@@ -40,6 +41,7 @@ class RaisonDeRefus(StrEnum):
     EN_TETE_MAL_FORME = "en_tete_mal_forme"
     HORS_FENETRE = "hors_fenetre"
     CORPS_TROP_GROS = "corps_trop_gros"
+    CORPS_INCOMPLET = "corps_incomplet"
     SIGNATURE_FAUSSE = "signature_fausse"
 
 

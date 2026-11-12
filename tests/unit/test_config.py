@@ -130,3 +130,29 @@ def test_le_secret_interne_est_lu_dans_l_environnement(monkeypatch: pytest.Monke
     monkeypatch.setenv("POPOTE_INTERNAL_SECRET", SECRET)
     monkeypatch.setenv("POPOTE_INTERNAL_SECRET_PRECEDENT", "p" * 32)
     assert Settings().secrets_internes == (SECRET.encode(), b"p" * 32)
+
+
+@pytest.mark.parametrize(
+    "valeurs",
+    [
+        {"internal_secret": "s" * 32, "relay_secret": "s" * 32},
+        {"internal_secret": "s" * 32, "internal_secret_precedent": "s" * 32},
+        {"internal_secret": "i" * 32, "internal_secret_precedent": "r" * 32, "relay_secret": "r" * 32},
+    ],
+)
+def test_les_secrets_internes_et_celui_du_relais_sont_distincts(valeurs: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="trois valeurs distinctes"):
+        Settings.model_validate({"env": "local", "database_url": DSN, **valeurs})
+
+
+def test_trois_secrets_distincts_passent() -> None:
+    reglages = Settings.model_validate(
+        {
+            "env": "essai",
+            "database_url": DSN,
+            "relay_secret": "r" * 32,
+            "internal_secret": "i" * 32,
+            "internal_secret_precedent": "p" * 32,
+        }
+    )
+    assert len(reglages.secrets_internes) == 2

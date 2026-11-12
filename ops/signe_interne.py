@@ -22,6 +22,8 @@ from popote_api.config import LONGUEUR_MINIMALE_DU_SECRET
 from popote_api.security import signature
 
 VARIABLE = "POPOTE_INTERNAL_SECRET"
+# Un texte fixe : il ne doit rien contenir qui vienne de la valeur lue.
+MESSAGE_SANS_CLE = "La variable du secret interne est absente ou invalide (32 caractères ASCII au moins)."
 
 
 def main(argv: Sequence[str], environ: Mapping[str, str], instant: int) -> int:
@@ -33,10 +35,7 @@ def main(argv: Sequence[str], environ: Mapping[str, str], instant: int) -> int:
 
     secret = environ.get(VARIABLE, "")
     if len(secret) < LONGUEUR_MINIMALE_DU_SECRET or not secret.isascii():
-        print(
-            f"{VARIABLE} absente ou invalide ({LONGUEUR_MINIMALE_DU_SECRET} caractères ASCII au moins).",
-            file=sys.stderr,
-        )
+        print(MESSAGE_SANS_CLE, file=sys.stderr)
         return 2
     if not arguments.chemin.startswith(signature.PREFIXE_INTERNE) or "?" in arguments.chemin:
         print(

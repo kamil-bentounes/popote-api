@@ -200,15 +200,24 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
     "<t>.<MÉTHODE>.<chemin>.<sha256 hex du corps>")`. Le chemin est celui des **octets reçus** (`raw_path`),
     non décodé ; toute chaîne de requête est refusée (une route interne n'en prend pas) ; un écart d'horloge de
     plus de 300 s dans un sens ou l'autre est refusé ; plusieurs `v1` sont admis ; la comparaison se fait en temps
-    constant sur des octets. Un instant ou un `v1` hors forme (signe, chiffres non ASCII, majuscules), un champ
-    inconnu ou répété, ou deux en-têtes `X-Popote-Signature` : refus.
+    constant sur des octets. Un instant ou un `v1` hors forme (signe, point, zéro de tête, chiffres non ASCII,
+    majuscules), un champ autre que `t` et `v<n>` (les `v2`… d'une version future sont ignorés), un `t` ou plus
+    de quatre `v1`, ou deux en-têtes `X-Popote-Signature` : refus. Un `?` final sans rien après ne se voit pas
+    au niveau ASGI (`query_string` vide) : la signature couvre le chemin, donc rien n'est contournable.
   - **Tout refus est un `404`** `introuvable`, jamais `401` ou `403` : on ne révèle pas la route. Pour la même
     raison, une `405` (mauvaise méthode) ou une `422` (corps JSON invalide, lu par FastAPI avant les dépendances)
     qui précède la vérification se rend `404` ; la raison du refus (`signature_fausse`, `hors_fenetre`…) va au
     journal, jamais une valeur reçue. Un corps de mauvais type, signé, rend `422`.
+  - **Corps borné avant lecture** : `CorpsBorne` (middleware ASGI, sous `/internal/` seulement, hors du relais
+    et de ses limites) refuse en `404` un `Content-Length` mal formé ou au-dessus de 1 Mio, et coupe un corps
+    sans longueur (chunked) au-delà ; FastAPI lit le corps d'une route typée avant ses dépendances, et la
+    signature ne se vérifie qu'après lecture du corps. Une déconnexion pendant la lecture rend `404`, sans erreur.
+    Journal : `warning` pour une signature fausse, périmée ou une clé absente ; `info` pour le reste.
   - **Fermé par défaut** : `POPOTE_INTERNAL_SECRET` est facultatif pour l'instant. Sans lui, toute route interne
     répond `404`, même bien signée, et le démarrage journalise un avertissement. Posé, il fait 32 caractères ASCII
-    au moins (sinon l'application ne démarre pas). **Rotation** : le nouveau secret va dans
+    au moins, sans retour à la ligne final (sinon l'application ne démarre pas, ou la base ne signera pas la
+    même chose) ; `internal_secret`, `internal_secret_precedent` et `relay_secret` sont trois valeurs distinctes
+    (le Worker du relais connaît la dernière). **Rotation** : le nouveau secret va dans
     `POPOTE_INTERNAL_SECRET`, l'ancien dans `POPOTE_INTERNAL_SECRET_PRECEDENT` (les deux sont acceptés), puis on
     retire l'ancien une fois les appelants à jour.
   - **Une dépendance sur le routeur** (`api/internes.py`, `nouveau_routeur()`), pas route par route : une route
