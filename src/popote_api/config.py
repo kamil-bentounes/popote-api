@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
@@ -25,10 +25,43 @@ class Settings(BaseSettings):
     # Pas de valeur par défaut : une faute dans le nom de POPOTE_ENV doit empêcher de démarrer,
     # pas démarrer en `local`, qui n'exige pas le relais.
     env: Env
+    # Rôle `popote_api` (contexte personne), exigé hors local.
     database_url: SecretStr | None = None
+    # Rôle `popote_internal` (contexte service). Facultatif tant que le conteneur d'essai ne l'a pas : sans
+    # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
+    database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
     # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
     breach_check: BreachCheck = BreachCheck.hibp
+
+    # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.
+    version: str = Field("inconnue", pattern=r"^[A-Za-z0-9._-]{1,64}$")
+
+    # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
+    json_logs: bool = True
+
+    # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
+    # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
+    supabase_url: AnyHttpUrl | None = None
+
+    @field_validator("supabase_url", mode="before")
+    @classmethod
+    def _adresse_vide_vaut_absente(cls, valeur: object) -> object:
+        # Une variable posée à vide (comme `database_url`) vaut « absente », pas une erreur de démarrage.
+        return None if valeur == "" else valeur
+
+    @field_validator("supabase_url")
+    @classmethod
+    def _adresse_du_projet_seulement(cls, adresse: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        if adresse is not None and (adresse.path not in ("", "/") or adresse.query or adresse.fragment):
+            # Un chemin donnerait un `iss` faux sans rien dire : le déclencheur refuserait toute photo.
+            raise ValueError("supabase_url : l'adresse du projet seulement, sans chemin ni requête.")
+        return adresse
+
+    @property
+    def emetteur_des_jetons(self) -> str | None:
+        """La revendication `iss` que PostgREST pose pour une personne connectée : `<projet>/auth/v1`."""
+        return f"{str(self.supabase_url).rstrip('/')}/auth/v1" if self.supabase_url else None
 
     @property
     def relais_exige(self) -> bool:

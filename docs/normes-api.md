@@ -54,6 +54,15 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   pour un paramètre).
 - Jamais de trace, de requête SQL, de message de fournisseur ni de texte en anglais dans une réponse. L'erreur
   d'origine va au journal, reliée par `instance`.
+- **Erreurs de la base** (`erreurs_base.py`, traduites une fois, à la frontière) : `23505` → `409 conflit` ;
+  `23503`, `23514`, `22P02` → `422 donnees_invalides` sans pointeur ; `40001`, `40P01`, `55P03` → `503 reessayer`
+  avec `Retry-After: 1` ; `57014` (`statement_timeout`, requête annulée) → `503 delai_depasse` ; pool épuisé,
+  connexion coupée ou refusée → `503 base_indisponible` ; pas de pool `popote_internal` → `503
+  service_indisponible`. `42501` (droit refusé) vaut `404 introuvable` seulement dans `refus_vaut_introuvable()`,
+  autour d'une lecture ou d'une écriture ciblée d'un élément ; ailleurs c'est un droit manquant, donc
+  `500 erreur_interne`. Dans tous les cas il est journalisé en avertissement avec l'objet (table ou fonction).
+  Le journal reçoit `sqlstate`, contrainte et table, jamais le message de la base (son `DETAIL` recopie des
+  valeurs). Les codes métier propres à une fonction SQL arrivent avec leur domaine (0.5).
 
 ## 3.4 Listes
 
@@ -194,10 +203,23 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.11 Suivi
 
-- En-tête `traceparent` (W3C Trace Context) accepté et propagé ; journaux JSON sur la sortie standard, avec
-  l'identifiant de trace ; aucune donnée personnelle dans les journaux (pas de montant, pas de prénom, pas
-  d'e-mail en clair).
-- `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
+- En-tête `traceparent` (W3C Trace Context niveau 1, Recommandation du 23/11/2021, § 3.2) lu, et son `trace-id`
+  repris ; journaux JSON sur la sortie standard, avec l'identifiant de trace ; aucune donnée personnelle dans les
+  journaux (pas de montant, pas de prénom, pas d'e-mail en clair).
+- `traceparent` valide : version `00` de 55 caractères exactement, ou version inconnue (`01` à `fe`) d'au moins 55
+  caractères dont la suite commence par `-` ; `trace-id` 32 et `parent-id` 16 chiffres hexadécimaux **minuscules**,
+  non nuls ; drapeaux sur 2 chiffres. Version `ff`, majuscule, mauvaise longueur, tout à zéro, deux lignes
+  `traceparent`, plus de 512 caractères : l'en-tête est **ignoré** et une trace neuve commence. Le `span-id` est
+  toujours celui de la requête (neuf), jamais le `parent-id` reçu ; `tracestate` n'est pas interprété. Pas de SDK
+  OpenTelemetry à cette étape : le format est le sien, l'export viendra avec D4.
+- Journaux : une ligne = un objet JSON (`ts`, `level`, `logger`, `msg`, `request_id`, `trace_id`, `span_id`).
+  L'accès n'écrit que le gabarit de la route (jamais le chemin brut, la requête, l'IP, l'agent utilisateur). Aucune exception n'est
+  écrite par son message, quel que soit son type (il peut recopier une valeur) : seulement son type et sa pile ;
+  pour `psycopg.Error`, en plus `sqlstate`, contrainte, table. La forme exacte d'une ligne :
+  [`exploitation.md`](exploitation.md) § 10.
+- `suivi.signale(exc, request_id)` : la prise du suivi hébergé (D4), sans effet ; elle ne fait jamais échouer
+  la réponse d'une 500.
+- `/api/healthz` (le processus vit ; rend aussi `version`, le SHA du commit de l'image) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
   La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun
   droit sur les tables) et lit une ligne de `public.instance_setting` : table de référence lisible sans foyer,
