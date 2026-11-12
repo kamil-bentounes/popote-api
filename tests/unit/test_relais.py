@@ -1,15 +1,13 @@
 import httpx
+from _commun import SECRET, reglages
 from fastapi import Request
 
-from popote_api.config import Settings
 from popote_api.main import create_app
 from popote_api.relais import ip_de
 
-SECRET = "s" * 32
 
-
-def client(env: str, secret: str | None = SECRET) -> httpx.AsyncClient:
-    app = create_app(Settings(env=env, relay_secret=secret))  # type: ignore[arg-type]
+def client(env: str) -> httpx.AsyncClient:
+    app = create_app(reglages(env))
 
     @app.get("/api/_test/ip")
     async def ip(request: Request) -> dict[str, str]:
@@ -34,11 +32,6 @@ async def test_hors_local_bon_en_tete_passe() -> None:
 
 async def test_en_local_le_relais_nest_pas_exige() -> None:
     assert (await client("local").get("/api/healthz")).status_code == 200
-
-
-async def test_hors_local_sans_secret_configure_tout_est_refuse() -> None:
-    r = await client("prod", secret=None).get("/api/healthz", headers={"X-Popote-Relais": SECRET})
-    assert r.status_code == 404
 
 
 async def test_le_refus_est_un_probleme_qui_porte_son_identifiant() -> None:

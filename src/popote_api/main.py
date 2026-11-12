@@ -1,4 +1,4 @@
-"""La fabrique de l'application."""
+"""La fabrique de l'application. Lancement : `uvicorn --factory popote_api.main:create_app`."""
 
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
@@ -11,7 +11,8 @@ from popote_api.config import Env, Settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or Settings()
+    # POPOTE_ENV et les autres réglages viennent de l'environnement du processus.
+    settings = settings or Settings()  # type: ignore[call-arg]
     app = FastAPI(
         title="Popote", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
     )
@@ -32,6 +33,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(preuves.router)
     errors.installe(app)
     return app
-
-
-app = create_app()

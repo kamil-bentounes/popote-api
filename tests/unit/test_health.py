@@ -1,11 +1,11 @@
 import httpx
+from _commun import reglages
 
-from popote_api.config import Settings
 from popote_api.main import create_app
 
 
-def client(**reglages: object) -> httpx.AsyncClient:
-    app = create_app(Settings(env="local", **reglages))  # type: ignore[arg-type]
+def client(**autres: object) -> httpx.AsyncClient:
+    app = create_app(reglages("local", **autres))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 

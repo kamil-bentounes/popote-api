@@ -2,16 +2,16 @@ import json
 
 import httpx
 import pytest
+from _commun import reglages
 from starlette.requests import Request
 
-from popote_api.config import Settings
 from popote_api.errors import reponse
 from popote_api.main import create_app
 
 
 @pytest.fixture
 def client() -> httpx.AsyncClient:
-    app = create_app(Settings(env="local"))
+    app = create_app(reglages("local"))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
@@ -34,7 +34,7 @@ async def test_chaque_reponse_porte_son_identifiant(client: httpx.AsyncClient) -
 
 
 async def test_une_methode_non_permise_rend_405_en_probleme() -> None:
-    app = create_app(Settings(env="local"))
+    app = create_app(reglages("local"))
 
     @app.get("/api/_test/lecture")
     async def lecture() -> dict[str, bool]:
@@ -48,7 +48,7 @@ async def test_une_methode_non_permise_rend_405_en_probleme() -> None:
 
 
 async def test_une_donnee_invalide_rend_422_avec_ses_erreurs() -> None:
-    app = create_app(Settings(env="local"))
+    app = create_app(reglages("local"))
 
     @app.get("/api/_test/nombre/{n}")
     async def nombre(n: int) -> dict[str, int]:
@@ -64,7 +64,7 @@ async def test_une_donnee_invalide_rend_422_avec_ses_erreurs() -> None:
 
 
 async def test_une_exception_inattendue_rend_500_sans_trace() -> None:
-    app = create_app(Settings(env="local"))
+    app = create_app(reglages("local"))
 
     @app.get("/api/_test/boom")
     async def boom() -> None:

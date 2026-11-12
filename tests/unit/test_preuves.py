@@ -1,14 +1,11 @@
 import httpx
+from _commun import RELAIS, reglages
 
-from popote_api.config import Settings
 from popote_api.main import create_app
-
-SECRET = "s" * 32
-RELAIS = {"X-Popote-Relais": SECRET}
 
 
 def client(env: str) -> httpx.AsyncClient:
-    app = create_app(Settings(env=env, relay_secret=SECRET))  # type: ignore[arg-type]
+    app = create_app(reglages(env))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test")
 
 
