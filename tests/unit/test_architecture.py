@@ -4,6 +4,7 @@
    avec la transaction. Un `set role` oublié survivrait au pooler et passerait au client suivant.
    Garde-fou de relecture : il lit les chaînes littérales, pas celles qu'on assemblerait à l'exécution.
 2. `Base.service()` (le contournement de la RLS) n'est appelé que par les modules de la liste fermée.
+3. `Base.connexion()` (le rôle de connexion nu, pour les fonctions réservées à `popote_api`) de même.
 """
 
 import ast
@@ -17,6 +18,8 @@ SRC = Path(__file__).parents[2] / "src" / "popote_api"
 # La liste fermée : chaque tâche qui ajoute un usage de `service()` ajoute son module ici, relu en revue.
 # À venir : les routes internes (T10), l'acceptation d'une invitation et les purges.
 APPELANTS_DU_SERVICE: set[str] = set()
+# Idem pour `connexion()` : la connexion, les limites, les sessions et la vérification du mot de passe.
+APPELANTS_DE_LA_CONNEXION: set[str] = set()
 
 SET_DE_SESSION = re.compile(r"(?is)^\s*set\s+(?!local\b)")  # `set x = …` sans `local`, en tête d'instruction
 CHANGEMENT_DE_ROLE = re.compile(
@@ -47,14 +50,22 @@ def defauts_de_session(source: str) -> list[str]:
     return fautes
 
 
-def appels_a_service(source: str) -> int:
+def appels_a_la_methode(source: str, methode: str) -> int:
     return sum(
         1
         for noeud in ast.walk(ast.parse(source))
         if isinstance(noeud, ast.Call)
         and isinstance(noeud.func, ast.Attribute)
-        and noeud.func.attr == "service"
+        and noeud.func.attr == methode
     )
+
+
+def appels_a_service(source: str) -> int:
+    return appels_a_la_methode(source, "service")
+
+
+def appels_a_connexion(source: str) -> int:
+    return appels_a_la_methode(source, "connexion")
 
 
 def fichiers_source() -> list[Path]:
@@ -105,3 +116,16 @@ def test_seuls_les_modules_autorises_appellent_service() -> None:
 def test_le_controle_attrape_un_appel_a_service() -> None:
     assert appels_a_service("async def f(base):\n    async with base.service() as c:\n        pass") == 1
     assert appels_a_service("async def f(base):\n    async with base.personne(p) as c:\n        pass") == 0
+
+
+def test_seuls_les_modules_autorises_appellent_connexion() -> None:
+    appelants = {
+        str(chemin.relative_to(SRC)) for chemin in fichiers_source() if appels_a_connexion(chemin.read_text())
+    }
+    assert appelants <= APPELANTS_DE_LA_CONNEXION
+
+
+def test_le_controle_attrape_un_appel_a_connexion() -> None:
+    assert appels_a_connexion("async def f(base):\n    async with base.connexion() as c:\n        pass") == 1
+    assert appels_a_connexion("async def f(base):\n    async with base.service() as c:\n        pass") == 0
+    assert appels_a_connexion("async def f(base):\n    async with base.personne(p) as c:\n        pass") == 0

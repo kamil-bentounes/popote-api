@@ -144,15 +144,15 @@ refusent de démarrer avec autre chose que `hibp`.
 |---|---|---|---|---|
 | Personne | `popote_api` | `set local role authenticated` | `request.jwt.claims` = `{"sub": <personne>, "role": "authenticated"}` | toute requête d'une personne connectée ; la RLS et les gardes (`tg_saisie_garde`, `tg_depense_garde`…) s'appliquent |
 | Service | `popote_internal` | `set local role service_role` | `{"role": "service_role"}` | seulement les routes `/internal/*`, l'acceptation d'une invitation et les purges ; liste fermée, chaque usage relu |
-| Connexion | `popote_api` | aucun : fonction `security definer` privée | aucune | vérifier un mot de passe ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction |
+| Connexion | `popote_api` | aucun : fonction `security definer` privée (`Base.connexion()`) | aucune | vérifier un mot de passe, limites, sessions, journal ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction ; liste fermée, comme le service |
 | Sauvegarde | `postgres`, hors API | — | — | `pg_dump` lancé par GitHub Actions |
 
 - **Deux rôles de connexion, deux pools.** `popote_api` n'est membre que d'`authenticated`, `popote_internal`
   que de `service_role`, tous deux `NOINHERIT` et sans super-utilisateur. Le pool de `popote_internal` n'est
   monté que par le code des routes internes, de l'invitation et des purges. Un `set role` oublié ou une
   injection dans une requête de personne ne peut donc pas atteindre le contournement de la RLS.
-- **Un contexte = une transaction.** `Base.personne(id)` et `Base.service()` (`infra/db.py`) ouvrent chacun une
-  transaction dans le bon rôle ; tout y est posé par `set local` ou `set_config(…, true)` et meurt au `commit`
+- **Un contexte = une transaction.** `Base.personne(id)`, `Base.connexion()` (le rôle `popote_api` nu, sans `set role`) et `Base.service()`
+  (`infra/db.py`) ouvrent chacun une transaction dans le bon rôle ; tout y est posé par `set local` ou `set_config(…, true)` et meurt au `commit`
   ou au `rollback` (aussi sur une annulation côté client : la connexion rendue au pool est propre).
   `POPOTE_DATABASE_URL` est le rôle `popote_api`, exigé hors local ; `POPOTE_DATABASE_URL_INTERNAL`, le rôle
   `popote_internal`, est facultative pour l'instant : sans elle l'application démarre avec un avertissement et

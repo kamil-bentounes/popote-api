@@ -99,3 +99,9 @@ def test_le_filtre_ne_garde_que_le_modele_du_message(modele: str, arguments: tup
     FILTRE_DU_POOL.filter(enregistrement)
     assert "db.interne" not in enregistrement.getMessage()
     assert enregistrement.getMessage().startswith(modele.partition("%")[0].rstrip(" :"))
+
+
+async def test_sans_pool_api_la_connexion_n_a_pas_de_base() -> None:
+    with pytest.raises(BaseIndisponibleError):
+        async with Base(None, None).connexion():
+            pass
