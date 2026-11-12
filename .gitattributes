@@ -1,0 +1,3 @@
+# Fichiers de verrou : générés, masqués dans les diffs et hors du compte des lignes d’une demande de fusion.
+uv.lock linguist-generated
+package-lock.json linguist-generated
