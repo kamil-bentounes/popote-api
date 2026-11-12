@@ -21,11 +21,10 @@ from starlette.requests import HTTPConnection
 
 from popote_api.config import Settings
 from popote_api.errors import Probleme
+from popote_api.security import METHODES_SURES
 
 journal = logging.getLogger(__name__)
 
-# Tout ce qui n'est pas sûr est gardé : une méthode inattendue (`PROPPATCH`, `TRACE`…) ne passe pas.
-METHODES_SURES = frozenset({"GET", "HEAD", "OPTIONS"})
 REFUS_WEBSOCKET = 1008  # code RFC 6455 « violation de politique »
 # Les routes internes n'ont ni cookie ni navigateur : leur signature HMAC les garde (T10).
 PREFIXES_EXEMPTES = ("/internal/",)
