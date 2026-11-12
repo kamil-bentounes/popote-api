@@ -12,24 +12,22 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import Depends, Request, Response
+from fastapi import Depends, Request
 from fastapi.security import APIKeyCookie
 
 from popote_api.config import NOM_DU_COOKIE_DE_SESSION
-from popote_api.errors import Probleme, reponses_erreur
+from popote_api.errors import (
+    DEFI_D_AUTHENTIFICATION,
+    ETAT_SESSION_VALIDEE,
+    PAS_DE_SESSION,
+    Probleme,
+    reponses_erreur,
+)
 from popote_api.infra.db import Base, Curseur, SessionRefuseeError
 from popote_api.security.debit import limite_par_personne
 from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton
 
 journal = logging.getLogger(__name__)
-
-# RFC 9110 § 15.5.2 : un `401` porte au moins un défi. Aucun schéma enregistré ne décrit un cookie de
-# session ; `Cookie` est un nom à nous (jamais `Basic`, `Digest` ou `Negotiate` : le navigateur ouvrirait
-# une fenêtre de saisie).
-DEFI_D_AUTHENTIFICATION: Final = 'Cookie realm="popote"'
-# Le même texte pour tous les refus : la réponse n'apprend rien sur les jetons.
-PAS_DE_SESSION: Final = "Connecte-toi pour continuer."
-
 
 # Dit au contrat OpenAPI que `/api/v1` s'ouvre par le cookie de session (`securitySchemes`, `security`).
 # Sans effet à l'exécution : `auto_error=False`, et la lecture du cookie reste celle de `personne_connectee`,
@@ -66,7 +64,7 @@ def _refus(raison: str) -> Probleme:
     )
 
 
-async def personne_connectee(request: Request, response: Response) -> AsyncIterator[PersonneConnectee]:
+async def personne_connectee(request: Request) -> AsyncIterator[PersonneConnectee]:
     """Le contexte « personne » de la requête ; `401 pas_de_session` sans session valide."""
     nom = request.app.state.settings.nom_du_cookie_de_session
     jeton = request.cookies.get(nom)
@@ -82,9 +80,10 @@ async def personne_connectee(request: Request, response: Response) -> AsyncItera
             personne_id, curseur = await pile.enter_async_context(base.session(empreinte))
         except SessionRefuseeError as erreur:
             raise _refus("inconnue") from erreur
+        setattr(request.state, ETAT_SESSION_VALIDEE, True)
         # La limite par personne ne se compte qu'une fois la session validée : un cookie inventé n'ouvre
-        # aucun compteur. Sa clé est l'empreinte de la session, jamais le cookie.
-        await limite_par_personne(request, response, empreinte.hex())
+        # aucun compteur. Sa clé est l'identifiant de la personne (toutes ses sessions comptent ensemble).
+        await limite_par_personne(request, str(personne_id))
         yield PersonneConnectee(personne_id, empreinte, curseur)
 
 

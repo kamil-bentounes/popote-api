@@ -55,12 +55,19 @@ DELAIS_INTERNE: LiteralString = (
     "set local statement_timeout = '30s'; set local lock_timeout = '10s'; "
     "set local idle_in_transaction_session_timeout = '15s'"
 )
+# Le contexte service coupe plus tôt que le rôle (30 s, migration 0132) : l'API répond à 25 s
+# (`limites.Delai`), et sous Supavisor l'annulation de la requête ne la coupe pas côté base. Sans cette
+# borne, le travail continuerait après la `503`.
+DELAI_DE_LA_BASE_DU_SERVICE = "20s"
 ROLE_PERSONNE: LiteralString = "set local role authenticated"
 PREAMBULE_PERSONNE: LiteralString = f"{ROLE_PERSONNE}; {DELAIS_API}"
 # La personne de la session, ou null. Se lit sous le rôle de connexion : `authenticated` n'a pas le droit.
 LIT_LA_SESSION: LiteralString = "select public.session_personne(%s) as personne"
 PREAMBULE_CONNEXION: LiteralString = DELAIS_API  # pas de `set role` : la transaction reste `popote_api`
-PREAMBULE_SERVICE: LiteralString = f"set local role service_role; {DELAIS_INTERNE}"
+PREAMBULE_SERVICE: LiteralString = (
+    f"set local role service_role; {DELAIS_INTERNE}; "
+    f"set local statement_timeout = '{DELAI_DE_LA_BASE_DU_SERVICE}'"
+)
 
 
 class FiltreDuPool(logging.Filter):
