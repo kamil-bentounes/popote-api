@@ -185,6 +185,26 @@ refusent de démarrer avec autre chose que `hibp`.
   (contexte service, où le rôle COURANT est `service_role`), jamais par `authenticated` ni `popote_internal` : une
   personne ne forge pas d'événement. Le droit se lit sur le rôle courant : les tests jouent `set local role`.
 
+### 4.3 Limites de connexion comptées en base (0.4, migration 0138 ; code : `security/limites_base.py`)
+
+- **Une fonction atomique.** `public.prend_les_creneaux(compte, ip)` : l'IP d'abord, le compte ne compte que si l'IP
+  passe (une IP bloquée n'épuise pas les créneaux d'un compte). Les deux lignes de `login_throttle` se verrouillent
+  toujours dans cet ordre : aucun interblocage entre deux connexions croisées.
+- **Valeurs** (`config.py`) : 5 essais par compte et 20 par IP en 15 min ; au créneau de trop, blocage de 15 min, puis
+  30, puis 60 (plafond) ; les crans retombent après 24 h sans blocage. Bloqué, la fonction rend l'attente **sans
+  compter** : insister ne prolonge rien. Un succès remet le compte à zéro (`libere_compte`), jamais l'IP.
+- **Réinitialisation** : 3 par heure et par couple **(e-mail, IP)** (`Empreintes.cle_reinitialisation`), sans escalade ;
+  un tiers n'épuise pas les demandes d'une personne.
+- **Clés** : HMAC de 32 octets (poivre), l'e-mail sous sa forme `email_normalise`, l'IPv6 regroupée par /64 ; jamais
+  d'adresse en base. Une clé de compte inconnue se comporte comme une connue (la fonction ne lit pas `auth.users`).
+- **Journal** : `prend_les_creneaux` rend aussi quelle clé vient de passer en blocage ; seul ce drapeau déclenche
+  `connexion_bloquee` : un événement par (clé, fenêtre de blocage), pas un par essai refusé.
+- **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
+  nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h.
+- **Risque accepté : blocage par un tiers (B5).** Qui connaît l'adresse d'une personne peut ralentir **sa** connexion en
+  épuisant ses 5 essais : au plus 60 min par blocage (plafond), « mot de passe oublié » restant ouvert. Accepté pour
+  un foyer de deux personnes ; l'alternative (ne pas limiter par compte) laisserait la force brute ouverte.
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |
