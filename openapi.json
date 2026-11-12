@@ -222,6 +222,13 @@
         "title": "Sante",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "session": {
+        "in": "cookie",
+        "name": "__Host-popote_session",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
@@ -386,6 +393,11 @@
             "description": "Service indisponible"
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "La personne connectée",
         "tags": [
           "moi"

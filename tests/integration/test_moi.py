@@ -279,3 +279,15 @@ def test_les_droits_sur_mon_email_se_lisent_dans_le_catalogue(fabrique: Fabrique
         "select prosecdef, proconfig from pg_proc where oid = 'public.mon_email()'::regprocedure"
     ).fetchone()
     assert definer == (True, ['search_path=""'])
+
+
+async def test_deux_membres_d_un_foyer_ne_recoivent_chacun_que_leur_prenom(
+    application: httpx.AsyncClient, fabrique: Fabrique
+) -> None:
+    # La RLS laisse un membre lire les profils de son foyer : seul le filtre sur `auth.uid()` donne le sien.
+    foyer = fabrique.foyer()
+    premiere, seconde = fabrique.personne(foyer), fabrique.personne(foyer)
+    for personne in (premiere, seconde):
+        corps = (await application.get(URL, headers=cookie(fabrique.session(personne.id)))).json()
+        assert corps["display_name"] == prenom_et_foyer(fabrique, personne.id)[0]
+    assert prenom_et_foyer(fabrique, premiere.id)[0] != prenom_et_foyer(fabrique, seconde.id)[0]
