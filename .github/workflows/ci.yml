@@ -12,6 +12,9 @@ jobs:
   base:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # public.ecr.aws limite les tirages anonymes depuis les runners partagés (toomanyrequests).
+      SUPABASE_INTERNAL_IMAGE_REGISTRY: ghcr.io
     permissions:
       contents: read
     steps:
@@ -26,7 +29,13 @@ jobs:
           cache: npm
       - run: npm ci
       # edge-runtime reste : les tests appellent des fonctions Edge.
-      - run: npx supabase start -x studio,imgproxy,logflare,vector,supavisor
+      - name: Démarrer la pile Supabase (3 essais)
+        run: |
+          for essai in 1 2 3; do
+            npx supabase start -x studio,imgproxy,logflare,vector,supavisor && exit 0
+            echo "essai $essai échoué, nouvel essai dans 20 s"; npx supabase stop --no-backup || true; sleep 20
+          done
+          exit 1
       # Les clés locales de démonstration ne sont pas des secrets.
       - run: bash ops/env-local.sh
       # `supabase start` applique déjà les migrations d'une base neuve, et il n'y a pas de seed.sql :
