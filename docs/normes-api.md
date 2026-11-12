@@ -197,6 +197,13 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - En-tête `traceparent` (W3C Trace Context) accepté et propagé ; journaux JSON sur la sortie standard, avec
   l'identifiant de trace ; aucune donnée personnelle dans les journaux (pas de montant, pas de prénom, pas
   d'e-mail en clair).
+- Journaux : une ligne = un objet JSON (`ts`, `level`, `logger`, `msg`, `request_id`). L'accès n'écrit que le
+  gabarit de la route (jamais le chemin brut, la requête, l'IP, l'agent utilisateur). Aucune exception n'est
+  écrite par son message, quel que soit son type (il peut recopier une valeur) : seulement son type et sa pile ;
+  pour `psycopg.Error`, en plus `sqlstate`, contrainte, table. La forme exacte d'une ligne :
+  [`exploitation.md`](exploitation.md) § 10.
+- `suivi.signale(exc, request_id)` : la prise du suivi hébergé (D4), sans effet ; elle ne fait jamais échouer
+  la réponse d'une 500.
 - `/api/healthz` (le processus vit) et `/api/readyz` (la base répond), publics et sans donnée. Le réveil
   quotidien de chaque projet Supabase (prod et essai) passe par une vraie requête de l'API sur `/api/readyz`.
   La sonde ouvre une transaction, prend le rôle `authenticated` (`set local role`, car `popote_api` n'a aucun

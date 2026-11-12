@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     env: Env
     database_url: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
+    json_logs: bool = True
 
     @property
     def relais_exige(self) -> bool:
