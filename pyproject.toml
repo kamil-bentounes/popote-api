@@ -43,7 +43,7 @@ line-length = 110
 target-version = "py313"
 src = ["src", "tests"]
 # Le dépôt garde aussi des scripts et des outils de conception : seul le code de l'API est contrôlé.
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "ops/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
