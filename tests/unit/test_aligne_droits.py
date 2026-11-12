@@ -216,9 +216,10 @@ class TestSql:
 
     def test_default_acl_is_scoped_to_postgres_and_schema(self) -> None:
         statements = tool.render_divergence(self.divergence("default_acl_functions", '"public"', "anon", "X"))
+        prefixe = 'ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA "public"'
         assert statements == [
-            'ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA "public" REVOKE ALL ON FUNCTIONS FROM anon;',
-            'ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA "public" GRANT EXECUTE ON FUNCTIONS TO anon;',
+            f"{prefixe} REVOKE ALL ON FUNCTIONS FROM anon;",
+            f"{prefixe} GRANT EXECUTE ON FUNCTIONS TO anon;",
         ]
 
     @pytest.mark.parametrize("role", ["postgres", "supabase_admin", "PUBLIC"])
