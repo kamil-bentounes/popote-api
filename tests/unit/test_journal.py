@@ -448,7 +448,12 @@ async def test_une_erreur_de_base_dans_une_route_est_journalisee_sans_son_messag
 
     @app.get("/api/_test/base")
     async def base() -> None:
-        raise erreur_de_base()
+        # 23502 : sans traduction en Problem Details (23505 serait rendu 409), donc une 500 journalisée.
+        info = {
+            DiagnosticField.CONSTRAINT_NAME: b"membres_courriel_cle",
+            DiagnosticField.TABLE_NAME: b"membres",
+        }
+        raise errors.NotNullViolation(f"null value in column (courriel)=({DONNEE})", info=info)
 
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -458,7 +463,7 @@ async def test_une_erreur_de_base_dans_une_route_est_journalisee_sans_son_messag
     assert DONNEE not in sortie
     assert DONNEE not in reponse.text
     erreur = next(ligne for ligne in lignes(sortie) if ligne["level"] == "ERROR")
-    assert erreur["exception"][0]["sqlstate"] == "23505"
+    assert erreur["exception"][0]["sqlstate"] == "23502"
 
 
 # --- la durée -------------------------------------------------------------------------------------

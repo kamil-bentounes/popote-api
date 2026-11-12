@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import AnyHttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
@@ -28,6 +28,29 @@ class Settings(BaseSettings):
     relay_secret: SecretStr | None = None
     # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
     json_logs: bool = True
+
+    # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
+    # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
+    supabase_url: AnyHttpUrl | None = None
+
+    @field_validator("supabase_url", mode="before")
+    @classmethod
+    def _adresse_vide_vaut_absente(cls, valeur: object) -> object:
+        # Une variable posée à vide (comme `database_url`) vaut « absente », pas une erreur de démarrage.
+        return None if valeur == "" else valeur
+
+    @field_validator("supabase_url")
+    @classmethod
+    def _adresse_du_projet_seulement(cls, adresse: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        if adresse is not None and (adresse.path not in ("", "/") or adresse.query or adresse.fragment):
+            # Un chemin donnerait un `iss` faux sans rien dire : le déclencheur refuserait toute photo.
+            raise ValueError("supabase_url : l'adresse du projet seulement, sans chemin ni requête.")
+        return adresse
+
+    @property
+    def emetteur_des_jetons(self) -> str | None:
+        """La revendication `iss` que PostgREST pose pour une personne connectée : `<projet>/auth/v1`."""
+        return f"{str(self.supabase_url).rstrip('/')}/auth/v1" if self.supabase_url else None
 
     @property
     def relais_exige(self) -> bool:

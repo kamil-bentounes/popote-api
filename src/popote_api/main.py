@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import SecretStr
 
-from popote_api import contrat, errors, journal, relais
+from popote_api import contrat, erreurs_base, errors, journal, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
@@ -26,7 +26,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()  # type: ignore[call-arg]
     if settings.json_logs:
         journal.configure()
-    base = Base.depuis_dsn(_secret(settings.database_url), _secret(settings.database_url_internal))
+    base = Base.depuis_dsn(
+        _secret(settings.database_url),
+        _secret(settings.database_url_internal),
+        emetteur=settings.emetteur_des_jetons,
+    )
 
     @asynccontextmanager
     async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
@@ -68,5 +72,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.env is Env.essai:
         app.include_router(preuves.router)
     errors.installe(app)
+    erreurs_base.installe(app)
     contrat.installe(app)
     return app
