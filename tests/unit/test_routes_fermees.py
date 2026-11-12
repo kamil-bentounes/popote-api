@@ -15,8 +15,6 @@ from popote_api.security.session import personne_connectee
 LISTE_BLANCHE = {
     "/api/healthz": "le processus répond, sans donnée",
     "/api/readyz": "la base répond, sans donnée ; sert au réveil quotidien du projet",
-    # Montées sur l'essai seulement, retirées avec la preuve 4 consignée dans docs/preuves-0.2.md.
-    "/api/_preuves/cookie": "routes de preuve de 0.2 (relais, cookie, IP)",
 }
 # Servi par FastAPI et non par une `APIRoute` : n'existe pas en prod (`openapi_url=None`).
 CONTRAT = "/api/openapi.json"
