@@ -3,7 +3,7 @@ from _commun import DSN, SECRET
 from pydantic import ValidationError
 
 import popote_api.main
-from popote_api.config import Env, Settings
+from popote_api.config import BreachCheck, Env, Settings
 from popote_api.main import create_app
 
 
@@ -76,3 +76,24 @@ def test_le_module_ne_cree_pas_d_application_a_l_import() -> None:
 def test_un_secret_non_ascii_echoue_au_demarrage(env: str, secret: str) -> None:
     with pytest.raises(ValidationError, match="ASCII"):
         Settings.model_validate({"env": env, "relay_secret": secret, "database_url": DSN})
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_desactiver_la_liste_de_fuites_echoue(env: str) -> None:
+    with pytest.raises(ValidationError, match="breach_check"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "breach_check": "off"}
+        )
+
+
+def test_en_local_la_liste_de_fuites_peut_etre_desactivee_par_l_environnement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POPOTE_ENV", "local")
+    monkeypatch.setenv("POPOTE_BREACH_CHECK", "off")
+    assert Settings().breach_check is BreachCheck.off
+
+
+def test_une_valeur_inconnue_de_breach_check_echoue() -> None:
+    with pytest.raises(ValidationError, match="breach_check"):
+        Settings.model_validate({"env": "local", "breach_check": "hibp2"})

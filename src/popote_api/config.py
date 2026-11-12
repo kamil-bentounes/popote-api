@@ -13,6 +13,11 @@ class Env(StrEnum):
     prod = "prod"
 
 
+class BreachCheck(StrEnum):
+    hibp = "hibp"  # Pwned Passwords (API « range »)
+    off = "off"  # aucune vérification : local seulement
+
+
 class Settings(BaseSettings):
     # hide_input_in_errors : l'erreur de démarrage ne doit jamais recopier un secret mal formé.
     model_config = SettingsConfigDict(env_prefix="POPOTE_", extra="ignore", hide_input_in_errors=True)
@@ -22,6 +27,8 @@ class Settings(BaseSettings):
     env: Env
     database_url: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
+    breach_check: BreachCheck = BreachCheck.hibp
 
     @property
     def relais_exige(self) -> bool:
@@ -41,4 +48,10 @@ class Settings(BaseSettings):
             )
         if self.database_url is None:
             raise ValueError("database_url est obligatoire hors local.")
+        return self
+
+    @model_validator(mode="after")
+    def _la_liste_de_fuites_reste_active_hors_local(self) -> Self:
+        if self.relais_exige and self.breach_check is not BreachCheck.hibp:
+            raise ValueError("breach_check : seule la valeur « hibp » est permise hors local.")
         return self
