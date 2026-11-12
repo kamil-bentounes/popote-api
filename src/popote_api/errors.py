@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 journal = logging.getLogger(__name__)
@@ -73,6 +74,45 @@ MESSAGES_422 = {
     "extra_forbidden": "Ce champ n'est pas permis.",
     "value_error": "La valeur n'est pas acceptée.",
 }
+
+
+class ParametreEnCause(BaseModel):
+    """Le paramètre de requête, d'en-tête ou de chemin que la validation a refusé."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    # `in` est un mot réservé de Python : le champ s'appelle `emplacement`, le JSON dit `in`.
+    emplacement: str = Field(alias="in", description="query, header, path ou cookie")
+
+
+class ErreurDeChamp(BaseModel):
+    """Une erreur de validation (`422`) : `pointer` pour le corps, `parameter` pour le reste."""
+
+    pointer: str | None = Field(None, description="JSON Pointer (RFC 6901) vers le champ du corps.")
+    parameter: ParametreEnCause | None = None
+    message: str
+
+
+class ProblemDetails(BaseModel):
+    """Le corps de toute erreur de l'API (RFC 9457). Sa forme est celle que `reponse()` produit."""
+
+    type: str = Field(description=f"URI stable du problème : `{TYPE_DE_BASE}<code>`.")
+    title: str
+    status: int
+    detail: str
+    instance: str = Field(description="Identifiant de la requête, repris dans le journal.")
+    code: str = Field(description="Code machine stable, par exemple `base_indisponible`.")
+    errors: list[ErreurDeChamp] | None = Field(None, description="Seulement pour `422`.")
+
+
+def reponses_erreur(*statuts: int) -> dict[int | str, dict[str, Any]]:
+    """Les réponses d'erreur d'une route, à passer à `responses=` du décorateur.
+
+    Le contrat les publie en `application/problem+json` (voir `contrat.py`) avec le schéma
+    `ProblemDetails`. Un statut inconnu de `STATUTS` est une faute de programmation.
+    """
+    return {statut: {"model": ProblemDetails, "description": STATUTS[statut][0]} for statut in statuts}
 
 
 # Marque posée sur l'exception qu'on a déjà journalisée avec son `request_id`.

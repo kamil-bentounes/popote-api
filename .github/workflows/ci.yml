@@ -34,6 +34,57 @@ jobs:
         run: |
           uv export --frozen --no-emit-project --quiet -o "$RUNNER_TEMP/requirements.txt"
           uv run pip-audit -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --strict --progress-spinner off
+  contrat:
+    # Le contrat OpenAPI vient du code : il est régénéré, comparé au fichier versionné, puis à `main`.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # Version publiée le 28/10/2026 ; la somme est celle de l'archive (checksums.txt de la version,
+      # recalculée à la main). Changer de version = changer les deux, ensemble.
+      OASDIFF_VERSION: "1.35.0"
+      OASDIFF_SHA256: "a8023002fcb2eaa7f5758148a9303cb63d33b939886df312268bc0fc7b939140"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `origin/main` doit être présent pour la comparaison.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Même version que `required-version` du pyproject et que l'image.
+          version: 0.10.7
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Régénérer le contrat (un contrat oublié échoue)
+        run: |
+          uv run python scripts/exporte_contrat.py
+          if [ -n "$(git status --porcelain -- openapi.json)" ]; then
+            git --no-pager diff -- openapi.json | head -n 80
+            echo "::error::openapi.json n'est pas celui que produit le code : lancer 'uv run python scripts/exporte_contrat.py' et le commiter"
+            exit 1
+          fi
+      - name: Installer oasdiff (version figée, somme vérifiée)
+        run: |
+          set -euo pipefail
+          archive="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl --silent --show-error --fail --location --max-time 60 --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/$archive"
+          echo "$OASDIFF_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" oasdiff
+      - name: Refuser une rupture du contrat par rapport à main
+        run: |
+          set -euo pipefail
+          git rev-parse --verify --quiet origin/main > /dev/null || { echo "::error::origin/main est absent du dépôt"; exit 1; }
+          # Tant que `main` n'a pas de contrat (la demande de fusion qui l'ajoute), il n'y a rien à comparer.
+          if ! git cat-file -e origin/main:openapi.json 2> /dev/null; then
+            echo "::notice::origin/main n'a pas encore d'openapi.json : rien à comparer, le contrôle de rupture passe."
+            exit 0
+          fi
+          git show origin/main:openapi.json > "$RUNNER_TEMP/openapi-main.json"
+          "$RUNNER_TEMP/oasdiff" breaking "$RUNNER_TEMP/openapi-main.json" openapi.json \
+            --fail-on ERR --deprecation-days-stable 30 --format githubactions
   base:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -141,7 +192,7 @@ jobs:
       - run: semgrep scan --config p/python --config p/typescript --config p/owasp-top-ten --error --metrics off
   deploie-essai:
     # Déploiement de l'essai (essai.notre-popote.fr) : seulement après un envoi sur main dont tous les contrôles sont verts.
-    needs: [python, base, image, secrets, semgrep]
+    needs: [python, contrat, base, image, secrets, semgrep]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
