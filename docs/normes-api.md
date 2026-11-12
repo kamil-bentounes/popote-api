@@ -60,6 +60,26 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - Pagination par curseur : `?limit=` (20 par défaut, 100 au plus) et `?cursor=` ; réponse
   `{"items": [...], "next_cursor": "…" | null}`. Jamais de troncature silencieuse.
 - Filtres et tris explicites, sur des champs nommés dans le contrat.
+- **Outillage** : `popote_api/pagination.py`. `parametres_de_page` (dépendance FastAPI) : `limit` de 1 à 100,
+  20 par défaut ; au-delà ou en deçà, `422` (jamais de troncature silencieuse). `Page[T]` est le modèle de
+  réponse, `{"items": [...], "next_cursor": str | null}` (les deux champs sont toujours présents). La route
+  demande `limit + 1` lignes : la ligne en trop dit qu'il y a une suite (`construit_page`), sans `count`.
+- **Pagination par clé, jamais par `offset`** : `clause_apres` écrit `(cle, id) > (%s, %s)` (`<` en ordre
+  descendant) et `ordre` le `ORDER BY cle, id` ; l'identifiant départage les égalités, donc aucune ligne n'est
+  sautée ni répétée quand la liste change entre deux pages. Un index `(cle, id)` sert la requête. La clé de tri
+  et l'identifiant sont `not null` ; leurs noms sont écrits dans le code (`Tri`), jamais pris à la requête.
+- **Le curseur est validé, pas signé.** Choix et raison : le périmètre d'une liste (foyer, personne) vient du
+  `WHERE` de la route, pas du curseur, qui n'est qu'une position dans un ordre. Un curseur forgé ne peut donc
+  que changer de page parmi des lignes que la personne lit déjà ; un test le montre sur Postgres (curseur
+  pointant sur une ligne d'un autre foyer). Un HMAC n'ajouterait que l'intégrité de cette position, au prix
+  d'un secret de plus à poser et à tourner dans chaque environnement (sans lui le conteneur ne démarre pas).
+  Le décodage est complet : alphabet et taille bornés ; JSON d'un objet aux seules clés `v`, `t` (nom du tri),
+  `k` (clé), `i` (UUID) ; version, nom du tri et type de la clé vérifiés (un curseur d'une autre liste est
+  refusé) ; clé acceptée par Postgres (entier `bigint`, texte de 200 caractères au plus sans NUL, instant avec
+  décalage) ; enfin le curseur doit se ré-encoder **à l'identique**, ce qui écarte toute forme que nous
+  n'aurions pas écrite. Tout échec rend `400 curseur_invalide`. Conséquence : le curseur est lisible par le
+  client (base64url d'un JSON) ; n'y mettre que la clé de tri d'une ligne qu'il a déjà reçue, et borner à 200
+  caractères (`max_length`) tout texte qui sert de clé de tri.
 
 ## 3.5 Écritures sûres
 
@@ -127,6 +147,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 - Instants en RFC 3339 avec décalage ; jours du calendrier en `YYYY-MM-DD`, toujours au sens de
   `Europe/Paris` ; argent en centimes entiers avec `currency: "EUR"` ; quantités avec leur unité.
+- **Types à réutiliser** (`popote_api/formats.py`), dans tout modèle d'entrée ou de sortie :
+  - `Instant` : texte RFC 3339 **avec** décalage (`Z` ou `+01:00`). Un instant sans décalage, un horodatage
+    Unix, un espace à la place du `T`, un décalage sans deux-points, une seconde `60` sont refusés (`422`).
+    En sortie, toujours en UTC avec le décalage écrit (`2026-11-12T09:00:00+00:00`) : l'écran convertit.
+  - `Jour` : `YYYY-MM-DD` seul (un instant ou un `datetime` est refusé), au sens de `Europe/Paris`.
+    `jour_a_paris(instant)` donne le jour de Paris d'un instant (heure d'été comprise : des journées de 23,
+    24 ou 25 h) ; `aujourdhui_a_paris()` prend une horloge en paramètre pour les tests. Jamais `date.today()`,
+    qui suit le fuseau du serveur.
+  - `Montant` : `{"amount_cents": int, "currency": "EUR"}`. Entier strict (ni `12.5`, ni `12.0`, ni `"1250"`),
+    de ±(2^53 − 1) (au-delà, un nombre JSON n'est plus exact dans le navigateur), négatif pour un avoir ;
+    `currency` obligatoire et seulement `"EUR"` (casse comprise) ; champ inconnu refusé.
 
 ## 3.9 Cache, versions, contrat
 
