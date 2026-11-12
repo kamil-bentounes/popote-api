@@ -9,6 +9,31 @@ concurrency:
   # Annuler un run dépassé seulement sur une demande de fusion : chaque envoi sur main est vérifié.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Même version que `required-version` du pyproject et que l'image.
+          version: 0.10.7
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff format --check
+      - run: uv run ruff check
+      - run: uv run mypy
+      - run: uv run pytest -m "not integration" -q
+      # On audite le verrou (`uv.lock`), pas l'environnement : le projet lui-même, installé en
+      # mode éditable, n'existe pas sur PyPI et ferait échouer `--strict`.
+      - name: Auditer les dépendances
+        run: |
+          uv export --frozen --no-emit-project --quiet -o "$RUNNER_TEMP/requirements.txt"
+          uv run pip-audit -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --strict --progress-spinner off
   base:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -59,9 +84,31 @@ jobs:
           cat "$RUNNER_TEMP/functions.log"
           exit 1
       - run: npx vitest run
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Même version que `required-version` du pyproject et que l'image.
+          version: 0.10.7
+          enable-cache: true
+      - run: uv sync --frozen && uv run pytest -m integration -q
       - name: Journal des fonctions
         if: failure()
         run: cat "$RUNNER_TEMP/functions.log" || true
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build -t popote-api:ci .
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: popote-api:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
   secrets:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

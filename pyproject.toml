@@ -25,7 +25,9 @@ packages = ["src/popote_api"]
 # Même version que l'image (Dockerfile) : un uv plus récent écrit un uv.lock que l'image ne lirait pas.
 required-version = "==0.10.7"
 # Hygiène de la chaîne d'approvisionnement : rien de publié depuis moins de deux semaines.
-exclude-newer = "2026-10-29T00:00:00Z"
+# Faux positif : la règle ne connaît que la forme relative ("7 days"), et notre date fixe donne un délai
+# de deux semaines au moment de la résolution, avec un verrou qui se rejoue à l'identique.
+exclude-newer = "2026-10-29T00:00:00Z"  # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
