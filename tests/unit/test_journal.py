@@ -268,6 +268,23 @@ def gestionnaires_du_journal(logger: logging.Logger) -> list[logging.Handler]:
     return [h for h in logger.handlers if isinstance(h.formatter, journal.Formateur)]
 
 
+@pytest.fixture
+def journal_httpx_remis_a_zero() -> Iterator[None]:
+    """`infra.fuites` pose le niveau de `httpx` à l'import : on l'efface, puis on le rend."""
+    logger = logging.getLogger("httpx")
+    niveau = logger.level
+    logger.setLevel(logging.NOTSET)
+    yield
+    logger.setLevel(niveau)
+
+
+def test_configure_tait_le_journal_de_httpx_sans_que_fuites_soit_importe(
+    etat_du_journal: None, journal_httpx_remis_a_zero: None
+) -> None:
+    journal.configure()
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+
+
 def test_configure_est_idempotente(etat_du_journal: None, capsys: pytest.CaptureFixture[str]) -> None:
     for _ in range(3):
         journal.configure()

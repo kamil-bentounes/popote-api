@@ -97,7 +97,8 @@ def configure(flux: TextIO | None = None) -> None:
 
     Uvicorn configure ses journaux avant d'appeler la fabrique, avec son format texte : on lui retire ses
     gestionnaires, et ses lignes passent par la racine. Son journal d'accès, qui écrit le chemin brut et
-    l'adresse IP, est éteint (`--no-access-log` aussi, au lancement). Seuls nos propres gestionnaires
+    l'adresse IP, est éteint (`--no-access-log` aussi, au lancement), et celui de `httpx` est réduit aux
+    avertissements. Seuls nos propres gestionnaires
     sont retirés de la racine : ceux d'un autre outil restent.
     """
     gestionnaire = logging.StreamHandler(flux or sys.stdout)
@@ -114,6 +115,9 @@ def configure(flux: TextIO | None = None) -> None:
         logger.propagate = True
         logger.setLevel(logging.NOTSET)
     logging.getLogger("uvicorn.access").disabled = True
+    # httpx écrit chaque requête à INFO, adresse comprise : celle de l'API des mots de passe divulgués
+    # porte la plage SHA-1 du mot de passe. Le silence ne dépend donc pas de l'import de `infra.fuites`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def gabarit_de_la_route(scope: Scope) -> str | None:

@@ -6,7 +6,8 @@ Details, et le journal reçoit `sqlstate`, contrainte et table : JAMAIS le messa
 
 - `23505` : `409 conflit`.
 - `23503`, `23514`, `22P02` : `422 donnees_invalides`, sans pointeur (la base ne sait pas quel champ).
-- `40001`, `40P01`, `55P03` : `503 reessayer`, avec `Retry-After: 1`.
+- `40001`, `40P01`, `55P03`, `25P03` : `503 reessayer`, avec `Retry-After: 1` (`25P03` : transaction restée
+  inactive au-delà de `idle_in_transaction_session_timeout`, la base a coupé la connexion).
 - `57014` : `503 delai_depasse` (`statement_timeout`, ou requête annulée).
 - Classes `08` et `53`, `57P01` à `57P03`, `OperationalError` ou `InterfaceError` sans SQLSTATE (pool épuisé
   ou fermé, connexion coupée), pas de pool `popote_api` : `503 base_indisponible`.
@@ -63,6 +64,7 @@ PAR_SQLSTATE: dict[str, Traduction] = {
     "40001": REESSAYER,
     "40P01": REESSAYER,
     "55P03": REESSAYER,
+    "25P03": REESSAYER,
     "57014": Traduction(503, "delai_depasse", "La base a mis trop de temps à répondre."),
 }
 SERVICE_INDISPONIBLE = Traduction(
