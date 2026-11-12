@@ -259,6 +259,16 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   l'application. Hors de la liste blanche écrite dans le test (`/api/healthz`, `/api/readyz`, et le contrat
   `/api/openapi.json` que FastAPI sert hors prod), chacune exige `personne_connectee`. Une route ajoutée sans
   session fait échouer ce test ; une route sous `/api/v1` l'a d'office, par le routeur.
+- **Matrice d'autorisation** (`tests/authz/test_matrice.py`) : chaque route de `/api/v1`, énumérée sur l'application,
+  est éprouvée avec trois acteurs : une personne de mon foyer, une personne d'un autre foyer, personne (sans
+  session). Une route sans cas dans `MATRICE` fait échouer son test : la route nouvelle se déclare dans la matrice,
+  avec ce que chaque acteur doit obtenir (`404` d'une ressource désignée d'un autre foyer, `401` sans session).
+  Une route « de soi » comme `/me` rend à l'autre foyer sa propre fiche, jamais la mienne.
+- **`GET /api/v1/me`** (`api/moi.py`) : `{"id", "email", "display_name", "household": {"id", "name"} | null}`.
+  Contexte personne : `user_profile` et `household` passent par la RLS ; l'adresse vient de `mon_email()`
+  (fonction `security definer`, migration 0134), car `authenticated` ne lit pas `auth.users`. Une personne sans
+  profil rend `display_name` et `household` nuls. `Cache-Control: no-store`, `ETag` fort des octets rendus,
+  `304` sur `If-None-Match` (`conditionnel.repond_ou_304`) : la lecture conditionnelle est faite par le client.
 - **Modèles** : `schemas/base.py` donne `Entree` (`extra="forbid"`) et `Sortie`. Tout modèle de `schemas/`
   descend de l'une ou de l'autre, tout corps de requête descend d'`Entree` à toute profondeur
   (`tests/unit/test_modeles.py`).
