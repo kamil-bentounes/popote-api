@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
     database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
+    json_logs: bool = True
+
     # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
     # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
     supabase_url: AnyHttpUrl | None = None

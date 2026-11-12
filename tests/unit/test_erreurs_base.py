@@ -98,17 +98,6 @@ async def test_un_sqlstate_inconnu_reste_une_500_generique() -> None:
     assert VALEUR_SECRETE not in reponse.text
 
 
-async def test_une_erreur_sans_traduction_est_journalisee_sans_message_ni_pile_de_texte(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    with caplog.at_level(logging.ERROR):
-        reponse = await appeler_une_route_qui_leve(erreur_sql("23502"))
-    assert reponse.status_code == 500
-    assert "sqlstate=23502" in caplog.text
-    assert VALEUR_SECRETE not in caplog.text
-    assert all(r.exc_info is None for r in caplog.records)
-
-
 async def test_un_droit_refuse_hors_lecture_ciblee_est_une_500_journalisee_en_avertissement(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

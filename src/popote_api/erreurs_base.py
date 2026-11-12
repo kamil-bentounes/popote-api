@@ -12,12 +12,12 @@ Details, et le journal reçoit `sqlstate`, contrainte et table : JAMAIS le messa
   ou fermé, connexion coupée), pas de pool `popote_api` : `503 base_indisponible`.
 - Pas de pool `popote_internal` : `503 service_indisponible`.
 - `42501` : `500 erreur_interne` ; `404 introuvable` seulement dans `refus_vaut_introuvable()`.
-- Tout autre : `500 erreur_interne`, journalisée avec `sqlstate`, contrainte, table et pile (sans message).
+- Tout autre : `500 erreur_interne` par le gestionnaire d'erreur inattendue, dont le journal JSON ne porte ni
+  message ni `DETAIL`, seulement `sqlstate`, contrainte, table et pile.
 """
 
 import logging
 import re
-import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -103,11 +103,6 @@ def _champs(erreur: psycopg.Error | BaseError) -> str:
     return " ".join(f"{nom}={valeur}" for nom, valeur in champs.items() if valeur)
 
 
-def _pile(erreur: BaseException) -> str:
-    """Fichier, ligne et fonction de la pile, sans le texte des lignes ni le message."""
-    return " > ".join(f"{f.filename}:{f.lineno} {f.name}" for f in traceback.extract_tb(erreur.__traceback__))
-
-
 def _objet_refuse(erreur: psycopg.Error) -> str:
     correspondance = OBJET_REFUSE.search(erreur.diag.message_primary or "")
     return correspondance.group(1) if correspondance else "inconnu"
@@ -142,10 +137,11 @@ def installe(app: FastAPI) -> None:
         if traduction is None:
             if isinstance(exc, psycopg.Error) and exc.sqlstate == SQLSTATE_DROIT_REFUSE:
                 _journalise_le_refus(exc, rendu=500)
-            else:
-                # Pas de `exc_info` : la pile d'une erreur de la base porte son message, donc son `DETAIL`.
-                journal.error("Erreur de la base non traduite : %s pile=%s", _champs(exc), _pile(exc))
-            return reponse(request, 500, "erreur_interne", "Une erreur inattendue est survenue.")
+            # Sans traduction : le gestionnaire d'erreur inattendue (500) la journalise (le formateur JSON
+            # n'écrit ni message ni DETAIL, seulement sqlstate, contrainte et table) et la rend. Appelé ici,
+            # non relevé : une exception relevée repasserait par ce gestionnaire à chaque niveau de Starlette.
+            generique = request.app.exception_handlers[Exception]
+            return await generique(request, exc)  # type: ignore[no-any-return]
         niveau = logging.WARNING if traduction.status >= 500 else logging.INFO
         journal.log(
             niveau,

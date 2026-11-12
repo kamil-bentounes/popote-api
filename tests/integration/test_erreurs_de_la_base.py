@@ -127,14 +127,14 @@ async def client(fabrique: Fabrique, base: Base | None = None) -> AsyncIterator[
     ],
 )
 async def test_une_vraie_erreur_de_la_base_est_rendue_sans_son_message(
-    fabrique: Fabrique, caplog: pytest.LogCaptureFixture, chemin: str, status: int, code: str
+    fabrique: Fabrique, capsys: pytest.CaptureFixture[str], chemin: str, status: int, code: str
 ) -> None:
-    with caplog.at_level(logging.INFO):
-        async with client(fabrique) as c:
-            reponse = await c.get(chemin)
+    # Le journal vérifié est celui que l'application écrit (JSON, sortie standard), pas le rendu de pytest.
+    async with client(fabrique) as c:
+        reponse = await c.get(chemin)
     assert (reponse.status_code, reponse.json()["code"]) == (status, code)
     assert NOM_SECRET not in reponse.text
-    assert NOM_SECRET not in caplog.text
+    assert NOM_SECRET not in capsys.readouterr().out
 
 
 async def test_un_conflit_journalise_la_contrainte_et_la_table(

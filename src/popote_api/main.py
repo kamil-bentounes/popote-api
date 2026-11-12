@@ -7,13 +7,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import SecretStr
 
-from popote_api import contrat, erreurs_base, errors, relais
+from popote_api import contrat, erreurs_base, errors, journal, relais
 from popote_api.api import health, preuves
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.db import Base, SondeBase
+from popote_api.trace import Trace
 
-journal = logging.getLogger(__name__)
+avertissements = logging.getLogger(__name__)
 
 
 def _secret(valeur: SecretStr | None) -> str | None:
@@ -23,24 +24,28 @@ def _secret(valeur: SecretStr | None) -> str | None:
 def create_app(settings: Settings | None = None) -> FastAPI:
     # POPOTE_ENV et les autres réglages viennent de l'environnement du processus.
     settings = settings or Settings()  # type: ignore[call-arg]
-    # Le contrat n'est publié ni en prod, ni sous une forme interactive. Pas de redirection de
-    # barre finale : `/api/x/` n'est pas `/api/x`, et une redirection révélerait la route.
+    if settings.json_logs:
+        journal.configure()
     base = Base.depuis_dsn(
         _secret(settings.database_url),
         _secret(settings.database_url_internal),
         emetteur=settings.emetteur_des_jetons,
     )
-    if not base.service_configure:
-        journal.warning("POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503).")
 
     @asynccontextmanager
     async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
+        if not base.service_configure:
+            avertissements.warning(
+                "POPOTE_DATABASE_URL_INTERNAL absente : le contexte service est indisponible (503)."
+            )
         try:
             await base.ouvre()  # sans attendre de connexion : le démarrage ne dépend pas de la base
             yield
         finally:
             await base.ferme()
 
+    # Le contrat n'est publié ni en prod, ni sous une forme interactive. Pas de redirection de
+    # barre finale : `/api/x/` n'est pas `/api/x`, et une redirection révélerait la route.
     app = FastAPI(
         lifespan=cycle_de_vie,
         title="Popote",
@@ -54,9 +59,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.base = base
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
 
-    # Le dernier middleware ajouté est le plus extérieur : `Identifiant` enveloppe `Garde`, si bien que
-    # le refus de la garde porte lui aussi son identifiant.
+    # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
+    # `Trace`, `Acces`, `Garde`. Le refus de la garde porte donc son identifiant et sa trace, et sa ligne
+    # d'accès aussi. Le gestionnaire des 500 s'exécute encore au-dessus de tous : il lit les identifiants dans
+    # l'état de la requête, pas dans les `ContextVar` (voir `errors._inattendue`).
     app.add_middleware(relais.Garde, settings=settings)
+    app.add_middleware(journal.Acces)
+    app.add_middleware(Trace)
     app.add_middleware(Identifiant)
 
     app.include_router(health.router)

@@ -15,4 +15,4 @@ USER 10001
 # La valeur la plus stricte par défaut : l'essai la remplace au déploiement.
 ENV POPOTE_ENV=prod
 EXPOSE 8080
-CMD ["/app/.venv/bin/uvicorn", "--factory", "popote_api.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header"]
+CMD ["/app/.venv/bin/uvicorn", "--factory", "popote_api.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header", "--no-access-log"]
