@@ -55,7 +55,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - Jamais de trace, de requête SQL, de message de fournisseur ni de texte en anglais dans une réponse. L'erreur
   d'origine va au journal, reliée par `instance`.
 - **Erreurs de la base** (`erreurs_base.py`, traduites une fois, à la frontière) : `23505` → `409 conflit` ;
-  `23503`, `23514`, `22P02` → `422 donnees_invalides` sans pointeur ; `40001`, `40P01`, `55P03` → `503 reessayer`
+  `23503`, `23514`, `22P02` → `422 donnees_invalides` sans pointeur ; `40001`, `40P01`, `55P03`, `25P03` → `503 reessayer`
   avec `Retry-After: 1` ; `57014` (`statement_timeout`, requête annulée) → `503 delai_depasse` ; pool épuisé,
   connexion coupée ou refusée → `503 base_indisponible` ; pas de pool `popote_internal` → `503
   service_indisponible`. `42501` (droit refusé) vaut `404 introuvable` seulement dans `refus_vaut_introuvable()`,
@@ -174,7 +174,12 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   **Règle des routes qui écrivent** : elles sont `async def`, jamais `def`. Une route `def` tourne dans un fil
   que le délai ne peut pas annuler : le client reçoit la `503` pendant que l'écriture se termine. Le travail
   bloquant d'une route (appel à une bibliothèque synchrone, base) s'exécute sous un délai interne plus court
-  que 25 s (par exemple `statement_timeout` côté base), pour qu'il échoue avant la `503`, jamais après.
+  que 25 s (par exemple `statement_timeout` côté base : 8 s pour une personne, 20 s pour le contexte
+  `service()`), pour qu'il échoue avant la `503`, jamais après.
+  **Aucune attente hors SQL pendant une transaction de route** (appel réseau, `asyncio.sleep`, travail
+  long) : la transaction resterait ouverte sans requête, et la base la coupe à 15 s d'inactivité
+  (`idle_in_transaction_session_timeout`, SQLSTATE `25P03`, rendu `503 reessayer`). On fait l'attente
+  avant d'ouvrir le contexte, ou après l'avoir fermé.
 - La « dernière activité » d'une session et les compteurs ne s'écrivent pas plus d'une fois toutes les
   5 minutes par session : une lecture ne devient pas une écriture.
 

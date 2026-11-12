@@ -133,7 +133,8 @@ pour tous les parcours. Raison : un foyer de deux personnes ne doit pas être bl
 panne d'un service tiers, et les règles de longueur restent appliquées. Risque accepté : pendant une panne, un
 mot de passe fuité peut passer ; l'événement permet de le voir. `PwnedPasswords.verifie` ne lève jamais pour
 cela : il rend un `ResultatFuite`. Rien du mot de passe, de son empreinte ni de sa plage n'est journalisé
-(httpx écrit pourtant l'adresse à `INFO` : le module fait taire ce journal).
+(httpx écrit pourtant l'adresse à `INFO` : `journal.configure()` fait taire ce journal, sans dépendre de
+l'import de ce module).
 
 **Réglage.** `POPOTE_BREACH_CHECK` : `hibp` (défaut) ou `off`. `off` n'est permis qu'en local ; `essai` et `prod`
 refusent de démarrer avec autre chose que `hibp`.
@@ -160,7 +161,9 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Délais côté base** (migration `0132`), parce que l'annulation côté client ne coupe pas la requête sous
   Supavisor : `popote_api` 8 s de requête, 5 s d'attente de verrou, 15 s de transaction inactive ;
   `popote_internal` 30 s, 10 s, 15 s. `set role` n'applique pas les réglages du rôle emprunté : le code répète les
-  mêmes valeurs par `set local` à chaque transaction (un test compare les deux).
+  mêmes valeurs par `set local` à chaque transaction (un test compare les deux), sauf le contexte
+  `Base.service()` : sa requête est coupée à 20 s, sous les 25 s de l'API (`limites.Delai`), pour que la base
+  ne continue pas le travail après la `503` (le rôle garde ses 30 s : pas de nouvelle migration).
 - La clé secrète Supabase (API d'administration d'Auth et Storage) vit dans le gestionnaire de secrets, lue
   seulement par les modules de connexion et de photos.
 - **Revendications posées par le contexte personne** : `sub`, `role = authenticated` et `iss`
