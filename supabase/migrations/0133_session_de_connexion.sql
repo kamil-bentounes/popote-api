@@ -45,8 +45,9 @@ revoke all on table public.login_session from public, anon, authenticated, servi
    Un seul résultat pour tous les refus : l'appelant ne distingue pas inconnue, échue et révoquée.
 
    Côté écriture : `last_seen_at` et l'échéance glissante ne se repoussent qu'une fois toutes les 5 minutes, pour
-   qu'un `GET` ne soit pas un `UPDATE` à chaque requête (verrou de ligne, WAL). Deux requêtes simultanées : la
-   seconde attend le verrou, relit la ligne, ne la trouve plus assez ancienne et passe à la lecture. */
+   qu'un `GET` ne soit pas un `UPDATE` à chaque requête (WAL). Le verrou de la ligne tient jusqu'à la fin de la
+   transaction, donc de la requête : `skip locked` fait que deux requêtes simultanées ne s'attendent pas. La
+   seconde ne trouve rien à repousser, passe à la lecture et voit l'ancienne valeur, encore valide. */
 create or replace function public.session_personne(p_hash bytea)
 returns uuid
 language plpgsql
@@ -58,18 +59,24 @@ declare
   v_maintenant constant timestamptz := pg_catalog.now();
   v_personne uuid;
 begin
+  with candidate as (
+    select s.id
+      from public.login_session s
+      join auth.users u on u.id = s.person_id
+     where s.token_hash = p_hash
+       and s.revoked_at is null
+       and s.expires_at > v_maintenant
+       and s.absolute_expires_at > v_maintenant
+       and s.last_seen_at <= v_maintenant - interval '5 minutes'
+       and (u.banned_until is null or u.banned_until <= v_maintenant)
+       and u.deleted_at is null
+       for update of s skip locked
+  )
   update public.login_session s
      set last_seen_at = v_maintenant,
          expires_at = least(v_maintenant + interval '30 days', s.absolute_expires_at)
-    from auth.users u
-   where s.token_hash = p_hash
-     and u.id = s.person_id
-     and s.revoked_at is null
-     and s.expires_at > v_maintenant
-     and s.absolute_expires_at > v_maintenant
-     and s.last_seen_at <= v_maintenant - interval '5 minutes'
-     and (u.banned_until is null or u.banned_until <= v_maintenant)
-     and u.deleted_at is null
+    from candidate
+   where s.id = candidate.id
   returning s.person_id into v_personne;
   if found then
     return v_personne;

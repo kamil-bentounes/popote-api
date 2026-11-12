@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import SecretStr
 
-from popote_api import contrat, erreurs_base, errors, journal, relais
+from popote_api import contrat, erreurs_base, errors, journal, limites, relais
 from popote_api.api import health, v1
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
@@ -60,9 +60,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
-    # `Trace`, `Acces`, `Garde`. Le refus de la garde porte donc son identifiant et sa trace, et sa ligne
-    # d'accès aussi. Le gestionnaire des 500 s'exécute encore au-dessus de tous : il lit les identifiants dans
-    # l'état de la requête, pas dans les `ContextVar` (voir `errors._inattendue`).
+    # `Trace`, `Acces`, `Garde`, puis les limites de `limites.py` : `SansCache`, `Delai` (qui enveloppe
+    # aussi la lecture du corps), `TypeJson`, `TailleMax`. Le refus de la garde porte donc son identifiant et
+    # sa trace, et sa ligne d'accès aussi ; un appelant sans le secret du relais est renvoyé avant que son
+    # corps soit lu. Le gestionnaire des 500 s'exécute encore au-dessus de tous : il lit les identifiants
+    # dans l'état de la requête, pas dans les `ContextVar` (voir `errors._inattendue`).
+    app.add_middleware(limites.TailleMax)
+    app.add_middleware(limites.TypeJson)
+    app.add_middleware(limites.Delai, secondes=limites.DELAI_SECONDES)
+    app.add_middleware(limites.SansCache)
     app.add_middleware(relais.Garde, settings=settings)
     app.add_middleware(journal.Acces)
     app.add_middleware(Trace)

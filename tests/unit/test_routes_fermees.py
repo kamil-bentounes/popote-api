@@ -8,7 +8,7 @@ from fastapi.dependencies.models import Dependant
 
 from popote_api.api import v1
 from popote_api.main import create_app
-from popote_api.security.session import personne_connectee
+from popote_api.security.session import PersonneDeLaSession, personne_connectee
 
 # Les routes publiques, chacune avec sa raison. Une route qui s'ajoute ici se justifie en relecture ; celles
 # de 0.4 (connexion, invitation, réinitialisation) s'y ajouteront avec leur jeton à usage unique.
@@ -70,6 +70,26 @@ def test_les_routes_de_v1_portent_la_session_par_le_routeur(monkeypatch: pytest.
     routes = {route.path: route for route in routes_de_l_api(app)}
     assert personne_connectee in dependances(routes["/api/v1/essai/oubli"].dependant)
     assert sans_session(app) == []
+
+
+def test_la_session_est_toujours_resolue_en_portee_de_fonction(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Hors de cette portée, la connexion du pool resterait prise jusqu'à la fin de l'envoi de la réponse, et
+    # un `Depends(personne_connectee)` écrit à la main en emprunterait une deuxième : passer par l'alias.
+    sous_routeur = APIRouter()
+
+    @sous_routeur.get("/essai/portee")
+    async def portee(personne: PersonneDeLaSession) -> dict[str, bool]:
+        return {"ok": True}
+
+    monkeypatch.setattr(v1, "SOUS_ROUTEURS", (sous_routeur,))
+    routes = routes_de_l_api(create_app(reglages("local")))
+    portees = {
+        dependance.scope
+        for route in routes
+        for dependance in route.dependant.dependencies
+        if dependance.call is personne_connectee
+    }
+    assert portees == {"function"}
 
 
 def test_le_garde_voit_une_route_montee_sans_session() -> None:
