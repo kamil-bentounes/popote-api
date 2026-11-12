@@ -82,8 +82,11 @@ ok "les deux fichiers du seau d'essai sont retrouvés à l'identique"
 ! age -d -i "$travail/autre-cle.txt" "$archive" > /dev/null 2>&1 || ko "une autre clé déchiffre l'archive"
 ok "contenu illisible dans l'archive ; une autre clé ne la déchiffre pas"
 ! grep -aqE "$marque|un\.txt|deux\.bin|@|$seau" "$travail/journal.txt" || ko "le journal contient une donnée"
-grep -q '^sauvegarde:   public\.' "$travail/journal.txt" || ko "le journal ne donne pas les comptes"
-ok "le journal donne des tailles et des comptes, aucune valeur ni nom d'objet"
+grep -q ' tables, [0-9]* lignes au total' "$travail/journal.txt" || ko "le journal ne donne pas le total des lignes"
+grep -q 'octets' "$travail/journal.txt" || ko "le journal ne donne pas de taille"
+# Le journal d'un dépôt public ne donne pas le compte de chaque table : il est dans le manifeste chiffré.
+! grep -qE '(public|auth|storage)\.[a-z_]+[ :=]+[0-9]+' "$travail/journal.txt" || ko "le journal donne le compte d'une table"
+ok "le journal donne des tailles et des totaux, aucun compte par table, aucune valeur ni nom d'objet"
 
 # --- La prod n'accepte aucun destinataire de l'essai ------------------------------------------------------
 age-keygen -o "$travail/cle-prod.txt" 2> /dev/null

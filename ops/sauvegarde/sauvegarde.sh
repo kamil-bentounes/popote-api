@@ -13,8 +13,8 @@
 # fichier de DESTINATAIRES (les essais) ; pour la prod, aucun destinataire ne doit figurer dans
 # destinataires-essai.txt (ou DESTINATAIRES_ESSAI). S3_ENDPOINT et S3_REGION valent Scaleway (fr-par) par défaut.
 #
-# Le journal ne contient que des tailles, des comptes et des noms de tables : jamais une valeur, jamais
-# un nom d'objet. Pas de `set -x`.
+# Le journal (public) ne contient que des tailles, des totaux et des noms de tables : jamais une valeur,
+# jamais un nom d'objet, jamais le compte d'une table (il est dans le manifeste chiffré). Pas de `set -x`.
 set -euo pipefail
 umask 077
 
@@ -37,14 +37,16 @@ manque=()
 for nom in "${requises[@]}"; do [ -n "${!nom:-}" ] || manque+=("$nom"); done
 [ ${#manque[@]} -eq 0 ] || echoue "variables manquantes : ${manque[*]}"
 case "$CIBLE" in prod | essai) ;; *) echoue "CIBLE doit valoir prod ou essai" ;; esac
-export PGPORT=${PGPORT:-5432} PGHOST PGUSER PGPASSWORD PGDATABASE
+export PGPORT=${PGPORT:-5432} PGHOST PGUSER PGDATABASE
+# Les secrets ne passent qu'aux processus qui en ont besoin, par un préfixe d'affectation sur leur seule
+# commande : ni tar, ni age, ni aws (qui reçoit ses propres clés) ne les héritent.
+export -n PGPASSWORD SUPABASE_SECRET_KEY S3_ACCESS_KEY S3_SECRET_KEY 2> /dev/null || true
 
 destinataires=${DESTINATAIRES:-$racine/ops/sauvegarde/destinataires-$CIBLE.txt}
 [ -s "$destinataires" ] || echoue "destinataires introuvables ou vides : ${destinataires#"$racine"/}"
 # Une clé privée posée ici par erreur chiffrerait pour rien et finirait dans l'historique git.
 ! grep -q 'AGE-SECRET-KEY' "$destinataires" || echoue "le fichier des destinataires contient une clé privée"
 grep -Eq '^age1[a-z0-9]+$' "$destinataires" || echoue "aucune clé publique age1… dans le fichier des destinataires"
-
 # La clé privée de l'essai est un secret GitHub : si elle ouvrait aussi les sauvegardes de la prod, le secret
 # de l'essai (moins protégé) donnerait la prod. La prod n'accepte donc aucun destinataire de l'essai.
 if [ "$CIBLE" = prod ]; then
@@ -76,7 +78,7 @@ echo "sauvegarde: cible=$CIBLE, $nom_archive"
 # --- Un seul instantané pour le dump et pour les comptes (amendement 8) -------------------------------
 # Une transaction REPEATABLE READ tenue ouverte exporte son instantané ; `pg_dump --snapshot` le reprend ;
 # les comptes sont lus dans cette même transaction. Les trois voient donc exactement les mêmes lignes.
-coproc SNAP { exec psql --no-psqlrc -X -q -A -t -F $'\t' -v ON_ERROR_STOP=1; }
+coproc SNAP { PGPASSWORD=$PGPASSWORD exec psql --no-psqlrc -X -q -A -t -F $'\t' -v ON_ERROR_STOP=1; }
 snapshot_pid=$SNAP_PID
 dans_snapshot() { printf '%s\n' "$@" >&"${SNAP[1]}"; }
 attend() { # lit la sortie de psql jusqu'à la ligne $1 ; rend ce qui précède
@@ -111,14 +113,14 @@ dans_snapshot "\\o $travail/objets.jsonl" \
 attend FIN-OBJETS > /dev/null
 [ -f "$travail/objets.jsonl" ] || echoue "liste des objets de l'instantané introuvable"
 
-pg_dump --format=custom --no-owner --lock-wait-timeout=60s --snapshot="$instantane" \
+PGPASSWORD=$PGPASSWORD pg_dump --format=custom --no-owner --lock-wait-timeout=60s --snapshot="$instantane" \
   --schema=public --schema=auth --schema=storage > "$travail/base.dump"
 dans_snapshot "commit;"
 kill "$snapshot_pid" 2> /dev/null || true
 snapshot_pid=""
 
 # Les rôles et leurs droits : utiles à la fiche de restauration, pas bloquants s'ils sont refusés.
-if ! pg_dumpall --roles-only --no-role-passwords > "$travail/roles.sql" 2> /dev/null; then
+if ! PGPASSWORD=$PGPASSWORD pg_dumpall --roles-only --no-role-passwords > "$travail/roles.sql" 2> /dev/null; then
   : > "$travail/roles.sql"
   echo "partiel : les rôles n'ont pas pu être lus (droits du rôle de connexion)" > "$travail/roles.note"
   echo "sauvegarde: rôles non sauvegardés (voir roles.note dans l'archive)"
@@ -129,7 +131,7 @@ fi
 # remplacé pendant la copie), un seul nouvel essai de la copie ; au second, échec.
 copie_des_seaux() {
   rm -rf "$travail/seaux" &&
-    node "$racine/ops/sauvegarde/copie-seaux.mjs" "$travail/seaux" &&
+    SUPABASE_SECRET_KEY=$SUPABASE_SECRET_KEY node "$racine/ops/sauvegarde/copie-seaux.mjs" "$travail/seaux" &&
     node "$racine/ops/sauvegarde/verifie-seaux.mjs" "$travail/seaux" "$travail/objets.jsonl"
 }
 if ! copie_des_seaux; then
@@ -139,10 +141,9 @@ fi
 
 printf 'format=1\ndate=%s\ncible=%s\npg_dump=%s\n' "$jour" "$CIBLE" "$(pg_dump --version)" > "$travail/meta.txt"
 
-# --- Le journal : des tailles, des comptes, des noms de tables ----------------------------------------
+# --- Le journal : des tailles, des totaux ; les comptes par table restent dans le manifeste chiffré ------
 echo "sauvegarde: base.dump $(stat -c %s "$travail/base.dump") octets"
-echo "sauvegarde: $(wc -l < "$travail/comptes.txt") tables, comptes :"
-awk -F'\t' '{ printf "sauvegarde:   %s %s\n", $1, $2 }' "$travail/comptes.txt"
+echo "sauvegarde: $(wc -l < "$travail/comptes.txt") tables, $(awk -F'\t' '{ n += $2 } END { print n + 0 }' "$travail/comptes.txt") lignes au total"
 
 # --- Chiffrement, puis dépôt ---------------------------------------------------------------------------
 fichiers=(base.dump roles.sql comptes.txt meta.txt seaux)
@@ -158,13 +159,14 @@ if [ -n "$dossier_local" ]; then
   exit 0
 fi
 
-export AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY AWS_DEFAULT_REGION=${S3_REGION:-fr-par}
+export AWS_DEFAULT_REGION=${S3_REGION:-fr-par}
 # Certains stockages compatibles S3 refusent les sommes de contrôle que l'AWS CLI ajoute désormais d'office.
 export AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 point_acces=${S3_ENDPOINT:-https://s3.fr-par.scw.cloud}
 cle_objet=$CIBLE/$nom_archive
-aws s3 cp "$sortie/$nom_archive" "s3://$S3_BUCKET/$cle_objet" --endpoint-url "$point_acces" --only-show-errors
-distant=$(aws s3api head-object --bucket "$S3_BUCKET" --key "$cle_objet" --endpoint-url "$point_acces" \
+AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY \
+  aws s3 cp "$sortie/$nom_archive" "s3://$S3_BUCKET/$cle_objet" --endpoint-url "$point_acces" --only-show-errors
+distant=$(AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY aws s3api head-object --bucket "$S3_BUCKET" --key "$cle_objet" --endpoint-url "$point_acces" \
   --query ContentLength --output text)
 [ "$distant" = "$taille" ] || echoue "taille déposée ($distant) différente de la taille locale ($taille)"
 echo "sauvegarde: $nom_archive ($taille octets) déposée dans $S3_BUCKET/$CIBLE/"

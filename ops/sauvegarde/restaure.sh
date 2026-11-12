@@ -16,7 +16,7 @@
 #
 # Lit (défauts : la pile locale) : PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE, SUPABASE_URL,
 # SUPABASE_SECRET_KEY (obligatoire : la clé de service locale, `supabase status -o env`).
-# Le journal ne contient que des noms de tables et des comptes.
+# Le journal ne contient que des noms de tables et des totaux : jamais le compte d'une table.
 set -euo pipefail
 umask 077
 
@@ -116,10 +116,8 @@ requete=$(awk -F'\t' '{ n = split($1, p, "."); printf "%sselect '\''%s'\'' as t,
   "$travail/attendu.txt")
 sql -c "select t, c from ($requete) x order by t" | LC_ALL=C sort > "$travail/obtenu.txt"
 if ! diff <(LC_ALL=C sort "$travail/attendu.txt") "$travail/obtenu.txt" > "$travail/ecarts.txt"; then
-  echo "restauration: écarts (< manifeste, > pile restaurée) :" >&2
-  cat "$travail/ecarts.txt" >&2
+  # Le journal d'un dépôt public ne montre pas de compte par table : seulement les tables en cause.
+  echo "restauration: tables dont le compte diffère du manifeste : $(grep -E '^[<>]' "$travail/ecarts.txt" | cut -f1 | sed 's/^[<>] //' | LC_ALL=C sort -u | paste -sd' ')" >&2
   echoue "comptes différents du manifeste"
 fi
-echo "restauration: comptes restaurés, un par un :"
-awk -F'\t' '{ printf "restauration:   %s %s\n", $1, $2 }' "$travail/obtenu.txt"
-echo "restauration: ok, $(wc -l < "$travail/obtenu.txt") tables comparées, $(awk -F'\t' '$1 == "storage.objects" { print $2 }' "$travail/obtenu.txt") objets"
+echo "restauration: ok, $(wc -l < "$travail/obtenu.txt") tables comparées au manifeste, $(awk -F'\t' '{ n += $2 } END { print n + 0 }' "$travail/obtenu.txt") lignes au total, $(awk -F'\t' '$1 == "storage.objects" { print $2 }' "$travail/obtenu.txt") objets"
