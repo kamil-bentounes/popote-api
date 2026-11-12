@@ -8,6 +8,7 @@ Règles pour toute session d'agent sur `popote-api` (base Supabase, fonctions, i
 - Référentiels : `npm run seed` · Tests : `npm test` (Vitest, contre la pile locale)
 - Fonctions Edge : `npx supabase functions serve` doit tourner pour `tests/db/invitation.test.ts`.
 - Avant de proposer un commit, la suite complète `npm test` doit passer.
+- Contrat : `uv run python scripts/exporte_contrat.py` régénère `openapi.json` après tout changement de route, de modèle ou de réponse d'erreur ; un conflit sur ce fichier se règle en le régénérant, jamais à la main.
 
 ## Règles
 
@@ -18,3 +19,5 @@ Règles pour toute session d'agent sur `popote-api` (base Supabase, fonctions, i
 - Routes qui écrivent : `async def`, jamais `def` (le délai de 25 s ne peut pas annuler un fil) ; tout travail bloquant a un délai interne plus court que 25 s.
 - Commits Conventional Commits en français, sans ligne de co-auteur. Remote : alias SSH `github-perso` uniquement.
 - Erreurs de l'API : une route ou une dépendance lève `Probleme` ; un middleware rend `reponse(...)` au lieu de lever (une exception de middleware finit en 500). Authentification : dépendance FastAPI. Débit : par adresse, un middleware pur (exception assumée : il refuse avant de lire le corps et compte aussi les 404, 405 et 422) ; par personne, une dépendance (voir `docs/normes-api.md` § 3.6).
+- Une migration écrit ses `grant` et ses `revoke` explicitement, pour chaque objet qu'elle crée (table, vue, séquence, fonction) et pour chaque rôle concerné : un projet Supabase hébergé neuf n'a pas les privilèges par défaut de la pile locale, et l'objet y naît sans droits (voir `ops/aligne_droits.py`). Le job `migre-essai` compare les droits de l'essai à ceux d'une pile locale neuve et échoue sur un écart.
+- Une migration dit en commentaire comment revenir en arrière (le SQL inverse, ou « irréversible : corriger en avant » avec la raison). Elle part sur l'essai avant le code qui l'utilise : elle doit rester compatible avec l'appli qui tourne encore (expand, puis contract une version plus tard). Une migration déjà fusionnée ne se modifie jamais.
