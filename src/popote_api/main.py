@@ -12,8 +12,15 @@ from popote_api.infra.db import SondeBase
 def create_app(settings: Settings | None = None) -> FastAPI:
     # POPOTE_ENV et les autres réglages viennent de l'environnement du processus.
     settings = settings or Settings()  # type: ignore[call-arg]
+    # Le contrat n'est publié ni en prod, ni sous une forme interactive. Pas de redirection de
+    # barre finale : `/api/x/` n'est pas `/api/x`, et une redirection révélerait la route.
     app = FastAPI(
-        title="Popote", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
+        title="Popote",
+        version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None if settings.env is Env.prod else "/api/openapi.json",
+        redirect_slashes=False,
     )
     app.state.settings = settings
     dsn = settings.database_url.get_secret_value() if settings.database_url else None
