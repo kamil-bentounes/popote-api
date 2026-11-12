@@ -13,7 +13,9 @@ from typing import Annotated, Any, Final
 from uuid import UUID
 
 from fastapi import Depends, Request
+from fastapi.security import APIKeyCookie
 
+from popote_api.config import NOM_DU_COOKIE_DE_SESSION
 from popote_api.errors import Probleme, reponses_erreur
 from popote_api.infra.db import Base, Curseur, SessionRefuseeError
 from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton
@@ -27,6 +29,13 @@ DEFI_D_AUTHENTIFICATION: Final = 'Cookie realm="popote"'
 # Le même texte pour tous les refus : la réponse n'apprend rien sur les jetons.
 PAS_DE_SESSION: Final = "Connecte-toi pour continuer."
 
+
+# Dit au contrat OpenAPI que `/api/v1` s'ouvre par le cookie de session (`securitySchemes`, `security`).
+# Sans effet à l'exécution : `auto_error=False`, et la lecture du cookie reste celle de `personne_connectee`,
+# qui connaît le nom configuré en local.
+COOKIE_DU_CONTRAT: Final = Depends(
+    APIKeyCookie(name=NOM_DU_COOKIE_DE_SESSION, scheme_name="session", auto_error=False)
+)
 
 # Ce que la dépendance peut rendre à toute route de `/api/v1`, déclaré une fois sur le routeur.
 _DEFI_DU_CONTRAT: Final[dict[str, Any]] = {

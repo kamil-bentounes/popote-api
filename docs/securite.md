@@ -45,14 +45,17 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
 - **Lire la session (0.3, migration 0133).** Table `public.login_session` (`login_session` : `session` désigne
   déjà la séance de cuisine et `auth.sessions` celle de GoTrue) : `token_hash` (SHA-256 des 32 octets, unique),
   `person_id` (cascade à la suppression du compte), `created_at`, `last_seen_at`, `expires_at` (glissante),
-  `absolute_expires_at` (90 jours), `revoked_at`. RLS activée sans politique, aucun droit à personne. La colonne
+  `absolute_expires_at` (90 jours), `revoked_at`. RLS activée sans politique, aucun droit à aucun rôle de l'application (les rôles de maintenance de Supabase,
+  qui contournent la RLS, peuvent la lire : elle ne garde que des empreintes SHA-256 de jetons de 256 bits). La colonne
   d'appareil arrive en 0.4 avec la création des sessions. `public.session_personne(p_hash bytea)` est
   `security definer`, `search_path = ''`, exécutable par `popote_api` **seul** (`revoke` explicite à `public`,
   `anon`, `authenticated`, `service_role`) ; elle rend la personne ou `null` (inconnue, échue, révoquée, au bout
   des 90 jours, `banned_until` futur, `deleted_at` posé). Elle repousse l'échéance
   (`least(now() + 30 jours, absolute_expires_at)`) et `last_seen_at` **au plus une fois toutes les 5 minutes** :
   une lecture n'est pas une écriture à chaque requête. L'API l'appelle en `popote_api`, avant d'emprunter
-  `authenticated`, dans la **même transaction** que le reste de la requête.
+  `authenticated`, dans la **même transaction** que le reste de la requête. Le verrou de la ligne tient jusqu'à la
+  fin de la requête : `for update skip locked` évite que deux requêtes simultanées s'attendent (la seconde lit
+  l'ancienne valeur, encore valide).
 - **Le cookie** ne porte que le jeton : 43 caractères base64url (32 octets), décodage strict. Hors local son nom
   est `__Host-popote_session` et un autre nom est refusé au démarrage.
 - **Falsification de requête (CSRF).** `SameSite=Lax`, plus, sur toute méthode qui écrit : `Origin` égale à

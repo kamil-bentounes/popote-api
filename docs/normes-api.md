@@ -223,6 +223,11 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   (RFC 9110 § 11.1 : un `auth-scheme` est un `token`, enregistré ou non). Jamais `Basic`, `Digest` ou
   `Negotiate` : le navigateur ouvrirait une fenêtre de saisie, et `Bearer` promettrait un en-tête
   `Authorization` que personne n'envoie.
+- **Limites connues de la fermeture** : FastAPI lit le corps avant de résoudre les dépendances, donc un `POST`
+  au JSON invalide sans cookie rend `422` avant le `401` ; et `404`, `405` ne disent pas le `401` : la
+  présence d'une route se devine sans session. Hors local, tout passe d'abord par le relais (en-tête secret),
+  et le contrat est publié ; le risque est accepté. Aucune limite de débit n'existe encore avant la lecture de
+  la session : la limite par IP en amont (T3b) s'y pose.
 - **Fermé par défaut, et prouvé** : `tests/unit/test_routes_fermees.py` énumère toutes les routes de
   l'application. Hors de la liste blanche écrite dans le test (`/api/healthz`, `/api/readyz`, et le contrat
   `/api/openapi.json` que FastAPI sert hors prod), chacune exige `personne_connectee`. Une route ajoutée sans

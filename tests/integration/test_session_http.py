@@ -9,11 +9,12 @@ from typing import Any
 
 import pytest
 from _client import application_de_test, client_de, cookie
+from _connexions import DSN_API, DSN_API_DISTANT
 from _fabrique import Fabrique, jeton_et_empreinte
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from popote_api.infra.db import Base, Pool
+from popote_api.infra.db import Base, Pool, cree_pool
 from popote_api.security.session import DEFI_D_AUTHENTIFICATION, PersonneDeLaSession
 
 pytestmark = pytest.mark.integration
@@ -201,3 +202,31 @@ async def test_la_connexion_est_rendue_au_pool_avant_que_la_reponse_parte(
         reponse = await client.get("/api/v1/essai/flux", headers=cookie(session))
     assert reponse.status_code == 200
     assert disponibles_pendant_l_envoi == [1]
+
+
+@pytest.mark.skipif(DSN_API_DISTANT is not None, reason="les options de connexion passent mal un pooler")
+async def test_les_delais_de_l_api_bornent_la_transaction_de_la_session(
+    monkeypatch: pytest.MonkeyPatch, fabrique: Fabrique
+) -> None:
+    # La connexion arrive sans borne (les options du client priment sur `alter role`) : seuls les `set local`
+    # de `Base.session` peuvent poser les délais que la route lit ensuite.
+    delais = APIRouter()
+
+    @delais.get("/essai/delais")
+    async def lit(personne: PersonneDeLaSession) -> dict[str, str]:
+        await personne.curseur.execute(
+            "select current_setting('statement_timeout') as s, current_setting('lock_timeout') as l"
+        )
+        ligne = await personne.curseur.fetchone()
+        assert ligne is not None
+        return {"statement_timeout": ligne["s"], "lock_timeout": ligne["l"]}
+
+    pool = cree_pool(f"{DSN_API}?options=-c%20statement_timeout%3D0%20-c%20lock_timeout%3D0", 1)
+    await pool.open(wait=False)
+    session = fabrique.session(fabrique.personne(fabrique.foyer()).id)
+    try:
+        async with client_de(application_de_test(Base(pool, None), monkeypatch, delais)) as client:
+            reponse = await client.get("/api/v1/essai/delais", headers=cookie(session))
+    finally:
+        await pool.close()
+    assert reponse.json() == {"statement_timeout": "8s", "lock_timeout": "5s"}
