@@ -1,4 +1,5 @@
-# Une seule ouverture par semaine, 5 demandes ouvertes au plus par écosystème.
+# Une seule ouverture par semaine, 5 demandes ouvertes au plus par écosystème ; les mineures et
+# correctifs arrivent groupés en une demande, les majeures une à une.
 # Délai de 7 jours avant de proposer une nouvelle version (hors correctifs de sécurité).
 # Types de commit : dépendances d'exécution fix(deps), développement et CI build(deps).
 version: 2
@@ -13,6 +14,17 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      mineures:
+        update-types: ["minor", "patch"]
+    # Majeures différées, chacune pour un chantier dédié :
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "supabase"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "fix(deps)"
       prefix-development: "build(deps)"
@@ -27,6 +39,9 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      mineures:
+        update-types: ["minor", "patch"]
     commit-message:
       prefix: "fix(deps)"
       prefix-development: "build(deps)"
@@ -41,5 +56,8 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    groups:
+      mineures:
+        update-types: ["minor", "patch"]
     commit-message:
       prefix: "build(deps)"
