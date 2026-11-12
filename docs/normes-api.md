@@ -86,11 +86,15 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   jamais lever) : corps 1 Mio au plus (`413 corps_trop_gros`), que `Content-Length` l'annonce ou non, les octets
   reçus en flux étant comptés ; une écriture (`POST`, `PUT`, `PATCH`) qui porte un corps est en
   `application/json` (`charset=utf-8` toléré ; `application/merge-patch+json` aussi, pour `PATCH`), sinon
-  `415 type_non_supporte` ; photos à part (§ 6.1) ; délai serveur 30 s, au-delà `503 delai_depasse` avec
+  `415 type_non_supporte` ; photos à part (§ 6.1) ; délai serveur 25 s (le relais coupe à 30 s : l'API répond avant lui), au-delà `503 delai_depasse` avec
   `Retry-After: 10` (une requête qui a déjà commencé sa réponse ne peut plus changer de statut : sa
   connexion est coupée et l'événement journalisé), sauf les appels au modèle traités en travail asynchrone
   (§ 3.7). Un client qui retente un `POST` après un `503` le fait avec son `Idempotency-Key` (§ 3.5).
   Le refus de la garde du relais passe avant : sans le secret du relais, le corps n'est pas lu.
+  **Règle des routes qui écrivent** : elles sont `async def`, jamais `def`. Une route `def` tourne dans un fil
+  que le délai ne peut pas annuler : le client reçoit la `503` pendant que l'écriture se termine. Le travail
+  bloquant d'une route (appel à une bibliothèque synchrone, base) s'exécute sous un délai interne plus court
+  que 25 s (par exemple `statement_timeout` côté base), pour qu'il échoue avant la `503`, jamais après.
 - La « dernière activité » d'une session et les compteurs ne s'écrivent pas plus d'une fois toutes les
   5 minutes par session : une lecture ne devient pas une écriture.
 

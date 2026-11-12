@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable
 from typing import Any
 
 import httpx
@@ -13,6 +14,13 @@ from popote_api.limites import TAILLE_MAX_OCTETS, Delai, SansCache, TailleMax, T
 from popote_api.main import create_app
 
 JSON = {"Content-Type": "application/json"}
+# Ce que le front envoie dans une écriture (garde d'origine) ; sans effet tant qu'elle n'est pas fusionnée.
+WEB = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+BORNE_SECONDES = 5  # un test lent qui régresse échoue au lieu de bloquer toute la suite
+
+
+async def borne[T](attente: Awaitable[T]) -> T:
+    return await asyncio.wait_for(attente, BORNE_SECONDES)
 
 
 async def lit_tout(scope: Scope, receive: Receive, send: Send) -> None:
@@ -37,6 +45,14 @@ def client(app: ASGIApp) -> httpx.AsyncClient:
 async def flux(*morceaux: bytes):
     for morceau in morceaux:
         yield morceau
+
+
+# --- Les valeurs écrites dans les normes ----------------------------------------------------------
+
+
+def test_les_limites_sont_celles_des_normes() -> None:
+    assert TAILLE_MAX_OCTETS == 1_048_576  # 1 Mio
+    assert limites.DELAI_SECONDES == 25  # le relais coupe à 30 s
 
 
 # --- Taille ---------------------------------------------------------------------------------------
@@ -93,13 +109,17 @@ async def test_un_content_length_menteur_ne_trompe_pas_le_compte_des_octets() ->
     assert messages[0]["status"] == 413
 
 
-@pytest.mark.parametrize("declaree", ["abc", "-1", "1.5", "", "١٢"])
-async def test_un_content_length_invalide_rend_400(declaree: str) -> None:
+@pytest.mark.parametrize(
+    "declaree",
+    [b"abc", b"-1", b"1.5", b"", b"\xb2", "١٢".encode(), b"\xc2\xb2", b"1 2", b"0x10", b"+5"],
+    ids=repr,
+)
+async def test_un_content_length_invalide_rend_400_et_jamais_500(declaree: bytes) -> None:
     scope = {
         "type": "http",
         "method": "POST",
         "path": "/",
-        "headers": [(b"content-length", declaree.encode())],
+        "headers": [(b"content-length", declaree)],
     }
     messages: list[Message] = []
 
@@ -111,6 +131,25 @@ async def test_un_content_length_invalide_rend_400(declaree: str) -> None:
 
     await TailleMax(lit_tout)(scope, receive, send)
     assert messages[0]["status"] == 400
+
+
+async def test_un_content_length_au_dela_de_la_limite_rend_413_sans_lire_le_corps() -> None:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/",
+        "headers": [(b"content-length", str(TAILLE_MAX_OCTETS + 1).encode())],
+    }
+    messages: list[Message] = []
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    async def receive() -> Message:
+        raise AssertionError("le corps ne doit pas être lu")
+
+    await TailleMax(lit_tout)(scope, receive, send)
+    assert messages[0]["status"] == 413
 
 
 async def test_un_content_length_gigantesque_rend_413_sans_calcul_demesure() -> None:
@@ -232,7 +271,7 @@ async def bloque_toujours(scope: Scope, receive: Receive, send: Send) -> None:
 
 
 async def test_un_gestionnaire_lent_rend_503_delai_depasse_avec_retry_after() -> None:
-    r = await client(Delai(bloque_toujours, secondes=0.05)).get("/")
+    r = await borne(client(Delai(bloque_toujours, secondes=0.05)).get("/"))
     assert r.status_code == 503
     assert r.json()["code"] == "delai_depasse"
     assert r.headers["retry-after"] == str(limites.ATTENTE_APRES_DELAI)
@@ -249,7 +288,7 @@ async def test_un_corps_qui_n_arrive_jamais_est_borne_par_le_delai() -> None:
         await asyncio.Event().wait()
 
     app = Delai(TailleMax(lit_tout), secondes=0.05)
-    r = await client(app).post("/", content=goutte_a_goutte())
+    r = await borne(client(app).post("/", content=goutte_a_goutte()))
     assert r.status_code == 503
 
 
@@ -274,7 +313,7 @@ async def test_un_delai_apres_le_debut_de_la_reponse_est_journalise_sans_nouvell
         messages.append(message)
 
     with caplog.at_level(logging.WARNING, logger="popote_api.limites"):
-        await Delai(debut_puis_bloque, secondes=0.05)({"type": "http"}, None, send)  # type: ignore[arg-type]
+        await borne(Delai(debut_puis_bloque, secondes=0.05)({"type": "http"}, None, send))  # type: ignore[arg-type]
     assert [m["type"] for m in messages] == ["http.response.start"]
     assert "après le début de la réponse" in caplog.text
 
@@ -319,7 +358,7 @@ async def test_chaque_refus_de_limite_garde_son_identifiant(monkeypatch: pytest.
     }
     async with client(app) as c:
         for attendu, (methode, chemin, en_tetes, corps) in cas.items():
-            r = await c.request(methode, chemin, headers=RELAIS | en_tetes, content=corps)
+            r = await borne(c.request(methode, chemin, headers=RELAIS | WEB | en_tetes, content=corps))
             assert r.status_code == attendu
             assert r.headers["x-request-id"] == r.json()["instance"]
             assert r.headers["cache-control"] == "no-store"
@@ -347,5 +386,5 @@ async def test_un_corps_json_valide_traverse_toute_la_pile() -> None:
     async def echo(donnees: dict[str, int]) -> dict[str, int]:
         return donnees
 
-    r = await client(app).post("/api/_test/echo", json={"a": 1})
+    r = await client(app).post("/api/_test/echo", json={"a": 1}, headers=WEB)
     assert (r.status_code, r.json()) == (200, {"a": 1})

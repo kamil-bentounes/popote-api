@@ -18,7 +18,9 @@ from popote_api.errors import reponse
 journal = logging.getLogger(__name__)
 
 TAILLE_MAX_OCTETS = 1024 * 1024  # 1 Mio ; les photos auront leur propre limite (spec § 6.1)
-DELAI_SECONDES = 30.0
+# Le relais coupe l'amont à 30 s (`DELAI_AMONT_MS`) : l'API répond avant, avec sa propre 503, au lieu de
+# laisser le relais rendre la sienne pendant que le travail continue ici.
+DELAI_SECONDES = 25.0
 ATTENTE_APRES_DELAI = 10  # secondes proposées dans `Retry-After`
 METHODES_AVEC_CORPS = frozenset({"POST", "PUT", "PATCH"})
 TYPE_JSON = "application/json"
