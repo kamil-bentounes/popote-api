@@ -124,6 +124,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false" # pas de commentaire : le jeton reste en lecture seule
+          # La version par défaut de l'action (8.24.3) ignore les [[allowlists]] de la configuration ;
+          # même version qu'en local et que dans popote-web.
+          GITLEAKS_VERSION: "8.30.1"
   semgrep:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
