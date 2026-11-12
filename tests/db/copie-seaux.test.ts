@@ -1,19 +1,23 @@
 /**
- * La copie des seaux Storage pour la sauvegarde (ops/sauvegarde/copie-seaux.mjs), contre la pile locale :
+ * La copie des seaux Storage pour la sauvegarde (ops/sauvegarde/copie-seaux.mjs) et son pendant,
+ * le dépôt de la restauration (depose-seaux.mjs), contre la pile locale :
  *
  *  · deux objets (l'un dans un dossier) déposés dans un seau d'essai donnent deux fichiers identiques
  *    et deux lignes d'index, avec le type et la taille ;
+ *  · après effacement des objets, le dépôt les remet à l'identique (contenu et type) ;
  *  · la liste se parcourt page par page et descend dans les dossiers ;
  *  · un nom qui voudrait sortir du dossier de copie est refusé ;
  *  · une clé refusée donne une erreur sans nom d'objet.
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { admin } from './helpers/db'
 // @ts-expect-error — module JavaScript sans types
 import { cheminSous, copier, listerObjets } from '../../ops/sauvegarde/copie-seaux.mjs'
+// @ts-expect-error — module JavaScript sans types
+import { deposer } from '../../ops/sauvegarde/depose-seaux.mjs'
 // @ts-expect-error — module JavaScript sans types
 import { ErreurStorage, lireEnvironnement } from '../../ops/sauvegarde/storage.mjs'
 
@@ -75,6 +79,32 @@ describe('la copie', () => {
     const vus: string[] = []
     for await (const o of listerObjets(client, seau, '', 1)) vus.push(o.nom)
     expect(vus.sort()).toEqual(objets.map((o) => o.nom).sort())
+  })
+})
+
+describe('le dépôt', () => {
+  it('remet les objets effacés, à l’identique (contenu et type)', async () => {
+    const dossier = join(travail, 'copie')
+    expect((await storage.from(seau).remove(objets.map((o) => o.nom))).error).toBeNull()
+    expect((await storage.from(seau).list()).data).toHaveLength(0)
+
+    const bilan = await deposer(client, dossier)
+
+    expect(bilan.objets).toBe(2)
+    for (const o of objets) {
+      const { data, error } = await storage.from(seau).download(o.nom)
+      expect(error).toBeNull()
+      expect(await data!.text()).toBe(o.contenu)
+      // Le type enregistré par Storage, pas celui que le téléchargement complète d'un charset.
+      expect((await storage.from(seau).info(o.nom)).data?.contentType).toBe(o.type)
+    }
+  })
+
+  it('refuse un fichier dont la taille n’est plus celle de l’index', async () => {
+    const dossier = join(travail, 'tronque')
+    await copier(client, dossier, { seaux: [seau] })
+    await writeFile(join(dossier, 'fichiers', seau, 'plat.json'), 'trop court')
+    await expect(deposer(client, dossier)).rejects.toThrow(/tronqué/)
   })
 })
 
