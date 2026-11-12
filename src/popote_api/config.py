@@ -7,6 +7,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_valida
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LONGUEUR_MINIMALE_DU_SECRET = 32
+LONGUEUR_MINIMALE_DU_POIVRE = 32
 # Le préfixe `__Host-` impose `Secure`, `Path=/` et aucun `Domain` : le navigateur refuse le cookie sinon.
 NOM_DU_COOKIE_DE_SESSION = "__Host-popote_session"
 # Un nom de cookie est un `token` (RFC 6265 § 4.1.1) ; on n'admet que lettres, chiffres, `_` et `-`.
@@ -64,6 +65,10 @@ class Settings(BaseSettings):
     # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
     database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Le poivre des clés HMAC du journal et des limites (`security/empreintes.py`). Facultatif tant que le
+    # conteneur d'essai ne l'a pas : sans lui hors local, les clés manquent (journal sans clés, avertissement
+    # au démarrage) ; en local il est tiré au hasard par processus. Posé, il fait 32 caractères au moins.
+    identity_pepper: SecretStr | None = None
     # Sous-domaine `workers.dev` du compte Cloudflare, pour reconnaître les aperçus de fusion du front.
     # Essai seulement : la prod n'a pas d'aperçu.
     apercu_compte: str | None = None
@@ -97,6 +102,18 @@ class Settings(BaseSettings):
             # Un chemin donnerait un `iss` faux sans rien dire : le déclencheur refuserait toute photo.
             raise ValueError("supabase_url : l'adresse du projet seulement, sans chemin ni requête.")
         return adresse
+
+    @field_validator("identity_pepper", mode="before")
+    @classmethod
+    def _poivre_vide_vaut_absent(cls, valeur: object) -> object:
+        return None if valeur == "" else valeur
+
+    @field_validator("identity_pepper")
+    @classmethod
+    def _poivre_assez_long(cls, poivre: SecretStr | None) -> SecretStr | None:
+        if poivre is not None and len(poivre.get_secret_value()) < LONGUEUR_MINIMALE_DU_POIVRE:
+            raise ValueError(f"identity_pepper : {LONGUEUR_MINIMALE_DU_POIVRE} caractères au moins.")
+        return poivre
 
     @property
     def emetteur_des_jetons(self) -> str | None:

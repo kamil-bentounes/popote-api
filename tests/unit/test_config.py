@@ -146,3 +146,21 @@ def test_la_version_est_lue_dans_l_environnement_de_l_image(monkeypatch: pytest.
 def test_une_version_mal_formee_echoue(valeur: str) -> None:
     with pytest.raises(ValidationError, match="version"):
         Settings.model_validate({"env": "local", "version": valeur})
+
+
+@pytest.mark.parametrize("env", ["local", "essai", "prod"])
+def test_un_poivre_de_moins_de_32_caracteres_echoue_au_demarrage(env: str) -> None:
+    valeurs = {"env": env, "identity_pepper": "poivre-" + "x" * 24}
+    if env != "local":
+        valeurs |= {"relay_secret": SECRET, "database_url": DSN}
+    with pytest.raises(ValidationError, match="identity_pepper") as erreur:
+        Settings.model_validate(valeurs)
+    assert "poivre-xxx" not in str(erreur.value)
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_le_poivre_est_facultatif(env: str) -> None:
+    reglages = Settings.model_validate(
+        {"env": env, "relay_secret": SECRET, "database_url": DSN, "identity_pepper": ""}
+    )
+    assert reglages.identity_pepper is None

@@ -105,3 +105,25 @@ async def test_sans_pool_api_la_connexion_n_a_pas_de_base() -> None:
     with pytest.raises(BaseIndisponibleError):
         async with Base(None, None).connexion():
             pass
+
+
+async def test_sans_poivre_hors_local_le_demarrage_avertit_sans_le_poivre(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(reglages("essai", database_url_internal=DSN, identity_pepper=None))
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert "POPOTE_IDENTITY_PEPPER" in caplog.text
+    assert app.state.empreintes.disponible is False
+
+
+async def test_avec_le_poivre_le_demarrage_n_avertit_pas_et_ne_le_journalise_pas(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(reglages("essai", database_url_internal=DSN))
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert caplog.text == ""
+    assert app.state.empreintes.disponible is True
