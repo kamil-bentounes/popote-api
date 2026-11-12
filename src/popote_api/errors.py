@@ -46,6 +46,7 @@ STATUTS: dict[int, tuple[str, str]] = {
 # En-têtes que `reponse()` pose elle-même : l'appelant ne peut pas les remplacer.
 EN_TETES_RESERVES = {"cache-control", "content-type", "content-length", "x-request-id"}
 
+LONGUEUR_MAX_POINTEUR = 256
 MESSAGE_PAR_DEFAUT = "Valeur invalide."
 MESSAGE_JSON_INVALIDE = "Le corps n'est pas un JSON valide."
 # type d'erreur pydantic -> message ; les champs entre accolades viennent de `ctx`.
@@ -72,6 +73,27 @@ MESSAGES_422 = {
     "extra_forbidden": "Ce champ n'est pas permis.",
     "value_error": "La valeur n'est pas acceptée.",
 }
+
+
+# Marque posée sur l'exception qu'on a déjà journalisée avec son `request_id`.
+DEJA_JOURNALISEE = "_popote_deja_journalisee"
+
+
+class DoubleJournalisation(logging.Filter):
+    """Écarte, sur `uvicorn.error`, la seconde trace d'une 500 que `_inattendue` a déjà journalisée.
+
+    Starlette relève l'exception après notre réponse, et uvicorn l'écrit alors une deuxième fois.
+    Seul cet enregistrement-là est écarté ; tout le reste de `uvicorn.error` passe.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not record.getMessage().startswith("Exception in ASGI application"):
+            return True
+        exc = record.exc_info[1] if record.exc_info else None
+        return not getattr(exc, DEJA_JOURNALISEE, False)
+
+
+FILTRE_UVICORN = DoubleJournalisation()
 
 
 class Probleme(Exception):
@@ -116,8 +138,15 @@ def reponse(
 
 
 def _pointeur(chemin: tuple[Any, ...]) -> str:
-    """Pointeur JSON (RFC 6901) vers un champ du corps ; la racine s'écrit `""`."""
-    return "".join("/" + str(p).replace("~", "~0").replace("/", "~1") for p in chemin)
+    """Pointeur JSON (RFC 6901) vers un champ du corps ; la racine s'écrit `""`.
+
+    Une clé saisie par le client revient entière dans le pointeur : au-delà de
+    `LONGUEUR_MAX_POINTEUR`, on remonte au parent le plus proche qui tient, et le pointeur reste valide.
+    """
+    segments = ["/" + str(p).replace("~", "~0").replace("/", "~1") for p in chemin]
+    while segments and sum(len(s) for s in segments) > LONGUEUR_MAX_POINTEUR:
+        segments.pop()
+    return "".join(segments)
 
 
 def _message(erreur: Mapping[str, Any]) -> str:
@@ -141,6 +170,8 @@ def _erreur_de_validation(erreur: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def installe(app: FastAPI) -> None:
+    logging.getLogger("uvicorn.error").addFilter(FILTRE_UVICORN)  # sans doublon : même instance
+
     @app.exception_handler(Probleme)
     async def _probleme(request: Request, exc: Probleme) -> JSONResponse:
         return reponse(request, exc.status, exc.code, exc.detail, headers=exc.headers)
@@ -159,4 +190,5 @@ def installe(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _inattendue(request: Request, exc: Exception) -> JSONResponse:
         journal.exception("Erreur inattendue (request_id=%s)", _identifiant(request), exc_info=exc)
+        setattr(exc, DEJA_JOURNALISEE, True)
         return reponse(request, 500, "erreur_interne", "Une erreur inattendue est survenue.")

@@ -1,11 +1,14 @@
 """Accès à Postgres. Pour 0.2, seulement la vérification de disponibilité."""
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import LiteralString
 
 import psycopg
+
+journal = logging.getLogger(__name__)
 
 DELAI_TOTAL_S = 3  # connexion et requête comprises
 DUREE_DU_CACHE_S = 5.0
@@ -19,7 +22,9 @@ async def repond(dsn: str, requete: LiteralString = "select 1") -> bool:
             ) as connexion:
                 await connexion.execute(requete)
         return True
-    except (psycopg.Error, TimeoutError):
+    except (psycopg.Error, TimeoutError) as erreur:
+        # Le type seulement : le message de libpq peut contenir l'hôte de la base.
+        journal.warning("Base indisponible : %s", type(erreur).__name__)
         return False
 
 

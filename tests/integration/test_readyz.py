@@ -1,3 +1,4 @@
+import logging
 import time
 
 import httpx
@@ -20,10 +21,14 @@ async def test_readyz_avec_la_base_locale() -> None:
 
 
 @pytest.mark.integration
-async def test_un_select_bloque_rend_false_en_moins_de_quatre_secondes() -> None:
+async def test_un_select_bloque_rend_false_en_moins_de_quatre_secondes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     debut = time.monotonic()
-    assert await db.repond(LOCALE, "select pg_sleep(10)") is False
+    with caplog.at_level(logging.WARNING, logger="popote_api.infra.db"):
+        assert await db.repond(LOCALE, "select pg_sleep(10)") is False
     assert time.monotonic() - debut < 4
+    assert "TimeoutError" in caplog.text
 
 
 @pytest.mark.integration

@@ -109,6 +109,13 @@ def app_de_test() -> FastAPI:
     async def corps(donnees: Corps) -> dict[str, bool]:
         return {"ok": True}
 
+    class Imbrique(BaseModel):
+        cles: dict[str, int]
+
+    @app.post("/api/_test/imbrique")
+    async def imbrique(donnees: Imbrique) -> dict[str, bool]:
+        return {"ok": True}
+
     @app.post("/api/_test/dictionnaire")
     async def dictionnaire(donnees: dict[str, int]) -> dict[str, bool]:
         return {"ok": True}
@@ -324,3 +331,16 @@ async def test_la_500_est_journalisee_avec_l_identifiant(caplog: pytest.LogCaptu
     assert r.json()["instance"] in enregistrements[0].getMessage()
     assert enregistrements[0].exc_info is not None
     assert "secret interne" not in r.text
+
+
+async def test_un_pointeur_trop_long_remonte_au_parent_le_plus_proche() -> None:
+    r = await poste("/api/_test/dictionnaire", json={"k" * 300: "x"})
+    assert r.json()["errors"][0]["pointer"] == ""
+    r = await poste("/api/_test/imbrique", json={"cles": {"k" * 300: "x"}})
+    assert r.json()["errors"][0]["pointer"] == "/cles"
+
+
+async def test_un_pointeur_de_256_caracteres_est_conserve() -> None:
+    cle = "k" * 255  # "/" + 255 caractères = 256
+    r = await poste("/api/_test/dictionnaire", json={cle: "x"})
+    assert r.json()["errors"][0]["pointer"] == "/" + cle
