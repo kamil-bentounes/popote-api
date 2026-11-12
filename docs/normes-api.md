@@ -50,7 +50,8 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `https://notre-popote.fr/problemes/<code>`), `title` (court, français), `status`, `detail` (phrase lisible
   par la personne, sans détail technique), `instance` (identifiant de la requête), plus deux extensions : `code`
   (code machine stable, ex. `cycle_transition_refusee`) et `errors` (pour `422` : liste de `{pointer,
-  message}`, où `pointer` est un JSON Pointer, RFC 6901).
+  message}` pour le corps, où `pointer` est un JSON Pointer RFC 6901, ou de `{parameter: {name, in}, message}`
+  pour un paramètre).
 - Jamais de trace, de requête SQL, de message de fournisseur ni de texte en anglais dans une réponse. L'erreur
   d'origine va au journal, reliée par `instance`.
 
@@ -113,6 +114,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `popote-api`. L'intégration continue compare chaque branche à `main` (`oasdiff`) et refuse une rupture non
   annoncée. `popote-web` fixe une version du contrat et régénère son client ; un écart fait échouer son
   intégration continue.
+- Régénérer le contrat : `uv run python scripts/exporte_contrat.py` (application construite en `local`, sans base ;
+  clés triées, fin de ligne finale). `openapi.json` est marqué `linguist-generated` : il ne s'écrit jamais à la
+  main, et en cas de conflit on le régénère. Chaque route porte un `operation_id` stable et un `summary`.
+- Les erreurs d'une route sont déclarées avec `responses=reponses_erreur(404, 409)` (`errors.py`) : le contrat
+  les publie en `application/problem+json`, schéma `ProblemDetails` (la forme que `reponse()` produit).
+  `readyz` déclare aussi `503`.
+- Gardes de la CI (job `contrat`) : le contrat régénéré doit être celui qui est versionné ; `oasdiff breaking`
+  compare à `origin/main:openapi.json` et échoue sur une rupture (niveau `ERR`) ; retirer une route sans
+  l'avoir marquée `deprecated: true` avec `x-sunset` (date au moins 30 jours après) est une rupture. Tant que
+  `main` n'a pas de contrat, le contrôle le dit et passe. `tests/contract/` (Schemathesis, version figée)
+  vérifie en mémoire : aucun 5xx (sauf le `503` de `readyz`), schéma, type de contenu et statut documentés. Le contrat décrit l'API derrière le relais.
 
 ## 3.10 Par défaut, fermé
 
