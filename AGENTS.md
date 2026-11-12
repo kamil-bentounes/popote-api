@@ -17,4 +17,4 @@ Règles pour toute session d'agent sur `popote-api` (base Supabase, fonctions, i
 - Aucun secret dans un fichier versionné ; le `.env` local ne porte que les clés de démonstration.
 - Routes qui écrivent : `async def`, jamais `def` (le délai de 25 s ne peut pas annuler un fil) ; tout travail bloquant a un délai interne plus court que 25 s.
 - Commits Conventional Commits en français, sans ligne de co-auteur. Remote : alias SSH `github-perso` uniquement.
-- Erreurs de l'API : une route ou une dépendance lève `Probleme` ; un middleware rend `reponse(...)` au lieu de lever (une exception de middleware finit en 500). Authentification et limite de débit : dépendances FastAPI.
+- Erreurs de l'API : une route ou une dépendance lève `Probleme` ; un middleware rend `reponse(...)` au lieu de lever (une exception de middleware finit en 500). Authentification : dépendance FastAPI. Débit : par adresse, un middleware pur (exception assumée : il refuse avant de lire le corps et compte aussi les 404, 405 et 422) ; par personne, une dépendance (voir `docs/normes-api.md` § 3.6).
