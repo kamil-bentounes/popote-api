@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from _commun import reglages
+from _commun import ECRITURE_LOCALE, reglages
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
@@ -42,7 +42,7 @@ def test_le_contrat_serialise_trie_ses_cles_et_finit_par_une_fin_de_ligne() -> N
 
 
 def test_le_contrat_de_l_essai_est_celui_de_local() -> None:
-    """Les routes provisoires de l'essai (preuves) restent hors contrat."""
+    """Le contrat ne dépend pas de l'environnement qui le produit."""
     assert serialise(create_app(reglages("essai")).openapi()) == OPENAPI_JSON.read_text(encoding="utf-8")
 
 
@@ -91,8 +91,12 @@ async def test_les_erreurs_reelles_respectent_le_schema_problem_details() -> Non
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
         reponses = [
             await c.get("/api/nexiste-pas"),
-            await c.post("/api/_test/ressource?page=x", json={"nom": "a"}),
-            await c.post("/api/_test/ressource", content=b"{", headers={"content-type": "application/json"}),
+            await c.post("/api/_test/ressource?page=x", json={"nom": "a"}, headers=ECRITURE_LOCALE),
+            await c.post(
+                "/api/_test/ressource",
+                content=b"{",
+                headers=ECRITURE_LOCALE | {"content-type": "application/json"},
+            ),
         ]
     assert [r.status_code for r in reponses] == [404, 422, 422]
     for r in reponses:

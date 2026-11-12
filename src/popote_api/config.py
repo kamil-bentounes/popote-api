@@ -1,5 +1,6 @@
 import re
 from enum import StrEnum
+from functools import lru_cache
 from ipaddress import ip_address
 from typing import Self
 
@@ -17,6 +18,39 @@ def est_valeur_d_en_tete(valeur: str) -> bool:
     Un défaut ferait recopier la valeur, donc la clé, par la bibliothèque HTTP dans son message d'erreur.
     """
     return bool(valeur) and valeur.isascii() and valeur.isprintable() and " " not in valeur
+
+
+# Le préfixe `__Host-` impose `Secure`, `Path=/` et aucun `Domain` : le navigateur refuse le cookie sinon.
+NOM_DU_COOKIE_DE_SESSION = "__Host-popote_session"
+# Un nom de cookie est un `token` (RFC 6265 § 4.1.1) ; on n'admet que lettres, chiffres, `_` et `-`.
+FORME_D_UN_NOM_DE_COOKIE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+# Les origines (schéma, hôte, port) d'où le front de chaque environnement appelle l'API.
+ORIGINES_PAR_ENV: dict[str, frozenset[str]] = {
+    "prod": frozenset({"https://notre-popote.fr"}),
+    "essai": frozenset({"https://essai.notre-popote.fr"}),
+    "local": frozenset({"http://localhost:5173", "http://127.0.0.1:5173"}),
+}
+# Le Worker du front d'essai (`name` de `popote-web/wrangler.jsonc`) : seul son nom entre dans le motif.
+WORKER_DU_FRONT = "popote-web-essai"
+# Un sous-domaine `workers.dev` est une étiquette DNS : minuscules, chiffres, tirets, 63 au plus.
+SOUS_DOMAINE_WORKERS = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+@lru_cache
+def motif_des_apercus(compte: str) -> re.Pattern[str]:
+    """Les URL d'aperçu (« version URLs ») de Cloudflare Workers du seul Worker du front, sur ce compte.
+
+    Format : `https://<préfixe>-<worker>.<sous-domaine du compte>.workers.dev` (Cloudflare, « Preview URLs »).
+    Le préfixe est l'alias (minuscules, chiffres, tirets, commençant par une lettre) ou l'empreinte de la
+    version (hexadécimal) ; l'étiquette entière tient en 63 caractères. Le sous-domaine du compte est
+    écrit en entier : le Worker d'un autre compte qui porterait le même nom ne passe pas.
+    """
+    nom = re.escape(WORKER_DU_FRONT)
+    maximum = 63 - len(WORKER_DU_FRONT) - 1  # la longueur du préfixe, tiret exclu
+    return re.compile(
+        rf"https://[a-z0-9][a-z0-9-]{{0,{maximum - 1}}}-{nom}\.{re.escape(compte)}\.workers\.dev"
+    )
 
 
 class Env(StrEnum):
@@ -54,6 +88,16 @@ class Settings(BaseSettings):
     # elle, l'application démarre avec un avertissement et `Base.service()` rend `503 service_indisponible`.
     database_url_internal: SecretStr | None = None
     relay_secret: SecretStr | None = None
+    # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans
+    # `internal_secret`, toute route interne répond 404 (fermé par défaut) et le démarrage avertit.
+    # `internal_secret_precedent` sert la rotation : le nouveau secret va en `internal_secret`, l'ancien ici,
+    # puis on retire l'ancien.
+    internal_secret: SecretStr | None = None
+    internal_secret_precedent: SecretStr | None = None
+    # Sous-domaine `workers.dev` du compte Cloudflare, pour reconnaître les aperçus de fusion du front.
+    # Essai seulement : la prod n'a pas d'aperçu.
+    apercu_compte: str | None = None
+
     # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
     breach_check: BreachCheck = BreachCheck.hibp
 
@@ -62,6 +106,9 @@ class Settings(BaseSettings):
 
     # Faux seulement dans les tests : le journal JSON remplace alors la configuration d'uvicorn.
     json_logs: bool = True
+    # Le nom du cookie de session ne se change qu'en local, où `__Host-` et `Secure` ne passent pas partout
+    # sur `http://localhost` : hors local, c'est `NOM_DU_COOKIE_DE_SESSION`, un autre nom est une erreur.
+    session_cookie_name: str | None = None
 
     # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
     # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
@@ -107,6 +154,12 @@ class Settings(BaseSettings):
         return f"{str(self.supabase_url).rstrip('/')}/auth/v1" if self.supabase_url else None
 
     @property
+    def secrets_internes(self) -> tuple[bytes, ...]:
+        """Les secrets qui signent les routes internes, le courant d'abord ; vide : routes fermées."""
+        secrets = (self.internal_secret, self.internal_secret_precedent)
+        return tuple(s.get_secret_value().encode("ascii") for s in secrets if s and s.get_secret_value())
+
+    @property
     def relais_exige(self) -> bool:
         return self.env is not Env.local
 
@@ -124,6 +177,63 @@ class Settings(BaseSettings):
     def _la_cle_secrete_exige_l_adresse(self) -> Self:
         if self.supabase_secret_key is not None and self.supabase_url is None:
             raise ValueError("supabase_secret_key sans supabase_url : poser l'adresse du projet aussi.")
+        return self
+
+    @property
+    def nom_du_cookie_de_session(self) -> str:
+        return self.session_cookie_name or NOM_DU_COOKIE_DE_SESSION
+
+    @model_validator(mode="after")
+    def _regle_le_cookie_de_session(self) -> Self:
+        nom = self.session_cookie_name
+        if nom is None:
+            return self
+        if self.env is not Env.local and nom != NOM_DU_COOKIE_DE_SESSION:
+            raise ValueError("session_cookie_name ne se change qu'en local.")
+        if FORME_D_UN_NOM_DE_COOKIE.fullmatch(nom) is None:
+            raise ValueError("session_cookie_name : lettres, chiffres, _ et - seulement (64 au plus).")
+        return self
+
+    @property
+    def origines(self) -> frozenset[str]:
+        return ORIGINES_PAR_ENV[self.env.value]
+
+    def origine_admise(self, origine: str) -> bool:
+        """Une origine exacte de l'environnement, ou, sur l'essai, une URL d'aperçu du front."""
+        if origine in self.origines:
+            return True
+        return (
+            self.apercu_compte is not None
+            and motif_des_apercus(self.apercu_compte).fullmatch(origine) is not None
+        )
+
+    @model_validator(mode="after")
+    def _apercu_seulement_sur_l_essai(self) -> Self:
+        if self.apercu_compte is None:
+            return self
+        if self.env is not Env.essai:
+            raise ValueError("apercu_compte : réservé à l'essai, la prod et le local n'ont pas d'aperçu.")
+        if not SOUS_DOMAINE_WORKERS.fullmatch(self.apercu_compte):
+            raise ValueError("apercu_compte : un sous-domaine workers.dev (minuscules, chiffres, tirets).")
+        return self
+
+    @model_validator(mode="after")
+    def _controle_les_secrets_internes(self) -> Self:
+        # Une variable posée à vide vaut « absente » ; un secret posé doit être sûr, dans tout environnement.
+        for nom in ("internal_secret", "internal_secret_precedent"):
+            valeur = getattr(self, nom)
+            secret = valeur.get_secret_value() if valeur else ""
+            if secret and not secret.isascii():
+                raise ValueError(f"{nom} : caractères ASCII uniquement.")
+            if secret and len(secret) < LONGUEUR_MINIMALE_DU_SECRET:
+                raise ValueError(f"{nom} : {LONGUEUR_MINIMALE_DU_SECRET} caractères au moins.")
+        secrets = self.secrets_internes
+        relais = self.relay_secret.get_secret_value().encode() if self.relay_secret else b""
+        if len(set(secrets)) < len(secrets) or (relais and relais in secrets):
+            # Le Worker du relais connaît `relay_secret` : égal à la clé interne, il pourrait signer.
+            raise ValueError("Les secrets internes et celui du relais doivent être trois valeurs distinctes.")
+        if len(self.secrets_internes) == 1 and self.internal_secret_precedent:
+            raise ValueError("internal_secret_precedent sans internal_secret : la rotation pose les deux.")
         return self
 
     @model_validator(mode="after")

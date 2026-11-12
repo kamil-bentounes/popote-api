@@ -128,15 +128,53 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.6 Limites
 
-- **Débit** (brouillon IETF `RateLimit` ; `429` : RFC 6585) : lecture 120/min et écriture 30/min par session,
-  comptées en mémoire par instance (approximatif, suffisant pour un foyer) ; les limites qui protègent un
-  compte sont comptées en base, donc justes quelle que soit l'instance : connexion 5 essais par compte et
-  20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure et par compte, invitations
-  10 par jour. En-têtes `RateLimit-Policy` et `RateLimit` ; `429` avec `Retry-After`.
+- **Débit** (`security/debit.py` ; `429` : RFC 6585 § 4), en mémoire par instance (approximatif, suffisant
+  pour un foyer). Fenêtre fixe de 60 s, ouverte à la première requête de la clé : une rafale à cheval sur
+  deux fenêtres peut doubler le plafond un instant. Écriture : toute méthode qui n'est pas `GET`, `HEAD` ou
+  `OPTIONS`.
+  - **Par adresse : 600 lectures et 120 écritures par minute**, par un **middleware ASGI pur** placé après la
+    garde du relais et avant la lecture du corps. C'est l'exception assumée à la règle « le débit est une
+    dépendance » : un refus doit coûter le moins possible (une `429` ne lit ni ne décode un corps de 1 Mio), et
+    la limite doit compter aussi ce qu'une dépendance ne voit pas : routes inconnues (`404`), méthodes
+    refusées (`405`), JSON invalides (`422`). Il rend `reponse(...)` et ne lève jamais. L'adresse est celle que
+    le relais a vue (`ip_de`), regroupée : une adresse IPv6 par préfixe /64 (une seule personne en possède des
+    milliards), une adresse IPv4 telle quelle. Sans adresse valable, la clé est commune (`sans-ip`). Aucun
+    cookie n'est lu à ce niveau : un cookie inventé n'ouvre jamais un compteur neuf. Le plafond est plus large
+    que celui de la personne : deux téléphones d'un foyer partagent une adresse et relisent la session toutes
+    les 3 s. Les websockets ne sont pas comptés.
+  - **Par personne : 120 lectures et 30 écritures par minute**, une dépendance FastAPI appelée par la
+    dépendance de session (T6) avec l'identifiant validé en base :
+    `limite_par_personne(request, response, personne)`. L'état est distinct de celui de l'adresse ; ses
+    en-têtes `RateLimit*` priment sur ceux de l'adresse.
+  - **Mémoire bornée** (10 000 clés par limiteur) sans jamais oublier un compteur actif : on retire d'abord
+    les fenêtres expirées ; s'il n'y en a pas, la requête d'une clé *nouvelle* est refusée (`503
+    limiteur_sature` + `Retry-After`) et l'événement est journalisé (au plus une fois par minute, sans adresse).
+  - **Non limités** : `/api/healthz` et `/api/readyz`, quelle que soit la méthode.
+  - **En-têtes** (brouillon IETF `draft-ietf-httpapi-ratelimit-headers`, **version -11 du 23/05/2026**, toujours
+    un brouillon : un client ne doit pas en dépendre) : champs structurés (RFC 9651), listes d'éléments dont la
+    valeur est une chaîne. `RateLimit-Policy: "read";q=600;w=60` (`q` quota, `w` fenêtre en secondes) ;
+    `RateLimit: "read";r=57;t=30` (`r` restant, `t` secondes avant le renouvellement). Le nom du quota est
+    `read` ou `write`. Posés sur chaque réponse limitée (`404`, `405` et `422` compris), `429` comprise. Sur la `429`, `Retry-After` est un
+    nombre entier de secondes (RFC 9110, `delay-seconds`) égal à `t` : le brouillon demande qu'il ne soit
+    pas antérieur à la fin de la fenêtre.
+  Les limites qui protègent un compte sont comptées en base, donc justes quelle que soit l'instance :
+  connexion 5 essais par compte et 20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure
+  et par compte, invitations 10 par jour.
 - **Modèles** : quotas par foyer et par usage, décomptés de façon atomique en base
   (`update … where appels < quota returning …`) AVANT l'appel ; plafond en euros appliqué.
-- **Tailles et délais** : corps JSON 1 Mo au plus ; photos à part (§ 6.1) ; délai serveur 30 s, sauf les
-  appels au modèle traités en travail asynchrone (§ 3.7).
+- **Tailles, types et délais** (`src/popote_api/limites.py`, middlewares ASGI qui rendent leur réponse sans
+  jamais lever) : corps 1 Mio au plus (`413 corps_trop_gros`), que `Content-Length` l'annonce ou non, les octets
+  reçus en flux étant comptés ; une écriture (`POST`, `PUT`, `PATCH`) qui porte un corps est en
+  `application/json` (`charset=utf-8` toléré ; `application/merge-patch+json` aussi, pour `PATCH`), sinon
+  `415 type_non_supporte` ; photos à part (§ 6.1) ; délai serveur 25 s (le relais coupe à 30 s : l'API répond avant lui), au-delà `503 delai_depasse` avec
+  `Retry-After: 10` (une requête qui a déjà commencé sa réponse ne peut plus changer de statut : sa
+  connexion est coupée et l'événement journalisé), sauf les appels au modèle traités en travail asynchrone
+  (§ 3.7). Un client qui retente un `POST` après un `503` le fait avec son `Idempotency-Key` (§ 3.5).
+  Le refus de la garde du relais passe avant : sans le secret du relais, le corps n'est pas lu.
+  **Règle des routes qui écrivent** : elles sont `async def`, jamais `def`. Une route `def` tourne dans un fil
+  que le délai ne peut pas annuler : le client reçoit la `503` pendant que l'écriture se termine. Le travail
+  bloquant d'une route (appel à une bibliothèque synchrone, base) s'exécute sous un délai interne plus court
+  que 25 s (par exemple `statement_timeout` côté base), pour qu'il échoue avant la `503`, jamais après.
 - La « dernière activité » d'une session et les compteurs ne s'écrivent pas plus d'une fois toutes les
   5 minutes par session : une lecture ne devient pas une écriture.
 
@@ -170,8 +208,14 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 ## 3.9 Cache, versions, contrat
 
-- Données privées : `Cache-Control: no-store`. Référentiels publics (catalogue, aliments) : `ETag` et
-  `Cache-Control: private, max-age=…`.
+- Données privées : `Cache-Control: no-store`, posé par défaut sur toute réponse de l'API qui n'en porte pas
+  (middleware `SansCache` : un oubli d'une route ne rend jamais une réponse privée mise en cache par un
+  intermédiaire). Référentiels publics (catalogue, aliments) : `ETag` et `Cache-Control: private, max-age=…`.
+- **`no-store` et `304` ne se contredisent pas.** `no-store` interdit au cache HTTP (celui du navigateur, d'un
+  intermédiaire) de garder la réponse. Les requêtes conditionnelles du § 3.5 et § 3.7 ne passent pas par ce
+  cache : c'est le code du client qui garde l'`ETag` en mémoire (TanStack Query) et le renvoie dans
+  `If-None-Match` ; la réponse `304` lui dit de garder la donnée qu'il a déjà, il n'y a rien à relire dans un
+  cache HTTP. Ce qu'on économise, c'est le corps, pas la requête.
 - Seuls des ajouts compatibles dans `/v1`. Une rupture ouvre `/v2`. Une route retirée annonce `Deprecation`
   (RFC 9745) et `Sunset` (RFC 8594) au moins 30 jours avant.
 - Le contrat est produit par le code (FastAPI, OpenAPI 3.1), exporté dans `openapi.json` et versionné dans
@@ -194,12 +238,110 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 
 - Toute route exige une session, sauf une liste écrite : connexion, lecture et acceptation d'une invitation,
   demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`.
+- **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
+  que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
+  (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte
+  SHA-256 des 32 octets du jeton et appelle `session_personne` ; elle rend la personne **et** le curseur de sa
+  transaction (un seul emprunt au pool par requête, session et contexte personne dans la même transaction).
+  Un cookie absent, mal formé, inconnu, échu, révoqué, au bout des 90 jours, d'une personne bannie ou
+  supprimée rend le même `401 pas_de_session`, pour qu'on n'apprenne rien sur les jetons.
+- **`WWW-Authenticate`** : la RFC 9110 § 15.5.2 exige un défi dans tout `401`. Aucun schéma enregistré ne décrit
+  un cookie de session ; nous annonçons `WWW-Authenticate: Cookie realm="popote"`, un nom de schéma à nous
+  (RFC 9110 § 11.1 : un `auth-scheme` est un `token`, enregistré ou non). Jamais `Basic`, `Digest` ou
+  `Negotiate` : le navigateur ouvrirait une fenêtre de saisie, et `Bearer` promettrait un en-tête
+  `Authorization` que personne n'envoie.
+- **Limites connues de la fermeture** : FastAPI lit le corps avant de résoudre les dépendances, donc un `POST`
+  au JSON invalide sans cookie rend `422` avant le `401` ; et `404`, `405` ne disent pas le `401` : la
+  présence d'une route se devine sans session. Hors local, tout passe d'abord par le relais (en-tête secret),
+  et le contrat est publié ; le risque est accepté. Aucune limite de débit n'existe encore avant la lecture de
+  la session : la limite par IP en amont (T3b) s'y pose.
+- **Fermé par défaut, et prouvé** : `tests/unit/test_routes_fermees.py` énumère toutes les routes de
+  l'application. Hors de la liste blanche écrite dans le test (`/api/healthz`, `/api/readyz`, et le contrat
+  `/api/openapi.json` que FastAPI sert hors prod), chacune exige `personne_connectee`. Une route ajoutée sans
+  session fait échouer ce test ; une route sous `/api/v1` l'a d'office, par le routeur.
+- **Matrice d'autorisation** (`tests/authz/test_matrice.py`) : chaque route de `/api/v1`, énumérée sur l'application,
+  est éprouvée avec trois acteurs : une personne de mon foyer, une personne d'un autre foyer, personne (sans
+  session). Une route sans cas dans `MATRICE` fait échouer son test : la route nouvelle se déclare dans la matrice,
+  avec ce que chaque acteur doit obtenir (`404` d'une ressource désignée d'un autre foyer, `401` sans session).
+  Une route « de soi » comme `/me` rend à l'autre foyer sa propre fiche, jamais la mienne.
+- **`GET /api/v1/me`** (`api/moi.py`) : `{"id", "email", "display_name", "household": {"id", "name"} | null}`.
+  Contexte personne : `user_profile` et `household` passent par la RLS ; l'adresse vient de `mon_email()`
+  (fonction `security definer`, migration 0134), car `authenticated` ne lit pas `auth.users`. Une personne sans
+  profil rend `display_name` et `household` nuls. `Cache-Control: no-store`, `ETag` fort des octets rendus,
+  `304` sur `If-None-Match` (`conditionnel.repond_ou_304`) : la lecture conditionnelle est faite par le client.
+- **Modèles** : `schemas/base.py` donne `Entree` (`extra="forbid"`) et `Sortie`. Tout modèle de `schemas/`
+  descend de l'une ou de l'autre, tout corps de requête descend d'`Entree` à toute profondeur
+  (`tests/unit/test_modeles.py`).
 - Les routes `/internal/*` (rappels, purges) n'acceptent ni cookie ni session : seulement une signature
   HMAC de la requête, avec horodatage (5 minutes de validité), clé propre à chaque environnement.
+  - **Format** : `X-Popote-Signature: t=<secondes unix>,v1=<hex>`, avec `v1 = HMAC-SHA256(secret,
+    "<t>.<MÉTHODE>.<chemin>.<sha256 hex du corps>")`. Le chemin est celui des **octets reçus** (`raw_path`),
+    non décodé ; toute chaîne de requête est refusée (une route interne n'en prend pas) ; un écart d'horloge de
+    plus de 300 s dans un sens ou l'autre est refusé ; plusieurs `v1` sont admis ; la comparaison se fait en temps
+    constant sur des octets. Un instant ou un `v1` hors forme (signe, point, zéro de tête, chiffres non ASCII,
+    majuscules), un champ autre que `t` et `v<n>` (les `v2`… d'une version future sont ignorés), un `t` ou plus
+    de quatre `v1`, ou deux en-têtes `X-Popote-Signature` : refus. Un `?` final sans rien après ne se voit pas
+    au niveau ASGI (`query_string` vide) : la signature couvre le chemin, donc rien n'est contournable.
+  - **Tout refus est un `404`** `introuvable`, jamais `401` ou `403` : on ne révèle pas la route. Pour la même
+    raison, une `405` (mauvaise méthode) ou une `422` (corps JSON invalide, lu par FastAPI avant les dépendances)
+    qui précède la vérification se rend `404` ; la raison du refus (`signature_fausse`, `hors_fenetre`…) va au
+    journal, jamais une valeur reçue. Un corps de mauvais type, signé, rend `422`.
+  - **Corps** : la borne de 1 Mio (`limites.TailleMax`, qui lit le corps avant l'application) et l'exigence de
+    `Content-Type: application/json` pour un corps (`limites.TypeJson`) valent aussi pour `/internal/*`, avant la
+    vérification de signature : `413` et `415` ne disent rien de la route. La garde d'origine exempte `/internal/`
+    comme le relais. Une déconnexion pendant la lecture du corps rend `404`, sans erreur. Journal : `warning`
+    pour une signature fausse, périmée ou une clé absente ; `info` pour le reste.
+  - **Fermé par défaut** : `POPOTE_INTERNAL_SECRET` est facultatif pour l'instant. Sans lui, toute route interne
+    répond `404`, même bien signée, et le démarrage journalise un avertissement. Posé, il fait 32 caractères ASCII
+    au moins, sans retour à la ligne final (sinon l'application ne démarre pas, ou la base ne signera pas la
+    même chose) ; `internal_secret`, `internal_secret_precedent` et `relay_secret` sont trois valeurs distinctes
+    (le Worker du relais connaît la dernière). **Rotation** : le nouveau secret va dans
+    `POPOTE_INTERNAL_SECRET`, l'ancien dans `POPOTE_INTERNAL_SECRET_PRECEDENT` (les deux sont acceptés), puis on
+    retire l'ancien une fois les appelants à jour.
+  - **Une dépendance sur le routeur** (`api/internes.py`, `nouveau_routeur()`), pas route par route : une route
+    ajoutée à ce routeur ne peut pas y échapper. Un test énumère toutes les routes de l'application sous
+    `/internal` et échoue si l'une n'a pas la dépendance. `relais.EXEMPTIONS = ("/internal/",)` : `/internal` et
+    `/internalx` restent derrière le relais.
+  - **Toute route interne est idempotente par construction.** La signature ne se consomme pas : une requête
+    interceptée se rejoue pendant 300 s, et un appelant sans réponse renvoie la sienne. Une route interne ne
+    change donc rien de plus la seconde fois (clé naturelle, `upsert`, purge qui retrouve la même chose).
+  - **Hors du contrat OpenAPI** (`include_in_schema=False`), comme les routes de preuve : elles ne passent pas par
+    le relais, ne sont pas publiques, n'ont pas de client généré, et leurs changements ne cassent personne que
+    nous ne maîtrisons pas ; le garde de rupture (`oasdiff`) sert l'API que le front consomme. Leurs règles sont
+    ici et dans `api/internes.py`, leurs tests dans `tests/unit/test_internes.py`.
+  - Outil : `ops/signe_interne.py` signe une requête (secret lu dans l'environnement, jamais en argument).
+    Comment `pg_cron` signera : [`exploitation.md`](exploitation.md).
 - Les modèles d'entrée refusent les champs inconnus (`extra="forbid"`) ; les modèles de sortie ne listent que
   les champs à montrer.
 - Pas de CORS : une seule origine. Une écriture dont l'`Origin` n'est pas celle de l'environnement est refusée ;
   sur l'essai, la liste admet aussi le motif des adresses d'aperçu.
+- **Garde d'origine** (`security/origine.py`, dépendance de l'application entière : une route d'écriture
+  future est gardée sans y penser). Sur toute méthode qui n'est pas `GET`, `HEAD` ou `OPTIONS` (une méthode inattendue est donc gardée), trois preuves, toutes exigées, sinon
+  `403 origine_refusee` (un seul message, pour ne pas dire laquelle manque) :
+  1. `Origin` est exactement l'une des origines de l'environnement (`Settings.origines` : prod
+     `https://notre-popote.fr` ; essai `https://essai.notre-popote.fr` ; local `http://localhost:5173` et
+     `http://127.0.0.1:5173`) ; absente, `null` ou en double, elle est refusée ;
+  2. `Sec-Fetch-Site`, s'il est présent, vaut `same-origin` (le navigateur le pose, la page ne peut pas le
+     modifier) ;
+  3. `X-Popote-Client: web` (une requête inter-sites « simple », comme un formulaire, ne peut pas poser
+     d'en-tête personnalisé sans demande préalable que l'API ne permet pas).
+  La poignée de main d'un websocket est gardée aussi (un `GET` avec cookie est détournable depuis un site
+  tiers) : `Origin` et `Sec-Fetch-Site` y sont exigés, mais pas `X-Popote-Client`, qu'un navigateur ne peut pas
+  poser sur un websocket ; le refus ferme la poignée de main (code 1008, vu comme un `403`).
+  Les routes `/internal/*` en sont exemptées : sans cookie ni navigateur, leur signature HMAC les garde.
+  Le relais Cloudflare retransmet ces trois en-têtes tels quels (il copie ceux de la requête et n'écrase que
+  `Host`, `X-Popote-Relais` et `X-Popote-IP`).
+  **Les aperçus de fusion** (essai seulement) : `POPOTE_APERCU_COMPTE` donne le sous-domaine `workers.dev` du
+  compte Cloudflare ; l'origine admise est alors `https://<préfixe>-popote-web-essai.<compte>.workers.dev`
+  (format des « Preview URLs » de Cloudflare Workers : `<préfixe>-<nom du Worker>.<sous-domaine>.workers.dev`,
+  préfixe = alias ou empreinte de version, étiquette de 63 caractères au plus). Le nom du Worker et le compte
+  sont écrits en entier dans le motif : le Worker homonyme d'un autre compte ne passe pas. La variable est
+  refusée au démarrage hors de l'essai (la prod n'a pas d'aperçu), et sans elle aucun aperçu n'est admis.
+  **Ce que cela protège** : la falsification de requête depuis un navigateur (CSRF), c'est-à-dire un site
+  tiers qui fait écrire le navigateur d'une personne connectée avec son cookie. **Ce que cela ne protège pas** :
+  un client hors navigateur (curl, un script, un programme) écrit les trois en-têtes à la main. Ce client
+  n'est arrêté que par la session (`401`), le secret du relais et les limites ; la garde d'origine n'est
+  pas une authentification. Une erreur de corps (`422`, JSON mal formé) précède la garde : elle ne change rien.
 
 ## 3.11 Suivi
 

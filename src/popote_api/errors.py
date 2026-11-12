@@ -2,8 +2,9 @@
 
 Règle de levée : une route ou une dépendance FastAPI lève `Probleme` (ou `HTTPException`) ; un
 middleware, lui, rend `reponse(...)` directement. Une exception levée dans un middleware échappe
-aux handlers ci-dessous et finit en 500. L'authentification et la limite de débit sont donc des
-dépendances FastAPI, pas des middlewares.
+aux handlers ci-dessous et finit en 500. L'authentification est donc une dépendance FastAPI, pas un
+middleware. Seule exception : la limite de débit par adresse, qui doit refuser avant que le corps soit lu et
+compter aussi les routes inconnues ; son middleware rend `reponse(...)` et ne lève jamais.
 """
 
 import logging
@@ -20,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from popote_api import suivi
 from popote_api.infra.auth_admin import AuthIndisponible, CompteDejaExistant
 from popote_api.journal import CONTEXTE
+from popote_api.security.signature import ETAT_SIGNATURE_VERIFIEE, PREFIXE_INTERNE
 
 journal = logging.getLogger(__name__)
 
@@ -223,6 +225,20 @@ def _erreur_de_validation(erreur: Mapping[str, Any]) -> dict[str, Any]:
     return {"parameter": {"name": nom, "in": str(emplacement)}, "message": _message(erreur)}
 
 
+def _route_cachee(request: Request) -> bool:
+    """Vrai sous `/internal/` tant que la signature n'a pas été vérifiée.
+
+    Une `405` (mauvaise méthode) ou une `422` (corps mal formé, lu avant les dépendances) répondrait à qui
+    n'est pas signé que la route existe : elles se rendent `404`, comme tout refus interne.
+    """
+    verifiee = getattr(request.state, ETAT_SIGNATURE_VERIFIEE, False)
+    return request.scope["path"].startswith(PREFIXE_INTERNE) and not verifiee
+
+
+def _introuvable(request: Request) -> JSONResponse:
+    return reponse(request, 404, "introuvable", "Cette adresse n'existe pas.")
+
+
 def installe(app: FastAPI) -> None:
     logging.getLogger("uvicorn.error").addFilter(FILTRE_UVICORN)  # sans doublon : même instance
 
@@ -246,12 +262,16 @@ def installe(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        if _route_cachee(request):
+            return _introuvable(request)
         titre, code = STATUTS.get(exc.status_code, (TITRE_PAR_DEFAUT, CODE_PAR_DEFAUT))
         detail = "Cette adresse n'existe pas." if exc.status_code == 404 else titre
         return reponse(request, exc.status_code, code, detail, headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if _route_cachee(request):
+            return _introuvable(request)
         erreurs = [_erreur_de_validation(e) for e in exc.errors()]
         return reponse(request, 422, "donnees_invalides", "Certaines données ne sont pas valides.", erreurs)
 

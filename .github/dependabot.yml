@@ -74,6 +74,12 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    # La version de Python de l'image suit celle du projet (`requires-python`, `uv.lock`, ruff, mypy) :
+    # changer de version mineure (3.13 → 3.15) est un chantier, pas une mise à jour. Seuls les correctifs
+    # et les nouvelles empreintes de la même version sont proposés.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       mineures:
         update-types: ["minor", "patch"]

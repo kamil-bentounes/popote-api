@@ -78,6 +78,123 @@ def test_un_secret_non_ascii_echoue_au_demarrage(env: str, secret: str) -> None:
         Settings.model_validate({"env": env, "relay_secret": secret, "database_url": DSN})
 
 
+@pytest.mark.parametrize("nom", ["internal_secret", "internal_secret_precedent"])
+@pytest.mark.parametrize("secret", ["é" * 32, "s" * 31 + "é", "s" * 31 + "​"])
+def test_un_secret_interne_non_ascii_echoue_au_demarrage(nom: str, secret: str) -> None:
+    valeurs = {"env": "local", "internal_secret": SECRET, nom: secret}
+    with pytest.raises(ValidationError, match=f"{nom} : caractères ASCII"):
+        Settings.model_validate(valeurs)
+
+
+@pytest.mark.parametrize("nom", ["internal_secret", "internal_secret_precedent"])
+def test_un_secret_interne_trop_court_echoue_dans_tout_environnement(nom: str) -> None:
+    valeurs = {"env": "local", "internal_secret": SECRET, nom: "s" * 31}
+    with pytest.raises(ValidationError, match=f"{nom} : 32 caractères"):
+        Settings.model_validate(valeurs)
+
+
+def test_sans_secret_interne_le_demarrage_reussit_et_les_routes_restent_fermees() -> None:
+    reglages = Settings.model_validate({"env": "local"})
+    assert reglages.secrets_internes == ()
+
+
+@pytest.mark.parametrize("vide", ["", None])
+def test_un_secret_interne_vide_vaut_absent(vide: str | None) -> None:
+    reglages = Settings.model_validate({"env": "local", "internal_secret": vide})
+    assert reglages.secrets_internes == ()
+
+
+def test_la_rotation_garde_le_courant_d_abord() -> None:
+    reglages = Settings.model_validate(
+        {"env": "local", "internal_secret": SECRET, "internal_secret_precedent": "p" * 32}
+    )
+    assert reglages.secrets_internes == (SECRET.encode(), b"p" * 32)
+
+
+@pytest.mark.parametrize("courant", [None, ""])
+def test_un_secret_precedent_sans_secret_courant_echoue(courant: str | None) -> None:
+    with pytest.raises(ValidationError, match="internal_secret_precedent sans internal_secret"):
+        Settings.model_validate(
+            {"env": "local", "internal_secret": courant, "internal_secret_precedent": "p" * 32}
+        )
+
+
+def test_l_erreur_sur_un_secret_interne_ne_recopie_pas_le_secret() -> None:
+    with pytest.raises(ValidationError) as erreur:
+        Settings.model_validate({"env": "local", "internal_secret": "court-mais-secret"})
+    assert "court-mais-secret" not in str(erreur.value)
+
+
+def test_le_secret_interne_est_lu_dans_l_environnement(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POPOTE_ENV", "local")
+    monkeypatch.setenv("POPOTE_INTERNAL_SECRET", SECRET)
+    monkeypatch.setenv("POPOTE_INTERNAL_SECRET_PRECEDENT", "p" * 32)
+    assert Settings().secrets_internes == (SECRET.encode(), b"p" * 32)
+
+
+@pytest.mark.parametrize(
+    "valeurs",
+    [
+        {"internal_secret": "s" * 32, "relay_secret": "s" * 32},
+        {"internal_secret": "s" * 32, "internal_secret_precedent": "s" * 32},
+        {"internal_secret": "i" * 32, "internal_secret_precedent": "r" * 32, "relay_secret": "r" * 32},
+    ],
+)
+def test_les_secrets_internes_et_celui_du_relais_sont_distincts(valeurs: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="trois valeurs distinctes"):
+        Settings.model_validate({"env": "local", "database_url": DSN, **valeurs})
+
+
+def test_trois_secrets_distincts_passent() -> None:
+    reglages = Settings.model_validate(
+        {
+            "env": "essai",
+            "database_url": DSN,
+            "relay_secret": "r" * 32,
+            "internal_secret": "i" * 32,
+            "internal_secret_precedent": "p" * 32,
+        }
+    )
+    assert len(reglages.secrets_internes) == 2
+
+
+def test_le_cookie_de_session_porte_son_nom_de_prefixe_host_par_defaut() -> None:
+    reglages = Settings.model_validate({"env": "local"})
+    assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
+
+
+def test_en_local_le_nom_du_cookie_de_session_se_configure() -> None:
+    reglages = Settings.model_validate({"env": "local", "session_cookie_name": "popote_session"})
+    assert reglages.nom_du_cookie_de_session == "popote_session"
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_un_autre_nom_de_cookie_de_session_echoue(env: str) -> None:
+    with pytest.raises(ValidationError, match="session_cookie_name"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "session_cookie_name": "popote_session"}
+        )
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_le_nom_du_cookie_de_session_peut_etre_redit(env: str) -> None:
+    reglages = Settings.model_validate(
+        {
+            "env": env,
+            "relay_secret": SECRET,
+            "database_url": DSN,
+            "session_cookie_name": "__Host-popote_session",
+        }
+    )
+    assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
+
+
+@pytest.mark.parametrize("nom", ["", "a b", "a=b", "a;b", "é", "a" * 65, "a\r\nSet-Cookie"])
+def test_un_nom_de_cookie_de_session_illegal_echoue(nom: str) -> None:
+    with pytest.raises(ValidationError, match="session_cookie_name"):
+        Settings.model_validate({"env": "local", "session_cookie_name": nom})
+
+
 @pytest.mark.parametrize("env", ["essai", "prod"])
 def test_hors_local_desactiver_la_liste_de_fuites_echoue(env: str) -> None:
     with pytest.raises(ValidationError, match="breach_check"):

@@ -11,6 +11,9 @@ from popote_api.config import Settings
 SECRET = "s" * 32
 DSN = "postgresql://x:y@127.0.0.1:1/rien"
 RELAIS = {"X-Popote-Relais": SECRET}
+# Ce qu'envoie le front dans une écriture : l'origine de l'environnement et l'en-tête propre à l'appli.
+ECRITURE_LOCALE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+ECRITURE_ESSAI = {"Origin": "https://essai.notre-popote.fr", "X-Popote-Client": "web"}
 
 
 def reglages(env: str, **autres: Any) -> Settings:
@@ -39,9 +42,19 @@ def _en_tetes_asgi(en_tetes: EnTetes | None) -> list[tuple[bytes, bytes]]:
 
 
 async def appeler(
-    app: FastAPI, methode: str, chemin: str, en_tetes: EnTetes | None = None, requete: str = ""
+    app: FastAPI,
+    methode: str,
+    chemin: str,
+    en_tetes: EnTetes | None = None,
+    requete: str = "",
+    corps: bytes = b"",
+    receptions: list[dict[str, Any]] | None = None,
 ) -> Retour:
-    """Appelle l'application en ASGI brut, pour maîtriser le chemin exact (httpx le normalise)."""
+    """Appelle l'application en ASGI brut, pour maîtriser le chemin exact (httpx le normalise).
+
+    `receptions` remplace le corps par une suite de messages ASGI (corps par morceaux, déconnexion) ; une fois
+    épuisée, le client est déconnecté. La liste est consommée.
+    """
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -58,19 +71,23 @@ async def appeler(
     }
     messages: list[dict[str, Any]] = []
 
+    restantes = receptions  # consommée au fil des lectures : l'appelant voit ce qui reste
+
     async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        if restantes is None:
+            return {"type": "http.request", "body": corps, "more_body": False}
+        return restantes.pop(0) if restantes else {"type": "http.disconnect"}
 
     async def send(message: dict[str, Any]) -> None:
         messages.append(message)
 
     await app(scope, receive, send)  # type: ignore[arg-type]
     debut = next(m for m in messages if m["type"] == "http.response.start")
-    corps = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+    reponse = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
     return Retour(
         debut["status"],
         {k.decode().lower(): v.decode() for k, v in debut["headers"]},
-        corps,
+        reponse,
     )
 
 
