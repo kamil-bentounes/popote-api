@@ -103,7 +103,7 @@ effacerait les objectifs de l'autre.
 **Aucune policy `DELETE` sur `household` ni `user_profile`** — `for all` inclut `DELETE` : un membre
 pourrait supprimer son foyer (la cascade emporte profils et objectifs) ou son propre profil, ce qui
 remettrait `current_household()` à `NULL` et lui permettrait de créer un second foyer. On sort par
-`delete_my_account()` (qui appelle `efface_mes_donnees()` depuis 0145, puis supprime `auth.users`), pas autrement.
+`delete_my_account()` (qui appelle `efface_mes_donnees()` depuis 0145, puis supprime `auth.users`) pour l'appli en ligne, et par `DELETE /api/v1/me` de l'API (`efface_mes_donnees()`, puis la suppression du compte par Auth), pas autrement.
 
 ## Fonctions et triggers
 

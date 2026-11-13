@@ -9,12 +9,14 @@ from fastapi.responses import JSONResponse
 from popote_api.conditionnel import EN_TETES_CONDITIONNELS, REPONSE_304, etag_de_contenu, repond_ou_304
 from popote_api.errors import (
     CODE_AUTH_INDISPONIBLE,
+    CODE_SUPPRESSION_INCOMPLETE,
     DEFI_D_AUTHENTIFICATION,
     PAS_DE_SESSION,
     Probleme,
     reponse,
     reponses_erreur,
 )
+from popote_api.infra.auth_admin import AuthAdminError
 from popote_api.infra.fuites import EtatFuite
 from popote_api.schemas.moi import ChangementDeMotDePasse, Moi
 from popote_api.security.connexion import (
@@ -22,7 +24,7 @@ from popote_api.security.connexion import (
     fait_tourner_la_session_et_ferme_les_autres,
     journalise_la_liste_de_fuites_indisponible,
 )
-from popote_api.security.cookie import pose_le_cookie_de_session
+from popote_api.security.cookie import efface_le_cookie_de_session, pose_le_cookie_de_session
 from popote_api.security.mots_de_passe import normalise, verifie_nouveau
 from popote_api.security.reauth import EXIGE_UNE_REAUTHENTIFICATION
 from popote_api.security.session import PersonneDeLaSession
@@ -180,3 +182,65 @@ async def change_le_mot_de_passe(
         journal.error("Mot de passe changé, mais la confirmation en base a échoué", exc_info=True)
     nouveau_cookie.status_code = 204
     return nouveau_cookie
+
+
+SUPPRESSION_INCOMPLETE: Final = (
+    "Tes données sont effacées, mais ton compte n'a pas pu être supprimé : reconnecte-toi, puis recommence."
+)
+
+
+@router.delete(
+    "",
+    operation_id="delete_me",
+    summary="Supprimer son compte",
+    description=(
+        "Exige une réauthentification de moins de 5 minutes. Deux transactions, dans cet ordre : (1) "
+        "`efface_mes_donnees()` (données, sessions, clés de l'événement ; le dernier membre emporte le "
+        "foyer ; l'événement `compte_supprime` est écrit), validée AVANT (2) la suppression du compte dans "
+        "Auth (un compte déjà absent vaut succès). Si Auth ne répond pas : `503 suppression_incomplete`, les "
+        "données et les sessions sont parties et le compte Auth reste ; la personne se reconnecte et "
+        "recommence (l'effacement se rejoue sans erreur). Le cookie est vidé dans les deux cas. Sans "
+        "`Idempotency-Key` : la table d'idempotence référence le profil, qui n'existe plus ; un second "
+        "`DELETE` avec le même cookie rend `401`."
+    ),
+    status_code=204,
+    response_class=Response,
+    dependencies=[EXIGE_UNE_REAUTHENTIFICATION],
+    responses={
+        204: {
+            "description": "Le compte est supprimé ; le cookie de session est vidé.",
+            "headers": {"Set-Cookie": {"description": "Le cookie vidé.", "schema": {"type": "string"}}},
+        },
+        503: {
+            **reponses_erreur(503)[503],
+            "headers": {
+                "Set-Cookie": {
+                    "description": "Le cookie vidé : la session n'existe plus.",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        **reponses_erreur(403),
+    },
+)
+async def supprime_mon_compte(request: Request, personne: PersonneDeLaSession) -> Response:
+    app = request.app
+    # (1) Sa propre transaction, validée avant Auth : Auth supprime `auth.users`, que le profil référence ;
+    # tant que l'effacement n'est pas validé, cette suppression l'attendrait (et il attendrait Auth).
+    async with app.state.base.personne(personne.id) as curseur:
+        await curseur.execute("select public.efface_mes_donnees()")
+    reponse = Response(status_code=204)
+    efface_le_cookie_de_session(reponse, app.state.settings)
+    # (2) Auth. Les données et les sessions sont parties : un échec laisse le compte, sans plus rien dedans.
+    try:
+        await app.state.auth_admin.supprime_compte(personne.id)
+    except AuthAdminError as erreur:
+        # Le texte d'une erreur d'Auth ne porte que le statut et le code (ni e-mail ni mot de passe).
+        journal.warning("Suppression du compte refusée ou impossible dans Auth : %s", erreur)
+        raise Probleme(
+            503,
+            CODE_SUPPRESSION_INCOMPLETE,
+            SUPPRESSION_INCOMPLETE,
+            headers={"Set-Cookie": reponse.headers["set-cookie"]},
+        ) from erreur
+    return reponse
