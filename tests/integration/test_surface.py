@@ -57,6 +57,8 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.ferme_les_sessions_auth(uuid)": set(),
     "private.ferme_les_autres_sessions(uuid, uuid, timestamptz)": set(),
     "public.cree_invitation(bytea)": {"authenticated"},
+    "public.mes_invitations(integer, timestamptz, uuid)": {"authenticated"},
+    "public.revoque_invitation(uuid)": {"authenticated"},
     "private.cree_invitation(uuid, bytea, timestamptz)": set(),
     "private.purge_invite_link(timestamptz, integer)": set(),
 }

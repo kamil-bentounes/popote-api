@@ -511,7 +511,7 @@ configuration, journalisation, protection des données.
 Le contrôle `xfail(strict=True)` du test sur `execute` fera échouer la suite le jour où la migration de
 fermeture retirera ce droit : il faudra alors retirer le `xfail`.
 
-### 4.9 Créer un lien d'invitation (0.4 T12a, migration 0142)
+### 4.9 Créer, lister et révoquer un lien d'invitation (0.4 T12, migrations 0142 et 0143)
 
 - **`POST /api/v1/me/invitations`** : le jeton fait 256 bits (`secrets.token_urlsafe(32)`, 43 caractères), tiré par l'API ;
   **seul son SHA-256 (32 octets) va en base** (`invite_link.token_hash`). Il est rendu une seule fois. Il n'entre dans
@@ -529,4 +529,10 @@ fermeture retirera ce droit : il faudra alors retirer le `xfail`.
   écrit) ; la voie normale reste la route, qui tire le jeton.
 - **Personnes** : un compte supprimé laisse le lien (`created_by`, `accepted_by` passent à `null`) ; ses lignes
   d'idempotence partent avec lui (cascade). Purge : fin de vie + 30 jours, par lots, `pg_cron` `invite-link-purge`.
+- **Liste et révocation (0143)** : `public.mes_invitations(p_limit, p_after_created, p_after_id)` et
+  `public.revoque_invitation(p_id)`, `security definer`, `search_path = ''`, `execute` à `authenticated` **seul**, sans
+  `p_now` (B19). Le foyer est celui de `auth.uid()` : aucun paramètre ne désigne une personne ou un foyer. La liste ne
+  rend que `id`, `created_at`, `expires_at` des liens en attente du foyer. La révocation rend `revoquee`, `deja` (déjà
+  révoqué ou échu), `utilisee` (`409`) ou `inconnue` (`404` : autre foyer ou rien, sans effet, sans événement) ;
+  l'événement `invitation_revoquee` n'est écrit que lorsqu'un lien passe réellement à révoqué, dans la même transaction.
 - **Compatibilité avec l'appli en ligne** : table et fonctions neuves ; `invitation`, `invite` et `accept-invite` intacts.

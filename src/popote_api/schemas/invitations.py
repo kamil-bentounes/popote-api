@@ -19,3 +19,11 @@ class InvitationCreee(Sortie):
     )
     created_at: datetime
     expires_at: datetime = Field(description="Échéance du lien : sept jours après la création.")
+
+
+class InvitationEnAttente(Sortie):
+    """Un lien en attente du foyer : jamais son jeton, son empreinte ni le nom de qui l'a créé."""
+
+    id: UUID
+    created_at: datetime
+    expires_at: datetime = Field(description="Échéance du lien : sept jours après la création.")

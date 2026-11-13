@@ -11,9 +11,10 @@ Un cas dit, pour sa route, quel chemin vise la ressource de mon foyer et ce que 
 - sans session : `401`, partout.
 """
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -49,6 +50,7 @@ class Monde:
     moi: Personne
     autre: Personne
     a_viser: UUID  # une session de `moi`, autre que celle qui sert de cookie
+    invitation: UUID  # un lien en attente du foyer de `moi`
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,30 @@ def _invitation_creee_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response)
     assert str(monde.moi.foyer_id) not in reponse.text
 
 
+def _invitations_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 200
+    assert [i["id"] for i in reponse.json()["items"]] == [str(monde.invitation)]
+
+
+def _invitations_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # « Du foyer » : l'autre foyer ne voit rien du mien.
+    assert reponse.status_code == 200
+    assert reponse.json()["items"] == []
+    assert str(monde.invitation) not in reponse.text
+
+
+def _revoque_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 204
+
+
+def _revoque_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Le lien de `moi` n'existe pas pour l'autre foyer (le lien reste valide : gardé en base par
+    # `test_invitations_hote.py`).
+    assert reponse.status_code == 404
+    assert reponse.json()["code"] == "invitation_introuvable"
+    assert reponse.json()["status"] == 404
+
+
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
     ("GET", "/api/v1/me/sessions"): Cas(
@@ -169,6 +195,14 @@ MATRICE: dict[tuple[str, str], Cas] = {
         _invitation_creee_chez_moi,
         _invitation_creee_chez_un_autre_foyer,
         avec_cle_d_idempotence=True,
+    ),
+    ("GET", "/api/v1/me/invitations"): Cas(
+        lambda _: "/api/v1/me/invitations", _invitations_chez_moi, _invitations_chez_un_autre_foyer
+    ),
+    ("DELETE", "/api/v1/me/invitations/{id}"): Cas(
+        lambda monde: f"/api/v1/me/invitations/{monde.invitation}",
+        _revoque_chez_moi,
+        _revoque_chez_un_autre_foyer,
     ),
 }
 
@@ -227,7 +261,17 @@ def monde(fabrique: Fabrique) -> Monde:
         "where id = %s",
         (MOT_DE_PASSE_DE_MOI, moi.id),
     )
-    return Monde(moi=moi, autre=fabrique.personne(fabrique.foyer()), a_viser=fabrique.session(moi.id).id)
+    lien = fabrique.admin.execute(
+        "select id from private.cree_invitation(%s, %s, now())",
+        (moi.id, hashlib.sha256(uuid4().bytes).digest()),
+    ).fetchone()
+    assert lien is not None
+    return Monde(
+        moi=moi,
+        autre=fabrique.personne(fabrique.foyer()),
+        a_viser=fabrique.session(moi.id).id,
+        invitation=lien[0],
+    )
 
 
 def _cas(methode: str, chemin: str) -> Cas:
