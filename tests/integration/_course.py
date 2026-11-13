@@ -15,14 +15,15 @@ Ligne = tuple[object, ...]
 PATIENCE_S = 10.0
 
 
-async def attend_un_verrou(admin: psycopg.Connection[Ligne], motif: str) -> int:
-    """Rend le pid du backend dont la requête contient `motif`, quand il attend un verrou."""
+async def attend_un_verrou(admin: psycopg.Connection[Ligne], motif: str, bloque_par: int) -> int:
+    """Rend le pid du backend dont la requête contient `motif`, quand A (`bloque_par`) le fait attendre.
+
+    Le pid de A est exact : une autre suite sur la même base ne sert jamais de fausse barrière."""
     async with asyncio.timeout(PATIENCE_S):
         while True:
             ligne = admin.execute(
-                "select pid from pg_stat_activity where wait_event_type = 'Lock' and query like %s"
-                " and pid <> pg_backend_pid()",
-                (f"%{motif}%",),
+                "select pid from pg_stat_activity where %s = any(pg_blocking_pids(pid)) and query like %s",
+                (bloque_par, f"%{motif}%"),
             ).fetchone()
             if ligne is not None:
                 return int(ligne[0])  # type: ignore[call-overload]
@@ -40,9 +41,9 @@ async def course[T](
         ouvre_a(a)
         tache = asyncio.create_task(b())
         try:
-            pid = await attend_un_verrou(admin, motif_de_b)
+            pid = await attend_un_verrou(admin, motif_de_b, a.info.backend_pid)
             # Le verrou d'abord, avant toute ligne : B attend sans avoir écrit (pas d'identifiant de
-            # transaction), sinon il tiendrait une ligne en attendant la personne (foyer, personne, lignes).
+            # transaction), sinon il tiendrait une ligne en attendant la personne (ordre du plan).
             ecrit = admin.execute(
                 "select 1 from pg_locks where pid = %s and locktype = 'transactionid' and granted", (pid,)
             ).fetchone()
@@ -50,6 +51,7 @@ async def course[T](
         except BaseException:
             tache.cancel()
             a.rollback()
+            await asyncio.gather(tache, return_exceptions=True)
             raise
         a.commit()
         return await tache

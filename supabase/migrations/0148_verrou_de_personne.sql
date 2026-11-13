@@ -3,33 +3,87 @@
 --
 -- Une connexion en vol survit à la fermeture de toutes les sessions quand la preuve et la session qu'elle ouvre sont
 -- deux instructions sans verrou commun (relevé de la revue de T15b ; même défaut dans le changement de mot de passe,
--- 0141). On pose le verrou UNE fois ; S7, S9, S10 et S14 s'en servent.
+-- 0141). On pose le verrou UNE fois ; S7, S9, S10 et S14 s'en servent. CE QUI RESTE OUVERT jusqu'à S7 : la connexion par
+-- mot de passe (0.4) vérifie le mot de passe AVANT de prendre le verrou, donc une fermeture qui passe entre les deux laisse
+-- survivre la session qu'elle ouvre ; S7 (code) et S9 (clé) relisent leur preuve SOUS le verrou, et S15 retire le mot de passe.
 --
 --  - `private.verrouille_la_personne` : le verrou de transaction de `cree_session` (0139), même clé
 --    `hashtextextended(personne::text, 0)`, nommé ; `public.verrouille_la_personne` : le chemin Python des preuves
 --    (`popote_api`, `service_role`).
---  - ORDRE DES VERROUS, partout : FOYER, puis PERSONNE, puis LIGNES (session, code, clé). Tout code qui ouvre une
+--  - ORDRE DES VERROUS, partout : FOYER, puis INVITATION du foyer, puis PERSONNE, puis LIGNES (session, code, clé). Tout code qui ouvre une
 --    session, en ferme plusieurs, révoque ou consomme un code, ajoute ou retire une clé ou supprime un compte prend
 --    d'abord `verrouille_la_personne`. `cree_session`, `ferme_les_autres_sessions` (qui révoque aussi les codes en
 --    attente), `ferme_les_autres_appareils` (idem), `fait_tourner_et_ferme_les_autres` et
 --    `confirme_le_changement_de_mot_de_passe` la prennent EN PREMIER, avant toute ligne.
 --  - L'ACTIVITÉ d'une session (A2). `private.session_valide` écrivait `last_seen_at` en tenant la ligne jusqu'à la fin
 --    de la requête, donc AVANT que la route prenne la personne ou le foyer : deux onglets d'un même navigateur
---    s'interbloquent (`40P01`), et l'ordre foyer, personne serait inversé. Désormais l'API LIT la session sans écrire
+--    s'interbloquent (`40P01`), et l'ordre foyer, invitation, personne serait inversé. Désormais l'API LIT la session sans écrire
 --    ni verrouiller (`lit_la_session`, qui dit si l'activité a plus de 5 minutes), et l'écrit, quand il le faut, par
 --    `note_l_activite_de_la_session` dans une transaction courte validée AVANT celle de la route : la personne,
---    puis la ligne, et rien n'est gardé. `session_valide` (que `session_courante` et `session_personne` appellent
---    encore) n'est pas touchée : l'API ne l'appelle plus, elle ne sert qu'au code déjà déployé.
+--    puis la ligne, et rien n'est gardé. `session_valide` (que `session_courante` et `session_personne` appellent)
+--    devient elle aussi une lecture : le code déjà déployé n'y tient plus de ligne de session (voir COMPATIBLE).
 --
--- DROITS : `popote_api` (et `service_role` pour les deux lectures et le verrou) ; jamais `authenticated`, jamais
--- `popote_internal`. Les variantes à horloge (`p_now`) vivent dans `private`, fermées à tous.
+-- DROITS : `popote_api` (et `service_role` pour les deux lectures et le verrou) ; jamais `authenticated`. `popote_internal`
+-- n'a aucun droit en propre ; il n'exécute ces fonctions que par `set role service_role` (comme `cree_session`, 0139).
+-- Les variantes à horloge (`p_now`) vivent dans `private`, fermées à tous.
 --
--- COMPATIBLE avec l'appli en ligne : cinq fonctions de 0.4 redéfinies à signature égale (rien de ce que la prod appelle),
--- six fonctions neuves ; `session_courante` et `session_personne` gardent leur sens. Le code déjà déployé tourne sur
--- cette migration jusqu'au déploiement : il lit encore par `session_courante`, inchangée.
+-- COMPATIBLE avec l'appli en ligne : six fonctions de 0.4 redéfinies à signature égale (rien de ce que la prod appelle),
+-- six fonctions neuves ; `cree_session` prend aussi la personne de la session PRÉSENTÉE, dans un ordre fixe (la plus petite
+-- d'abord). FENÊTRE DE DÉPLOIEMENT : les migrations passent avant le code, donc l'ancien code tourne quelques minutes sur
+-- cette base ; il lit par `session_courante` et `session_personne`, qui gardent leur signature et leur résultat mais
+-- n'écrivent plus l'activité (sans effet : la session glisse sur 30 jours). Sans cela l'ancien code tiendrait la ligne de
+-- sa session pendant que `ferme_les_autres_appareils`, qui prend maintenant la personne d'abord, attendrait la personne
+-- que tient une reconnexion elle-même en attente de cette ligne : un cycle. Choix retenu plutôt que deux migrations.
 --
--- RETOUR ARRIÈRE (sans perte : aucune donnée ne change de forme). Recréer les cinq fonctions comme les migrations 0139, 0140
--- et 0141 les définissent (leur `create or replace`, recopiés ci-dessous), PUIS retirer les six fonctions neuves :
+-- RETOUR ARRIÈRE (sans perte : aucune donnée ne change de forme). Retirer d'abord le code de l'API qui appelle
+-- `lit_la_session` et `note_l_activite_de_la_session` (sinon toute requête authentifiée échoue), puis recréer les six
+-- fonctions comme les migrations 0139, 0140 et 0141 les définissent (leur `create or replace`, recopiés ci-dessous),
+-- PUIS retirer les six fonctions neuves :
+--   create or replace function private.session_valide(p_hash bytea, p_now timestamptz)
+--   returns table (person_id uuid, session_id uuid, reauth_at timestamptz)
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   begin
+--     return query
+--     with candidate as (
+--       select s.id
+--         from public.login_session s
+--         join auth.users u on u.id = s.person_id
+--        where s.token_hash = p_hash
+--          and s.revoked_at is null
+--          and s.expires_at > p_now
+--          and s.absolute_expires_at > p_now
+--          and s.last_seen_at <= p_now - interval '5 minutes'
+--          and (u.banned_until is null or u.banned_until <= p_now)
+--          and u.deleted_at is null
+--          for update of s skip locked
+--     )
+--     update public.login_session s
+--        set last_seen_at = p_now,
+--            expires_at = least(p_now + interval '30 days', s.absolute_expires_at)
+--       from candidate
+--      where s.id = candidate.id
+--     returning s.person_id, s.id, s.reauth_at;
+--     if found then
+--       return;
+--     end if;
+--
+--     return query
+--     select s.person_id, s.id, s.reauth_at
+--       from public.login_session s
+--       join auth.users u on u.id = s.person_id
+--      where s.token_hash = p_hash
+--        and s.revoked_at is null
+--        and s.expires_at > p_now
+--        and s.absolute_expires_at > p_now
+--        and (u.banned_until is null or u.banned_until <= p_now)
+--        and u.deleted_at is null;
+--   end;
+--   $$;
+--
 --   create or replace function private.cree_session(
 --     p_person uuid, p_hash bytea, p_browser text, p_os text, p_old_hash bytea, p_now timestamptz
 --   ) returns uuid
@@ -215,7 +269,7 @@ begin
 end;
 $$;
 comment on function private.verrouille_la_personne(uuid) is
-  'Le verrou de transaction d''une personne : ouvrir une session, en fermer plusieurs, révoquer ou consommer un code, ajouter ou retirer une clé, supprimer le compte. Ordre des verrous : foyer, puis personne, puis lignes. Interne.';
+  'Le verrou de transaction d''une personne : ouvrir une session, en fermer plusieurs, révoquer ou consommer un code, ajouter ou retirer une clé, supprimer le compte. Ordre des verrous : foyer, puis invitation du foyer, puis personne, puis lignes. Interne.';
 revoke all on function private.verrouille_la_personne(uuid)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 
@@ -337,14 +391,29 @@ revoke all on function public.note_l_activite_de_la_session(bytea)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 grant execute on function public.note_l_activite_de_la_session(bytea) to popote_api;
 
--- `private.session_valide` (0139, que `session_courante` et `session_personne` appellent encore) n'est pas changée :
--- elle écrit l'activité en tenant la ligne jusqu'à la fin de la requête, ce que l'API ne fait plus (elle lit par
--- `lit_la_session`). Elle ne sert qu'au code déjà déployé, pendant la fenêtre de déploiement. Lui faire prendre la
--- personne avant d'écrire ferait attendre toute requête de la même personne pendant toute la requête d'une autre
--- (le `skip locked` de 0139 existe pour l'éviter) : l'écriture de l'activité se fait donc en dehors.
+/* `private.session_valide` (0139, que `session_courante` et `session_personne` appellent) devient une lecture : même
+   règle, même résultat, mais elle n'écrit plus l'activité. Le code déjà déployé, qui tourne quelques minutes sur cette
+   base avant son remplacement (les migrations passent avant le code), ne tient donc plus la ligne d'une session
+   jusqu'à la fin de sa requête : aucune fermeture, qui prend la personne d'abord, ne peut former de cycle avec lui.
+   Le prix, pendant cette fenêtre : il ne repousse plus l'activité (la session glisse sur 30 jours : sans effet). */
+create or replace function private.session_valide(p_hash bytea, p_now timestamptz)
+returns table (person_id uuid, session_id uuid, reauth_at timestamptz)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+begin
+  return query
+  select l.person_id, l.session_id, l.reauth_at from private.lit_la_session(p_hash, p_now) l;
+end;
+$$;
 
 -- ── 3. Tout ce qui ferme des sessions prend la personne en premier ──────────────────────────────
-/* `cree_session` : le corps de 0139, la clé posée en ligne devient l'appel nommé. */
+/* `cree_session` : le corps de 0139, la clé posée en ligne devient l'appel nommé. La session PRÉSENTÉE (B22) peut être
+   celle d'une AUTRE personne (deux personnes, un navigateur) : on la lit sans verrou pour connaître sa personne, et les
+   deux personnes se verrouillent alors TOUJOURS dans le même ordre (la plus petite d'abord) : deux connexions croisées
+   (A présente la session de B, B celle de A) ne s'attendent jamais en cercle. */
 create or replace function private.cree_session(
   p_person uuid, p_hash bytea, p_browser text, p_os text, p_old_hash bytea, p_now timestamptz
 ) returns uuid
@@ -356,8 +425,21 @@ as $$
 declare
   v_id uuid;
   v_ancienne public.login_session%rowtype;
+  v_autre uuid;
 begin
+  if p_old_hash is not null then
+    select s.person_id into v_autre
+      from public.login_session s
+     where s.token_hash = p_old_hash and s.revoked_at is null
+       and s.expires_at > p_now and s.absolute_expires_at > p_now;
+  end if;
+  if v_autre is not null and v_autre <> p_person and v_autre::text < p_person::text then
+    perform private.verrouille_la_personne(v_autre);
+  end if;
   perform private.verrouille_la_personne(p_person);
+  if v_autre is not null and v_autre <> p_person and v_autre::text > p_person::text then
+    perform private.verrouille_la_personne(v_autre);
+  end if;
 
   if exists (select 1 from auth.users u
               where u.id = p_person and (u.deleted_at is not null or u.banned_until > p_now)) then

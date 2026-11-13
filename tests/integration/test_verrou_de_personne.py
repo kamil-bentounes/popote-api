@@ -5,7 +5,10 @@ valider, B démarre, on attend B dans `pg_stat_activity`, A valide, on lit le so
 ne sert de preuve.
 """
 
+# ruff: noqa: F811  # les fixtures de test_connexion sont reprises par import
+
 import asyncio
+import logging
 import random
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -15,10 +18,14 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from _connexions import DSN_API, connecte
-from _course import course, ne_fait_pas_attendre
+from _course import attend_un_verrou, course, ne_fait_pas_attendre
 from _fabrique import Fabrique, SessionDeTest
+from test_connexion import MOT_DE_PASSE, Banc, banc, banc_avec, comptes  # noqa: F401  # fixtures reprises
+from test_verifie_mot_de_passe import hache
 
-from popote_api.infra.db import Base, SessionRefuseeError
+from popote_api.infra import db
+from popote_api.infra.db import Base
+from popote_api.security import connexion as modele_connexion
 from popote_api.security.appareil import Appareil
 from popote_api.security.sessions_base import cree_session
 
@@ -259,6 +266,140 @@ class TestPreuveEnVol:
         assert active(admin, apres) and active(admin, courante.id) and not active(admin, ancienne.id)
 
 
+# ── La preuve et la session : un mot de passe changé entre les deux ─────────
+
+
+async def test_un_mot_de_passe_change_entre_la_verification_et_la_session_refuse_la_connexion(
+    banc: Banc, admin: psycopg.Connection[Ligne], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La barrière : juste après la première vérification, Auth change le mot de passe."""
+    personne, email = banc.compte()
+    verifie = modele_connexion.verifie_un_candidat
+
+    async def verifie_puis_change(curseur: object, adresse: str, mot_de_passe: str) -> UUID | None:
+        trouvee = await verifie(curseur, adresse, mot_de_passe)  # type: ignore[arg-type]
+        admin.execute(
+            "update auth.users set encrypted_password = %s where id = %s",
+            (hache(admin, "un-autre-mot-de-passe-long"), personne),
+        )
+        return trouvee
+
+    monkeypatch.setattr(modele_connexion, "verifie_un_candidat", verifie_puis_change)
+    reponse = await banc.connecte(email, MOT_DE_PASSE)
+    assert reponse.status_code == 401  # la preuve refaite sous le verrou échoue : aucune session ne survit
+    assert nombre_d_actives(admin, personne) == 0
+
+
+async def test_une_connexion_dont_le_mot_de_passe_n_a_pas_change_ouvre_sa_session(
+    banc: Banc, admin: psycopg.Connection[Ligne]
+) -> None:
+    personne, email = banc.compte()
+    assert (await banc.connecte(email, MOT_DE_PASSE)).status_code == 201
+    assert nombre_d_actives(admin, personne) == 1
+
+
+# ── Le code déjà déployé, pendant la fenêtre de déploiement ─────────────────
+
+
+async def test_l_ancien_chemin_de_lecture_ne_s_interbloque_pas_avec_les_fermetures_et_les_reconnexions(
+    base: Base, fabrique: Fabrique, personne: UUID
+) -> None:
+    """L'ancien code lit par `session_courante` (une lecture, 0148) avant d'appeler les fermetures qui
+    prennent la personne : il ne tient plus de ligne de session, donc aucun cycle avec une reconnexion."""
+    vivante = fabrique.session(personne)
+
+    async def ancienne_requete(session: SessionDeTest) -> None:
+        async with base.connexion() as lecture:  # une transaction de l'ancien code : lecture puis fermeture
+            await lecture.execute("select public.session_courante(%s)", (session.empreinte,))
+            await lecture.execute(
+                "select public.confirme_le_changement_de_mot_de_passe(%s, %s, null)", (personne, vivante.id)
+            )
+
+    for _ in range(40):
+        session = fabrique.session(personne, vue_il_y_a=PERIMEE)
+        await asyncio.gather(
+            ancienne_requete(session),
+            cree(base, personne, session_presentee=session.empreinte),
+            ancienne_requete(session),
+        )
+
+
+# ── La session présentée peut être celle d'une autre personne ───────────────
+
+
+def verrou_libre(admin: psycopg.Connection[Ligne], personne: UUID) -> bool:
+    """Vrai si le verrou de cette personne est libre (un essai sans attente, transaction annulée)."""
+    with psycopg.connect(admin.info.dsn, password=admin.info.password) as cx:
+        ligne = cx.execute(
+            "select pg_try_advisory_xact_lock(hashtextextended(%s, 0))", (str(personne),)
+        ).fetchone()
+    assert ligne is not None
+    return bool(ligne[0])
+
+
+class TestSessionPresenteeDUneAutrePersonne:
+    """Deux personnes, un navigateur : présenter le cookie de l'autre ferme sa session (B22)."""
+
+    @pytest.fixture
+    def deux(self, fabrique: Fabrique) -> tuple[UUID, UUID]:
+        un, autre = fabrique.personne(fabrique.foyer()).id, fabrique.personne(fabrique.foyer()).id
+        bas, haut = sorted((un, autre), key=str)
+        return bas, haut
+
+    async def test_la_session_de_l_autre_est_fermee_comme_avant(
+        self, base: Base, fabrique: Fabrique, admin: psycopg.Connection[Ligne], deux: tuple[UUID, UUID]
+    ) -> None:
+        bas, haut = deux
+        de_l_autre = fabrique.session(haut)
+        await cree(base, bas, session_presentee=de_l_autre.empreinte)
+        assert not active(admin, de_l_autre.id)
+
+    async def test_l_id_le_plus_grand_prend_d_abord_le_plus_petit_sans_tenir_le_sien(
+        self, base: Base, fabrique: Fabrique, admin: psycopg.Connection[Ligne], deux: tuple[UUID, UUID]
+    ) -> None:
+        bas, haut = deux
+        de_bas = fabrique.session(bas)
+        with connecte(DSN_API) as a:
+            a.execute(VERROU, (bas,))
+            tache = asyncio.create_task(cree(base, haut, session_presentee=de_bas.empreinte))
+            await attend_un_verrou(admin, "cree_session", a.info.backend_pid)
+            # B attend la plus petite SANS tenir la sienne : deux connexions croisées ne s'attendent pas.
+            assert verrou_libre(admin, haut)
+            a.commit()
+            await tache
+        assert not active(admin, de_bas.id)
+
+    async def test_l_id_le_plus_petit_prend_le_sien_puis_l_autre(
+        self, base: Base, fabrique: Fabrique, admin: psycopg.Connection[Ligne], deux: tuple[UUID, UUID]
+    ) -> None:
+        bas, haut = deux
+        de_haut = fabrique.session(haut)
+        with connecte(DSN_API) as a:
+            a.execute(VERROU, (haut,))
+            tache = asyncio.create_task(cree(base, bas, session_presentee=de_haut.empreinte))
+            await attend_un_verrou(admin, "cree_session", a.info.backend_pid)
+            assert not verrou_libre(admin, bas)  # elle tient la sienne, en ordre, en attendant la plus grande
+            a.commit()
+            await tache
+        assert not active(admin, de_haut.id)
+
+    async def test_deux_connexions_croisees_avec_dix_sessions_chacune_sans_40p01(
+        self, base: Base, fabrique: Fabrique, deux: tuple[UUID, UUID]
+    ) -> None:
+        bas, haut = deux
+        for _ in range(10):
+            fabrique.session(bas)
+            fabrique.session(haut)
+        for _ in range(40):
+            presentee_de_bas, presentee_de_haut = fabrique.session(bas), fabrique.session(haut)
+            await asyncio.gather(
+                cree(base, bas, session_presentee=presentee_de_haut.empreinte),
+                cree(base, haut, session_presentee=presentee_de_bas.empreinte),
+                cree(base, bas, session_presentee=presentee_de_haut.empreinte),
+                cree(base, haut, session_presentee=presentee_de_bas.empreinte),
+            )
+
+
 # ── Les codes en attente meurent avec les autres sessions ───────────────────
 
 
@@ -334,23 +475,30 @@ class TestEntrelacements:
         self, base: Base, fabrique: Fabrique, personne: UUID
     ) -> None:
         hasard = random.Random(7)
+        vivante = fabrique.session(
+            personne
+        )  # celle qu'aucune fermeture ne vise : la route a toujours quelqu'un
+        arrivees: list[UUID] = []
 
-        async def requete(session: SessionDeTest) -> None:
-            try:
-                async with base.session(session.empreinte) as (lue, curseur):
-                    await curseur.execute(FERME_LES_AUTRES, (lue.session,))
-            except SessionRefuseeError:
-                pass  # la reconnexion avec ce cookie l'a fermée avant : un 401, pas un interblocage
+        async def requete(session: SessionDeTest, entree: asyncio.Event) -> None:
+            async with base.session(session.empreinte) as (lue, curseur):
+                arrivees.append(lue.session)
+                entree.set()  # la route est ouverte : reconnexion et fermeture peuvent démarrer
+                await asyncio.sleep(0)
+                await curseur.execute(FERME_LES_AUTRES, (vivante.id,))
 
-        for _ in range(50):
+        for _ in range(100):
             session = fabrique.session(personne, vue_il_y_a=PERIMEE)
+            entree = asyncio.Event()
+            en_route = asyncio.create_task(requete(session, entree))
+            await entree.wait()
             autres: list[Awaitable[object]] = [
-                requete(session),
                 cree(base, personne, session_presentee=session.empreinte),
-                ferme_les_autres_appareils(base, personne, uuid4()),
+                ferme_les_autres_appareils(base, personne, vivante.id),
             ]
             hasard.shuffle(autres)
-            await asyncio.gather(*autres, requete(session))
+            await asyncio.gather(en_route, *autres)  # une erreur, `40P01` comprise, fait échouer le test
+        assert len(arrivees) == 100  # chaque requête est arrivée jusqu'à sa route
 
     async def test_une_requete_a_activite_perimee_ne_tient_ni_ecriture_ni_verrou_a_l_entree_de_la_route(
         self, base: Base, fabrique: Fabrique, personne: UUID
@@ -380,6 +528,29 @@ class TestEntrelacements:
             "select last_seen_at from public.login_session where id = %s", (session.id,)
         ).fetchone()
         assert avant is not None and apres is not None and apres[0] > avant[0]
+
+    async def test_une_activite_qui_ne_peut_pas_s_ecrire_ne_fait_pas_echouer_la_requete(
+        self,
+        base: Base,
+        fabrique: Fabrique,
+        admin: psycopg.Connection[Ligne],
+        personne: UUID,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """La personne est tenue plus longtemps que le délai de verrou : activité périmée, la route passe."""
+        session = fabrique.session(personne, vue_il_y_a=PERIMEE)
+        requete = "select last_seen_at from public.login_session where id = %s"
+        avant = admin.execute(requete, (session.id,)).fetchone()
+        monkeypatch.setattr(db, "PREAMBULE_CONNEXION", "set local lock_timeout = '200ms'")
+        caplog.set_level(logging.WARNING)
+        with connecte(DSN_API) as a:
+            a.execute(VERROU, (personne,))
+            async with base.session(session.empreinte) as (lue, _):
+                assert lue.session == session.id  # la route a démarré
+            a.rollback()
+        assert admin.execute(requete, (session.id,)).fetchone() == avant
+        assert "Activité de session non écrite : LockNotAvailable" in caplog.text
 
     async def test_une_session_fermee_pendant_la_lecture_n_est_pas_rouverte(
         self, base: Base, fabrique: Fabrique, admin: psycopg.Connection[Ligne], personne: UUID
@@ -530,7 +701,9 @@ class TestNoterLActivite:
         ).fetchone()
         assert ligne == (T0,)
 
-    @pytest.mark.parametrize("etat", ["revoquee", "echue", "bannie", "supprimee", "inconnue"])
+    @pytest.mark.parametrize(
+        "etat", ["revoquee", "echue", "absolue_echue", "bannie", "supprimee", "inconnue"]
+    )
     def test_une_session_qui_ne_vaut_plus_n_est_ni_rouverte_ni_repoussee(
         self, etat: str, admin: psycopg.Connection[Ligne], personne: UUID
     ) -> None:
@@ -540,6 +713,8 @@ class TestNoterLActivite:
             admin.execute("update public.login_session set revoked_at = %s where id = %s", (T0, session))
         elif etat == "echue":
             quand = T0 + timedelta(days=31)
+        elif etat == "absolue_echue":
+            quand = T0 + timedelta(days=91)
         elif etat == "bannie":
             admin.execute(
                 "update auth.users set banned_until = %s where id = %s", (T0 + timedelta(days=1), personne)

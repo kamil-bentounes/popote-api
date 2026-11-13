@@ -397,7 +397,7 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   `private.verrouille_la_personne(personne)` est le verrou consultatif de transaction que `cree_session` posait en ligne (même clé,
   `hashtextextended(personne::text, 0)`), nommé ; `public.verrouille_la_personne` est son chemin Python (`popote_api`, `service_role`).
   Une personne nulle est refusée (le verrou serait un « rien »).
-- **Ordre des verrous, partout : foyer, puis personne, puis lignes** (session, code, clé). Tout code qui ouvre une session, en ferme
+- **Ordre des verrous, partout : foyer, puis invitation du foyer, puis personne, puis lignes** (session, code, clé). Tout code qui ouvre une session, en ferme
   plusieurs, révoque ou consomme un code, ajoute ou retire une clé ou supprime un compte prend d'abord la personne. `cree_session`,
   `ferme_les_autres_sessions`, `ferme_les_autres_appareils`, `fait_tourner_et_ferme_les_autres` et
   `confirme_le_changement_de_mot_de_passe` la prennent **avant toute écriture** (un test regarde, dans `pg_locks`, que B attend sans avoir
@@ -407,16 +407,29 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   avec leur raison (`ferme_session`, `ferme_un_appareil` : une seule session désignée ; la purge ; `efface_mes_donnees` jusqu'à S14).
 - **L'activité d'une session (amendement A2).** `private.session_valide` écrivait `last_seen_at` en tenant la ligne jusqu'à la fin de la
   requête, **avant** que la route prenne la personne ou le foyer : deux onglets d'un même navigateur s'interbloquent (`40P01`) et l'ordre
-  foyer, personne serait inversé. Désormais `Base.session` **lit** la session sans écrire ni verrouiller (`lit_la_session`, qui dit si
+  foyer, invitation, personne serait inversé. Désormais `Base.session` **lit** la session sans écrire ni verrouiller (`lit_la_session`, qui dit si
   l'activité a plus de 5 minutes) ; si elle est périmée, la transaction de lecture est abandonnée, l'activité s'écrit dans **sa propre
   transaction courte** (`note_l_activite_de_la_session` : la personne, puis la ligne, conditions relues sous le verrou), **validée avant**
   que la route ouvre la sienne, puis la requête recommence. Dans le cas courant (activité récente) il n'y a toujours qu'une transaction.
   À l'entrée de la route, aucun verrou de personne ni aucune écriture ne sont tenus (testé). Conséquence : l'activité s'écrit même si
   la route échoue (la session a bien servi). `session_valide`, `session_courante` et `session_personne` ne sont pas touchées : l'API ne
   les appelle plus, elles ne servent qu'au code déjà déployé pendant la fenêtre de déploiement.
+- **La preuve et la session (leçon 1, chemin mot de passe).** `tente_la_connexion` vérifie le mot de passe, prend le verrou de la
+  personne, puis **refait** la vérification avant d'ouvrir la session : un changement de mot de passe validé entre les deux la rend
+  fausse, la connexion est refusée (un test glisse le changement entre les deux par une barrière). Coût : un second `crypt()` sur le
+  seul chemin de succès, jusqu'à S7 qui retire le mot de passe (S7 et S9 relisent leur preuve sous le verrou par construction).
+- **Deux personnes, un navigateur.** `cree_session` révoque la session PRÉSENTÉE (B22), qui peut être celle d'une autre personne : les deux
+  personnes se verrouillent toujours dans le même ordre (l'identifiant le plus petit d'abord), donc deux connexions croisées ne
+  s'attendent jamais en cercle (tests : ordre, et croisement avec dix sessions chacune).
+- **Fenêtre de déploiement.** Les migrations passent avant le code : l'ancien code tourne quelques minutes sur cette base. Au lieu de
+  deux migrations, `session_valide` (que `session_courante` et `session_personne` appellent) est devenue une lecture : l'ancien code ne
+  tient plus de ligne de session, donc aucun cycle avec les fermetures qui prennent la personne d'abord (testé : l'ancien chemin, une
+  reconnexion et une fermeture en parallèle). Prix : pendant la fenêtre, l'ancien code ne repousse plus l'activité (30 jours glissants).
+- **L'activité est au mieux** : si le verrou ne lâche pas en 5 s ou en cas d'interblocage, la requête (session valide) continue sans
+  écrire l'activité, journalisée par le type ; la suivante réessaie.
 - **Courses déterministes** (`tests/integration/_course.py`) : A prend le verrou sans valider, B démarre, le test attend B dans
-  `pg_stat_activity`, A valide, on lit le sort de B ; jamais un `sleep` comme preuve. Les entrelacements (200 opérations de création et
-  de fermeture, 50 requêtes à activité périmée contre reconnexions et fermetures) ne donnent aucun `40P01`. Un `40P01` reste traduit en
+  `pg_stat_activity` (le backend que le pid exact de A fait attendre, pas un autre), A valide, on lit le sort de B ; jamais un `sleep` comme preuve. Les entrelacements (200 opérations de création et
+  de fermeture, 100 requêtes à activité périmée contre reconnexions et fermetures, connexions croisées de deux personnes) ne donnent aucun `40P01`. Un `40P01` reste traduit en
   `503` + `Retry-After: 1` (`erreurs_base.py`) comme filet.
 
 ## 5.1 Qui exécute quoi (extrait du § 5)

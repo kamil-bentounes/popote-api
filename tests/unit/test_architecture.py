@@ -231,9 +231,16 @@ FONCTION = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 ECRIT_LES_SESSIONS = re.compile(
-    r"update\s+public\.login_session\b[^;]*?\brevoked_at\s*=|delete\s+from\s+public\.login_session\b",
+    r"update\s+(?:only\s+)?public\.login_session\b[^;]*?\brevoked_at\s*="
+    r"|delete\s+from\s+(?:only\s+)?public\.login_session\b"
+    r"|truncate\s+(?:table\s+)?(?:only\s+)?public\.login_session\b"
+    r"|merge\s+into\s+public\.login_session\b",
     re.IGNORECASE,
 )
+LE_VERROU = re.compile(
+    r"\b(?:perform|select)\s+(?:private\.|public\.)?verrouille_la_personne\s*\(", re.IGNORECASE
+)
+UNE_ECRITURE = re.compile(r"\b(?:update|delete|insert|truncate|merge)\b", re.IGNORECASE)
 # Les fonctions qui ferment des sessions SANS la personne, chacune avec sa raison (une fonction ajoutée ici se
 # justifie en relecture). `efface_mes_donnees` y reste jusqu'à S14, qui lui donne les trois verrous.
 SANS_VERROU_DE_PERSONNE: dict[str, str] = {
@@ -253,11 +260,16 @@ def arite(parametres: str) -> int:
     return virgules + 1 if parametres.strip() else 0
 
 
+def nettoie(source: str) -> str:
+    """Sans commentaire ni guillemet d'identifiant : `public."login_session"` vaut `public.login_session`."""
+    return COMMENTAIRE_DE_BLOC.sub(" ", COMMENTAIRE_DE_LIGNE.sub(" ", source)).replace('"', "")
+
+
 def fonctions_sql(sources: list[str]) -> dict[str, str]:
     """Le corps de chaque fonction (`schéma.nom/arité`) telle que la dernière migration la définit."""
     corps: dict[str, str] = {}
     for source in sources:
-        propre = COMMENTAIRE_DE_BLOC.sub(" ", COMMENTAIRE_DE_LIGNE.sub(" ", source))
+        propre = nettoie(source)
         for nom, parametres, _, texte in FONCTION.findall(propre):
             qualifie = nom.lower() if "." in nom else f"public.{nom.lower()}"
             corps[f"{qualifie}/{arite(parametres)}"] = texte.lower()
@@ -269,13 +281,25 @@ def fonctions_des_migrations() -> dict[str, str]:
 
 
 def ferment_des_sessions_sans_verrou(fonctions: dict[str, str]) -> list[str]:
-    return sorted(
-        nom
-        for nom, texte in fonctions.items()
-        if ECRIT_LES_SESSIONS.search(texte)
-        and "verrouille_la_personne(" not in texte
-        and nom not in SANS_VERROU_DE_PERSONNE
-    )
+    """Les fonctions qui ferment des sessions sans prendre le verrou AVANT leur première écriture."""
+    fautives = []
+    for nom, texte in fonctions.items():
+        if not ECRIT_LES_SESSIONS.search(texte) or nom in SANS_VERROU_DE_PERSONNE:
+            continue
+        verrou, ecriture = LE_VERROU.search(texte), UNE_ECRITURE.search(texte)
+        if verrou is None or (ecriture is not None and ecriture.start() < verrou.start()):
+            fautives.append(nom)
+    return sorted(fautives)
+
+
+def ecritures_hors_des_fonctions() -> list[str]:
+    """Les migrations qui écrivent `login_session` hors d'une fonction analysée (`do`, `begin atomic`…)."""
+    fautes = []
+    for chemin in sorted(MIGRATIONS.glob("*.sql")):
+        reste = FONCTION.sub(" ", nettoie(chemin.read_text()))
+        if ECRIT_LES_SESSIONS.search(reste):
+            fautes.append(chemin.name)
+    return fautes
 
 
 def test_toute_fonction_qui_ferme_des_sessions_prend_d_abord_le_verrou_de_la_personne() -> None:
@@ -291,6 +315,10 @@ def test_les_exceptions_au_verrou_de_personne_existent_encore_et_ferment_bien_de
         )
 
 
+def test_aucune_migration_n_ecrit_les_sessions_hors_d_une_fonction_analysee() -> None:
+    assert ecritures_hors_des_fonctions() == []
+
+
 @pytest.mark.parametrize(
     "nom",
     [
@@ -301,11 +329,11 @@ def test_les_exceptions_au_verrou_de_personne_existent_encore_et_ferment_bien_de
         "public.confirme_le_changement_de_mot_de_passe/3",
     ],
 )
-def test_la_fermeture_prend_le_verrou_avant_toute_ecriture(nom: str) -> None:
+def test_ces_fermetures_prennent_le_verrou_avant_toute_ecriture(nom: str) -> None:
     texte = fonctions_des_migrations()[nom]
-    verrou = texte.index("verrouille_la_personne(")
-    ecritures = [texte.find(mot) for mot in ("update ", "delete ", "insert ") if mot in texte]
-    assert all(verrou < position for position in ecritures), nom
+    verrou = LE_VERROU.search(texte)
+    assert verrou is not None, nom
+    assert all(ecriture.start() > verrou.start() for ecriture in UNE_ECRITURE.finditer(texte)), nom
 
 
 FERME_SANS_VERROU = """
@@ -323,9 +351,46 @@ $$;
 """
 
 
+FERME_PUIS_VERROUILLE = """
+create or replace function public.ferme_tout(p_person uuid) returns void language plpgsql as $$
+begin
+  update public.login_session set revoked_at = now() where person_id = p_person;
+  perform private.verrouille_la_personne(p_person);
+end;
+$$;
+"""
+FERMETURES_DEGUISEES = [
+    "update only public.login_session set revoked_at = now()",
+    'update public."login_session" set revoked_at = now()',
+    "delete from only public.login_session",
+    "truncate public.login_session",
+    "truncate table public.login_session",
+    "merge into public.login_session s using x on true when matched then delete",
+]
+
+
 def test_le_controle_attrape_une_fonction_qui_ferme_sans_le_verrou() -> None:
     assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_SANS_VERROU])) == ["public.ferme_tout/1"]
     assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_AVEC_VERROU])) == []
+
+
+def test_le_controle_attrape_une_fonction_qui_ecrit_avant_de_verrouiller() -> None:
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_PUIS_VERROUILLE])) == ["public.ferme_tout/1"]
+
+
+@pytest.mark.parametrize("ecriture", FERMETURES_DEGUISEES)
+def test_le_controle_attrape_les_ecritures_deguisees(ecriture: str) -> None:
+    source = f"create function public.f() returns void language sql as $$ {ecriture}; $$;"
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == ["public.f/0"]
+
+
+def test_un_verrou_cite_dans_une_chaine_ou_un_autre_nom_ne_compte_pas() -> None:
+    source = (
+        "create function public.f() returns void language plpgsql as $$ begin "
+        "perform 'verrouille_la_personne(' ; perform x.ne_verrouille_la_personne(1); "
+        "delete from public.login_session; end $$;"
+    )
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == ["public.f/0"]
 
 
 def test_la_derniere_definition_d_une_fonction_est_celle_qui_compte() -> None:

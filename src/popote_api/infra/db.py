@@ -5,7 +5,7 @@
   SANS écrire ni verrouiller (`lit_la_session`, exécutable par `popote_api` seul) puis emprunte
   `authenticated`, dans la MÊME transaction. L'activité d'une session vue depuis plus de 5 minutes s'écrit
   dans sa propre transaction courte, validée AVANT celle de la route : aucun verrou de personne ni de ligne
-  de session n'est tenu quand la route prend le sien (foyer, puis personne, puis lignes ; migration 0148).
+  de session n'est tenu quand la route prend le sien (foyer, invitation, personne, lignes ; migration 0148).
 - `Base.connexion()` : pool `popote_api`, ni rôle emprunté ni identité (`current_user = popote_api`). Réservé
   aux fonctions `security definer` dont seul `popote_api` a l'`execute` : connexion, limites, sessions,
   vérification d'un mot de passe (liste fermée).
@@ -215,8 +215,11 @@ class Base:
     def session(self, empreinte: bytes) -> AbstractAsyncContextManager[tuple[SessionCourante, Curseur]]:
         """Une transaction qui lit la session, puis agit comme sa personne ; `SessionRefuseeError` sinon.
 
-        Un seul emprunt au pool par requête : la lecture de la session (qui repousse son échéance) et tout le
-        travail de la requête partagent la transaction, que le contexte valide en sortie normale.
+        Cas courant : un seul emprunt au pool, la lecture de la session (sans écriture ni verrou) et tout
+        le travail de la requête partagent la transaction, que le contexte valide en sortie normale. Activité
+        périmée (plus de 5 minutes) : la lecture est abandonnée, l'activité s'écrit dans une transaction
+        courte validée tout de suite (un deuxième emprunt, jamais en même temps que le premier), puis la
+        requête recommence (un troisième). Rien n'est tenu quand la route démarre.
         """
         return _contexte_de_session(self._api, empreinte, self._emetteur)
 
@@ -313,9 +316,17 @@ async def _contexte_de_session(
 
 
 async def _note_l_activite(pool: Pool | None, empreinte: bytes) -> None:
-    """Écrit l'activité en sa propre transaction, validée tout de suite : rien n'est tenu pendant la route."""
-    async with _contexte(pool, PREAMBULE_CONNEXION, None, BaseIndisponibleError()) as curseur:
-        await curseur.execute(NOTE_L_ACTIVITE, (empreinte,))
+    """Écrit l'activité en sa propre transaction, validée tout de suite : rien n'est tenu pendant la route.
+
+    Au mieux : l'activité ne fait pas échouer une requête dont la session est valide. Un verrou qui n'a pas
+    lâché en 5 s (une fermeture longue) ou un interblocage laissent l'activité périmée ; la requête suivante
+    réessaiera. Seuls ces deux cas sont avalés, et journalisés par leur type.
+    """
+    try:
+        async with _contexte(pool, PREAMBULE_CONNEXION, None, BaseIndisponibleError()) as curseur:
+            await curseur.execute(NOTE_L_ACTIVITE, (empreinte,))
+    except (psycopg.errors.LockNotAvailable, psycopg.errors.DeadlockDetected) as erreur:
+        journal.warning("Activité de session non écrite : %s", type(erreur).__name__)
 
 
 class SondeBase:
