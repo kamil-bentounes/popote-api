@@ -30,6 +30,8 @@ Codes de sortie : 0 preuve complète (ou à blanc réussi), 1 écart constaté o
 """
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -49,17 +51,20 @@ from aligne_droits import FORBIDDEN_PROJECT_REF, PROJECT_REF_PATTERN
 
 API_DE_GESTION = "https://api.supabase.com"
 NOM_DU_PROJET_D_ESSAI = "popote-essai"
+# Empreinte SHA-256 de la référence de l'essai : le dépôt est public, la référence ne s'y écrit pas. Elle se
+# compare avant tout appel réseau ; le nom du projet ne suffit pas (n'importe quel projet peut le porter).
+EMPREINTE_DE_LA_REFERENCE_D_ESSAI = "cd07ddb85b47bfeddf25c7f20407278fc5aafb4977031d61ecd37c817c742e15"
 MARQUE = "preuve-auth-s1"
 PREFIXE_D_ADRESSE = "preuve-auth-"
 ADRESSE_DE_TEST = re.compile(r"preuve-auth-[0-9a-f]{12}@example\.com", re.IGNORECASE | re.ASCII)
 MOTIF_D_ADRESSE_EN_SQL = "preuve-auth-%@example.com"
 LONGUEUR_DU_MOT_DE_PASSE = 64
 SYMBOLES = "!#$%&*+-=?@^_"
-# Un refus dû aux identifiants : 400 `invalid_credentials` (ou 422). Un 401 est une clé refusée, un 429 une
-# limite de débit : ni l'un ni l'autre ne dit rien du compte.
-STATUTS_DE_REFUS = frozenset({400, 422})
-CODES_DE_REFUS = frozenset({"invalid_credentials", "validation_failed"})
-CODES_COMPTE_EXISTANT = frozenset({"email_exists", "user_already_exists"})
+# Ce que l'essai a rendu le 13/11/2026 : 400 `invalid_credentials` à la connexion d'un compte sans mot de
+# passe connu, 422 `email_exists` à la deuxième création. Un 401 est une clé refusée, un 429 une limite de
+# débit : ni l'un ni l'autre ne dit rien du compte.
+REFUS_DE_CONNEXION = (400, "invalid_credentials")
+REFUS_DE_DOUBLON = (422, "email_exists")
 MOTS_DE_PASSE_DEVINES = ("", "motdepasse")
 FORME_D_UN_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 FORME_D_UN_PREFIXE = re.compile(r"\$(2[abxy])\$(\d{2})\$")
@@ -124,6 +129,14 @@ class Reponse:
 
 
 @dataclass(frozen=True)
+class CompteLu:
+    """Un compte tel qu'Auth le rend : l'adresse (en minuscules) et la marque `cree_par`."""
+
+    email: str = field(repr=False)
+    marque: str | None
+
+
+@dataclass(frozen=True)
 class EtatDuCompte:
     """Ce que la base de l'essai dit d'un compte. Le hachage n'est gardé que sous forme d'empreinte."""
 
@@ -138,7 +151,7 @@ class EtatDuCompte:
 
 
 def acces_depuis(environnement: Mapping[str, str]) -> Acces:
-    """Lit l'essai dans l'environnement et refuse la prod. Ne lit aucune autre variable."""
+    """Lit l'essai dans l'environnement ; refuse la prod et toute référence autre que l'essai épinglé."""
     ref = environnement.get("ESSAI_REF", "")
     jeton = environnement.get("SUPABASE_ESSAI_TOKEN", "")
     for nom, valeur in (("ESSAI_REF", ref), ("SUPABASE_ESSAI_TOKEN", jeton)):
@@ -149,6 +162,9 @@ def acces_depuis(environnement: Mapping[str, str]) -> Acces:
         raise AccesError("La prod n'est jamais une cible.")
     if not PROJECT_REF_PATTERN.fullmatch(ref):
         raise AccesError("ESSAI_REF n'a pas la forme d'une référence de projet.")
+    empreinte = hashlib.sha256(ref.encode()).hexdigest()
+    if not hmac.compare_digest(empreinte, EMPREINTE_DE_LA_REFERENCE_D_ESSAI):
+        raise AccesError("ESSAI_REF n'est pas la référence de l'essai de Popote : refus.")
     return Acces(ref, jeton)
 
 
@@ -347,6 +363,19 @@ class Essai:
     def supprime(self, identifiant: UUID) -> Reponse:
         return self._administration("DELETE", f"/auth/v1/admin/users/{identifiant}")
 
+    def lit_le_compte(self, identifiant: UUID) -> CompteLu | None:
+        """Relit un compte par son identifiant ; `None` s'il n'existe plus."""
+        reponse = self._administration("GET", f"/auth/v1/admin/users/{identifiant}")
+        if reponse.status == 404 and reponse.code() == "user_not_found":
+            return None
+        objet = reponse.objet()
+        email = objet.get("email")
+        if reponse.status != 200 or not isinstance(email, str):
+            raise AccesError(f"Un compte n'est pas lisible par l'administration d'Auth ({reponse.decrit()}).")
+        metadonnees = objet.get("app_metadata")
+        marque = metadonnees.get("cree_par") if isinstance(metadonnees, dict) else None
+        return CompteLu(email, marque if isinstance(marque, str) else None)
+
     def lit_un_compte_au_hasard(self) -> Reponse:
         """Une lecture d'administration (à blanc) : prouve que la clé secrète passe, sans rien écrire."""
         return self._administration("GET", "/auth/v1/admin/users?per_page=1")
@@ -376,6 +405,23 @@ def _exige_une_adresse_de_test(adresse: str) -> None:
         raise ValueError("Ce n'est pas une adresse de test du script.")
 
 
+def est_un_compte_de_test(compte: CompteLu, demandee: str | None = None) -> bool:
+    """Adresse de test, marque du script et, si on la connaît, l'adresse que le script a demandée.
+
+    Auth enregistre les adresses en minuscules : la comparaison l'est aussi.
+    """
+    return (
+        ADRESSE_DE_TEST.fullmatch(compte.email) is not None
+        and compte.marque == MARQUE
+        and (demandee is None or compte.email.lower() == demandee.lower())
+    )
+
+
+def ouvre_une_session(reponse: Reponse) -> bool:
+    jeton = reponse.objet().get("access_token")
+    return reponse.status == 200 and isinstance(jeton, str) and jeton != ""
+
+
 def verifie(condition: bool, message: str) -> None:
     if not condition:
         raise EcartError(message)
@@ -394,7 +440,10 @@ class Deroulement:
 
     essai: Essai
     sortie: Sortie
-    comptes_crees: list[UUID] = field(default_factory=list)
+    comptes_crees: dict[UUID, str] = field(
+        default_factory=dict
+    )  # identifiant rendu par Auth -> adresse demandée
+    refus_de_supprimer: int = 0
 
     def ok(self, message: str) -> None:
         self.sortie(f"ok      {message}")
@@ -404,7 +453,7 @@ class Deroulement:
         reponse = self.essai.cree(adresse, mot_de_passe)
         identifiant = _a_ete_cree(reponse)
         if identifiant is not None:
-            self.comptes_crees.append(identifiant)
+            self.comptes_crees[identifiant] = adresse
         return reponse
 
 
@@ -418,6 +467,12 @@ def etape_creation_sans_mot_de_passe(d: Deroulement, adresse: str) -> tuple[UUID
     identifiant = _a_ete_cree(reponse)
     if identifiant is None:
         raise EcartError("createUser n'a pas rendu d'identifiant lisible.")
+    # Auth rend un identifiant : rien ne prouve qu'il soit celui du compte demandé avant de l'avoir relu.
+    compte = d.essai.lit_le_compte(identifiant)
+    verifie(
+        compte is not None and est_un_compte_de_test(compte, adresse),
+        "Le compte rendu par createUser n'est pas celui qui a été demandé.",
+    )
     etat = d.essai.etat_du_compte(identifiant)
     verifie(etat.schema != "vide", "Aucun hachage n'a été écrit pour le compte sans mot de passe.")
     verifie(etat.confirme, "L'e-mail du compte créé n'est pas confirmé.")
@@ -437,7 +492,7 @@ def etape_connexion_publique_refusee(d: Deroulement, adresse: str) -> None:
         )
         verifie("access_token" not in reponse.objet(), "La connexion publique a ouvert une session.")
         verifie(
-            reponse.status in STATUTS_DE_REFUS and reponse.code() in CODES_DE_REFUS,
+            (reponse.status, reponse.code()) == REFUS_DE_CONNEXION,
             f"La connexion publique ne refuse pas comme attendu ({reponse.decrit()}).",
         )
     d.ok(f"connexion publique refusée pour mot de passe vide et deviné ({reponse.decrit()})")
@@ -458,7 +513,7 @@ def etape_mot_de_passe_pose(d: Deroulement, identifiant: UUID, adresse: str, ava
     # le fera échouer : la preuve est celle d'avant la coupure.
     controle = d.essai.connexion_publique(adresse, mot_de_passe)
     verifie(
-        controle.status == 200 and "access_token" in controle.objet(),
+        ouvre_une_session(controle),
         f"La connexion avec le mot de passe posé n'est pas acceptée ({controle.decrit()}).",
     )
     d.ok(
@@ -471,7 +526,7 @@ def etape_email_deja_pris(d: Deroulement, adresse: str) -> None:
         # La variante en majuscules est aussi une adresse de test : l'expression est insensible à la casse.
         reponse = d.cree(variante)
         verifie(
-            reponse.status == 422 and reponse.code() in CODES_COMPTE_EXISTANT,
+            (reponse.status, reponse.code()) == REFUS_DE_DOUBLON,
             f"Une deuxième création ({libelle}) n'est pas refusée en email_exists ({reponse.decrit()}).",
         )
         d.ok(f"deuxième création, {libelle} : refusée ({reponse.decrit()})")
@@ -479,29 +534,36 @@ def etape_email_deja_pris(d: Deroulement, adresse: str) -> None:
     d.ok("un seul compte porte l'adresse, quelle que soit la casse")
 
 
-def _supprime_les_comptes(d: Deroulement, identifiants: set[UUID]) -> None:
-    for identifiant in identifiants:
-        try:
-            reponse = d.essai.supprime(identifiant)
-        except AccesError as erreur:
-            d.sortie(f"erreur  suppression d'un compte de test impossible : {erreur}")
-            continue
-        supprime = reponse.status in (200, 204) or (
-            reponse.status == 404 and reponse.code() == "user_not_found"
-        )
-        if not supprime:
-            d.sortie(f"erreur  suppression d'un compte de test refusée ({reponse.decrit()})")
+def _supprime_un_compte_de_test(d: Deroulement, identifiant: UUID, demandee: str | None) -> None:
+    """Relit le compte et ne le supprime que s'il est bien de test (et, si connue, à l'adresse demandée)."""
+    try:
+        compte = d.essai.lit_le_compte(identifiant)
+        if compte is None:
+            return
+        if not est_un_compte_de_test(compte, demandee):
+            d.refus_de_supprimer += 1
+            d.sortie("ÉCART   suppression refusée : un compte n'est pas celui que le script a créé.")
+            return
+        reponse = d.essai.supprime(identifiant)
+    except AccesError as erreur:
+        d.sortie(f"erreur  suppression d'un compte de test impossible : {erreur}")
+        return
+    supprime = reponse.status in (200, 204) or (reponse.status == 404 and reponse.code() == "user_not_found")
+    if not supprime:
+        d.sortie(f"erreur  suppression d'un compte de test refusée ({reponse.decrit()})")
 
 
 def nettoie(d: Deroulement) -> int:
     """Supprime les comptes créés, puis balaie ceux qu'une exécution précédente a oubliés.
 
-    Les comptes créés partent d'abord : la base illisible ne doit pas les laisser en place.
-    Rend le nombre de comptes de test qui restent.
+    Les comptes créés partent d'abord : la base illisible ne doit pas les laisser en place. Chacun est relu
+    avant d'être supprimé. Rend le nombre de comptes de test qui restent.
     """
-    _supprime_les_comptes(d, set(d.comptes_crees))
+    for identifiant, adresse in dict(d.comptes_crees).items():
+        _supprime_un_compte_de_test(d, identifiant, adresse)
     d.comptes_crees.clear()
-    _supprime_les_comptes(d, set(d.essai.comptes_de_test()))
+    for identifiant in set(d.essai.comptes_de_test()):
+        _supprime_un_compte_de_test(d, identifiant, None)
     return len(d.essai.comptes_de_test())
 
 
@@ -545,6 +607,9 @@ def joue_la_preuve(essai: Essai, sortie: Sortie) -> int:
         except AccesError as erreur:
             sortie(f"ACCÈS   nettoyage impossible : {erreur}")
             restants = -1
+    if d.refus_de_supprimer:
+        sortie("ÉCART   un compte rendu par Auth n'était pas celui demandé : il n'a pas été supprimé.")
+        code = max(code, 1)
     if restants != 0:
         sortie("ÉCART   des comptes de test restent (ou leur liste est illisible) : relancer le script.")
         return max(code, 1)
@@ -576,6 +641,24 @@ def joue_a_blanc(essai: Essai, sortie: Sortie) -> int:
     return 0
 
 
+def cree_le_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
+    delais = httpx.Timeout(DELAI_LECTURE_S, connect=DELAI_CONNEXION_S, pool=DELAI_CONNEXION_S)
+    # trust_env=False : ni proxy ni certificats du poste ne détournent les clés ; aucune redirection suivie.
+    # Le magasin de certificats du système, pas celui de certifi : un réseau qui inspecte le TLS y pose son
+    # autorité (WSL d'entreprise). La vérification des certificats reste entière.
+    return httpx.Client(
+        timeout=delais,
+        transport=transport,
+        follow_redirects=False,
+        trust_env=False,
+        verify=ssl.create_default_context(),
+    )
+
+
+def _interrompt_sur_sigterm(_signal: int, _cadre: object) -> None:
+    raise KeyboardInterrupt
+
+
 def main(
     argv: Sequence[str], environnement: Mapping[str, str], *, transport: httpx.BaseTransport | None = None
 ) -> int:
@@ -590,25 +673,17 @@ def main(
     except AccesError as erreur:
         print(f"ACCÈS   {erreur}", file=sys.stderr)
         return 2
-    delais = httpx.Timeout(DELAI_LECTURE_S, connect=DELAI_CONNEXION_S, pool=DELAI_CONNEXION_S)
-    # trust_env=False : ni proxy ni certificats du poste ne détournent les clés ; aucune redirection suivie.
-    # Le magasin de certificats du système, pas celui de certifi : un réseau qui inspecte le TLS y pose son
-    # autorité (WSL d'entreprise). La vérification des certificats reste entière.
-    contexte = ssl.create_default_context()
-    with httpx.Client(
-        timeout=delais, transport=transport, follow_redirects=False, trust_env=False, verify=contexte
-    ) as http:
-        essai = Essai(acces, http, environnement)
-        if arguments.a_blanc:
-            return joue_a_blanc(essai, print)
-        return joue_la_preuve(essai, print)
-
-
-def _interrompt_sur_sigterm(_signal: int, _cadre: object) -> None:
-    raise KeyboardInterrupt
+    # SIGTERM contournerait le `finally` : on l'interrompt comme un Ctrl-C, qui, lui, nettoie.
+    precedent = signal.signal(signal.SIGTERM, _interrompt_sur_sigterm)
+    try:
+        with cree_le_client(transport) as http:
+            essai = Essai(acces, http, environnement)
+            if arguments.a_blanc:
+                return joue_a_blanc(essai, print)
+            return joue_la_preuve(essai, print)
+    finally:
+        signal.signal(signal.SIGTERM, precedent)
 
 
 if __name__ == "__main__":
-    # SIGTERM contournerait le `finally` : on l'interrompt comme un Ctrl-C, qui, lui, nettoie.
-    signal.signal(signal.SIGTERM, _interrompt_sur_sigterm)
     sys.exit(main(sys.argv[1:], os.environ))

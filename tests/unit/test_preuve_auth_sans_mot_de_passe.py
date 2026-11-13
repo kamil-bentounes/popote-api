@@ -2,8 +2,10 @@
 
 import hashlib
 import json
+import os
 import re
 import secrets
+import signal
 import string
 import sys
 from dataclasses import dataclass, field
@@ -16,7 +18,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ops"))
 
 import preuve_auth_sans_mot_de_passe as preuve
-from aligne_droits import FORBIDDEN_PROJECT_REF
 
 REF = "abcdefghijklmnopqrst"
 JETON = "sbp_" + "j" * 40
@@ -24,6 +25,16 @@ CLE_SECRETE = "sb_secret_" + "s" * 30
 CLE_PUBLIABLE = "sb_publishable_" + "p" * 30
 ENVIRONNEMENT = {"ESSAI_REF": REF, "SUPABASE_ESSAI_TOKEN": JETON}
 MARQUE = preuve.MARQUE
+EMPREINTE_REELLE = preuve.EMPREINTE_DE_LA_REFERENCE_D_ESSAI
+# Écrite ici, pas importée : si la constante du script dérivait, ce test le verrait.
+REFERENCE_DE_LA_PROD = "mjlxfffdirlqmmjzhorg"
+TIERS = "33333333-3333-4333-8333-333333333333"
+
+
+@pytest.fixture(autouse=True)
+def essai_epingle_sur_la_reference_de_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La référence de test remplace celle de l'essai réel ; les tests d'épinglage remettent la vraie."""
+    monkeypatch.setattr(preuve, "EMPREINTE_DE_LA_REFERENCE_D_ESSAI", hashlib.sha256(REF.encode()).hexdigest())
 
 
 @dataclass
@@ -48,6 +59,13 @@ class FauxSupabase:
     hachage_fige: bool = False
     connexion_ouverte: bool = False
     connexion_cle_refusee: bool = False
+    jeton_nul: bool = False
+    refus_de_connexion_en_422: bool = False
+    doublon_avec_un_autre_code: bool = False
+    sigterm_a_la_connexion: bool = False
+    uuid_d_un_tiers: bool = False
+    remplacement_refuse: bool = False
+    compte_fantome_a_l_adresse: bool = False
     connexion_refusee_pour_autre_chose: bool = False
     bon_mot_de_passe_refuse: bool = False
     projet_d_une_autre_reference: bool = False
@@ -150,11 +168,26 @@ class FauxSupabase:
         if chemin == "/auth/v1/admin/users" and requete.method == "POST":
             return self._cree(json.loads(requete.content))
         identifiant = chemin.rsplit("/", 1)[-1]
+        if requete.method == "GET":
+            return self._lit(identifiant)
         if requete.method == "PUT":
             return self._remplace(identifiant, json.loads(requete.content))
         if requete.method == "DELETE":
             return self._supprime(identifiant)
         return httpx.Response(404)
+
+    def _lit(self, identifiant: str) -> httpx.Response:
+        utilisateur = self.utilisateurs.get(identifiant)
+        if utilisateur is None:
+            return httpx.Response(404, json={"error_code": "user_not_found"})
+        return httpx.Response(
+            200,
+            json={
+                "id": identifiant,
+                "email": utilisateur.email.lower(),  # Auth enregistre les adresses en minuscules
+                "app_metadata": {"cree_par": utilisateur.marque} if utilisateur.marque else {},
+            },
+        )
 
     def _nouveau_hachage(self) -> str:
         self._compteur += 1
@@ -169,10 +202,18 @@ class FauxSupabase:
         adresse = corps["email"]
         meme_adresse = [u for u in self.utilisateurs.values() if u.email.lower() == adresse.lower()]
         sauf_casse = self.doublon_de_casse_accepte and adresse != adresse.lower()
+        if self.uuid_d_un_tiers:
+            return httpx.Response(200, json={"id": TIERS, "email": adresse})
         if meme_adresse and not sauf_casse:
+            if self.compte_fantome_a_l_adresse:
+                self._compteur += 1
+                self.utilisateurs[f"00000000-0000-4000-8000-{self._compteur:012d}"] = Utilisateur(
+                    adresse.upper(), "$2a$10$fantome", MARQUE
+                )
             # Auth recopie l'adresse dans son message : le script ne doit jamais le relayer.
+            code = "user_already_exists" if self.doublon_avec_un_autre_code else "email_exists"
             return httpx.Response(
-                422, json={"error_code": "email_exists", "msg": f"A user with {adresse} already exists"}
+                422, json={"error_code": code, "msg": f"A user with {adresse} already exists"}
             )
         self._compteur += 1
         identifiant = f"00000000-0000-4000-8000-{self._compteur:012d}"
@@ -188,6 +229,8 @@ class FauxSupabase:
         utilisateur = self.utilisateurs.get(identifiant)
         if utilisateur is None:
             return httpx.Response(404, json={"error_code": "user_not_found"})
+        if self.remplacement_refuse:
+            return httpx.Response(422, json={"error_code": "weak_password"})
         self.mots_de_passe_vus.append(corps["password"])
         utilisateur.mot_de_passe = corps["password"]
         if not self.hachage_fige:
@@ -210,8 +253,12 @@ class FauxSupabase:
             return httpx.Response(429, json={"error_code": "over_request_rate_limit"})
         if self.connexion_cle_refusee:
             return httpx.Response(401, json={"error_code": "invalid_api_key"})
+        if self.refus_de_connexion_en_422:
+            return httpx.Response(422, json={"error_code": "validation_failed"})
         if self.connexion_refusee_pour_autre_chose:
             return httpx.Response(400, json={"error_code": "bad_json"})
+        if self.sigterm_a_la_connexion:
+            os.kill(os.getpid(), signal.SIGTERM)
         if self.connexion_ouverte:
             return httpx.Response(200, json={"access_token": "jeton-de-session"})
         corps = json.loads(requete.content)
@@ -220,7 +267,7 @@ class FauxSupabase:
             for u in self.utilisateurs.values()
         )
         if bon_mot_de_passe and not self.bon_mot_de_passe_refuse:
-            return httpx.Response(200, json={"access_token": "jeton-de-session"})
+            return httpx.Response(200, json={"access_token": None if self.jeton_nul else "jeton-de-session"})
         return httpx.Response(
             400, json={"error_code": "invalid_credentials", "msg": "Invalid login credentials"}
         )
@@ -351,6 +398,11 @@ class TestEcarts:
             ({"connexion_cle_refusee": True}, "ne refuse pas comme attendu"),
             ({"connexion_refusee_pour_autre_chose": True}, "ne refuse pas comme attendu"),
             ({"bon_mot_de_passe_refuse": True}, "mot de passe posé n'est pas acceptée"),
+            ({"jeton_nul": True}, "mot de passe posé n'est pas acceptée"),
+            ({"refus_de_connexion_en_422": True}, "ne refuse pas comme attendu"),
+            ({"doublon_avec_un_autre_code": True}, "n'est pas refusée en email_exists"),
+            ({"remplacement_refuse": True}, "updateUserById refuse"),
+            ({"compte_fantome_a_l_adresse": True}, "Plus d'un compte"),
             ({"hachage_fige": True}, "Le hachage n'a pas changé"),
             ({"doublon_de_casse_accepte": True}, "autre casse"),
         ],
@@ -365,6 +417,11 @@ class TestEcarts:
             "clé publiable refusée",
             "refus pour autre chose",
             "bon mot de passe refusé",
+            "jeton de session nul",
+            "refus en 422",
+            "doublon sous un autre code",
+            "remplacement refusé",
+            "compte en double",
             "hachage fixe",
             "doublon",
         ],
@@ -473,9 +530,7 @@ class TestGardeFous:
     def test_prod_reference_is_refused_before_any_call(self, capsys: pytest.CaptureFixture[str]) -> None:
         faux = FauxSupabase()
 
-        code, sortie = lance(
-            faux, capsys, environnement={**ENVIRONNEMENT, "ESSAI_REF": FORBIDDEN_PROJECT_REF}
-        )
+        code, sortie = lance(faux, capsys, environnement={**ENVIRONNEMENT, "ESSAI_REF": REFERENCE_DE_LA_PROD})
 
         assert code == 2
         assert "prod" in sortie
@@ -595,6 +650,107 @@ class TestGardeFous:
 
             with pytest.raises(ValueError, match="adresse de test"):
                 essai.nombre_de_comptes_a_l_adresse(adresse)
+
+    @pytest.mark.parametrize("arguments", [(), ("--a-blanc",)])
+    @pytest.mark.parametrize("ref", [REF, "zzzzzzzzzzzzzzzzzzzz"])
+    def test_reference_that_is_not_the_pinned_essai_is_refused_before_any_call(
+        self,
+        ref: str,
+        arguments: tuple[str, ...],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Un projet secondaire renommé `popote-essai` répondrait comme l'essai : seule la référence compte.
+        monkeypatch.setattr(preuve, "EMPREINTE_DE_LA_REFERENCE_D_ESSAI", EMPREINTE_REELLE)
+        faux = FauxSupabase()
+
+        code, sortie = lance(faux, capsys, *arguments, environnement={**ENVIRONNEMENT, "ESSAI_REF": ref})
+
+        assert code == 2
+        assert "n'est pas la référence de l'essai" in sortie
+        assert faux.appels == []
+
+    def test_pinned_value_is_a_sha256_hexadecimal_digest(self) -> None:
+        assert re.fullmatch(r"[0-9a-f]{64}", EMPREINTE_REELLE)
+
+    def test_production_reference_is_refused_by_name_before_the_pin(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(preuve, "EMPREINTE_DE_LA_REFERENCE_D_ESSAI", EMPREINTE_REELLE)
+
+        code, sortie = lance(
+            FauxSupabase(), capsys, environnement={**ENVIRONNEMENT, "ESSAI_REF": REFERENCE_DE_LA_PROD}
+        )
+
+        assert code == 2
+        assert "La prod n'est jamais une cible" in sortie
+
+    def test_client_ignores_the_environment_and_never_follows_redirects(self) -> None:
+        with preuve.cree_le_client() as client:
+            assert client.trust_env is False
+            assert client.follow_redirects is False
+
+
+class TestSuppressionPrudente:
+    def test_uuid_of_a_third_party_account_returned_by_createuser_is_never_deleted(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        tiers = Utilisateur("lea.martin@example.com", "$2a$10$tiers", None)
+        faux = FauxSupabase(uuid_d_un_tiers=True, utilisateurs={TIERS: tiers})
+
+        code, sortie = lance(faux, capsys)
+
+        assert code == 1
+        assert "n'est pas celui qui a été demandé" in sortie
+        assert "suppression refusée" in sortie
+        assert list(faux.utilisateurs) == [TIERS]
+        assert [m for m, _ in faux.ecritures_d_auth() if m in ("PUT", "DELETE")] == []
+
+    @pytest.mark.parametrize(
+        ("compte", "demandee", "attendu"),
+        [
+            (preuve.CompteLu("preuve-auth-0123456789ab@example.com", MARQUE), None, True),
+            (
+                preuve.CompteLu("preuve-auth-0123456789ab@example.com", MARQUE),
+                "PREUVE-AUTH-0123456789AB@example.com",
+                True,
+            ),
+            (
+                preuve.CompteLu("preuve-auth-0123456789ab@example.com", MARQUE),
+                "preuve-auth-ba9876543210@example.com",
+                False,
+            ),
+            (preuve.CompteLu("preuve-auth-0123456789ab@example.com", None), None, False),
+            (preuve.CompteLu("preuve-auth-0123456789ab@example.com", "popote-api"), None, False),
+            (preuve.CompteLu("lea.martin@example.com", MARQUE), None, False),
+            (preuve.CompteLu("preuve-auth-zz@example.com", MARQUE), None, False),
+        ],
+        ids=[
+            "à nous",
+            "casse d'Auth",
+            "autre adresse demandée",
+            "sans marque",
+            "autre marque",
+            "autre motif",
+            "forme voisine",
+        ],
+    )
+    def test_only_a_test_account_with_the_requested_address_is_ours(
+        self, compte: preuve.CompteLu, demandee: str | None, attendu: bool
+    ) -> None:
+        assert preuve.est_un_compte_de_test(compte, demandee) is attendu
+
+
+class TestSigterm:
+    def test_real_sigterm_in_the_middle_still_cleans_up_and_restores_the_handler(self) -> None:
+        faux = FauxSupabase(sigterm_a_la_connexion=True)
+        avant = signal.getsignal(signal.SIGTERM)
+
+        with pytest.raises(KeyboardInterrupt):
+            preuve.main([], ENVIRONNEMENT, transport=httpx.MockTransport(faux))
+
+        assert faux.utilisateurs == {}
+        assert signal.getsignal(signal.SIGTERM) == avant
 
 
 class TestAblanc:

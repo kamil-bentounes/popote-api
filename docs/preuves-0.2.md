@@ -45,7 +45,7 @@ restant. Le plan n'écrit donc pas S13 sur une hypothèse.
   accepté, le hachage change (la **reprise** de S13 fonctionne). Contrôle positif (vérifié par le script) : avec ce mot
   de passe, la connexion publique répond `200` avec une session, donc le refus précédent tenait bien au mot de passe
   (la connexion par mot de passe est encore ouverte sur l'essai : sa coupure est 0.7).
-- Une deuxième création de la même adresse, puis de sa variante en majuscules : `422 email_exists` les deux fois ; un seul
+- Une deuxième création de la même adresse, puis de sa variante en majuscules : `422 email_exists` les deux fois (le script n'accepte pas d'autre code) ; un seul
   compte porte l'adresse.
 - Le script supprime son compte dans un `finally` et balaie d'abord ceux d'une exécution interrompue ; il s'arrête au
   premier écart (sortie 1) et n'agit que sur les comptes qui portent à la fois l'adresse `preuve-auth-<hex>@example.com`
