@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     identity_pepper: SecretStr | None = None
     # Les limites de connexion, comptées en base (`security/limites_base.py`, migration 0138). Les défauts
     # sont ceux de la spec § 3.6 : 5 essais par compte et 20 par IP en 15 min, blocage de 15 min qui double
-    # jusqu'à 60 min ; 3 demandes de réinitialisation par heure et par (e-mail, IP).
+    # jusqu'à 60 min ; `reinitialisation_*` : 3 demandes par heure, réglage mort retiré en S15.
     connexion_essais_par_compte: int = Field(default=5, ge=1, le=1000)
     connexion_essais_par_ip: int = Field(default=20, ge=1, le=10000)
     connexion_fenetre_s: int = Field(default=900, ge=1, le=86400)
@@ -124,9 +124,9 @@ class Settings(BaseSettings):
     # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
     breach_check: BreachCheck = BreachCheck.hibp
 
-    # L'envoi des mails (`infra/mails.py`). `local` ne se pose qu'en local ; l'envoi réel vient avec T16.
+    # L'envoi des mails (`infra/mails.py`). `local` ne se pose qu'en local ; l'envoi réel vient avec S4.
     mail_provider: MailProvider = MailProvider.aucun
-    # L'origine publique du front, où pointent les liens : `<public_base_url>/reinitialisation#<jeton>`.
+    # L'origine publique du front, où pointent les liens : `<public_base_url>/invitation#<jeton>`.
     public_base_url: AnyHttpUrl | None = None
 
     # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.

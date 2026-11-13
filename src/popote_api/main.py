@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, limites, relais
-from popote_api.api import connexion, health, internes, invitations_publiques, reinitialisation, v1
+from popote_api.api import connexion, health, internes, invitations_publiques, v1
 from popote_api.config import Env, MailProvider, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
@@ -65,8 +65,8 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
             )
         if settings.mail_provider is MailProvider.aucun and settings.relais_exige:
             avertissements.warning(
-                "POPOTE_MAIL_PROVIDER=aucun : aucun mail ne part, la réinitialisation du mot de passe est "
-                "inopérante."
+                "POPOTE_MAIL_PROVIDER=aucun : aucun mail ne part, le code de connexion et les invitations "
+                "sont inopérants."
             )
         if settings.public_base_url is None and settings.relais_exige:
             avertissements.warning(
@@ -131,7 +131,6 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.include_router(internes.router)
     app.include_router(connexion.router)
     app.include_router(invitations_publiques.router)
-    app.include_router(reinitialisation.router)
     app.include_router(v1.cree_routeur())
     errors.installe(app)
     erreurs_base.installe(app)

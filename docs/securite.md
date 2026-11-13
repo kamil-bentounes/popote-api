@@ -193,8 +193,8 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Valeurs** (`config.py`) : 5 essais par compte et 20 par IP en 15 min ; au créneau de trop, blocage de 15 min, puis
   30, puis 60 (plafond) ; les crans retombent après 24 h sans blocage. Bloqué, la fonction rend l'attente **sans
   compter** : insister ne prolonge rien. Un succès remet le compte à zéro (`libere_compte`), jamais l'IP.
-- **Réinitialisation** : 3 par heure et par couple **(e-mail, IP)** (`Empreintes.cle_reinitialisation`), sans escalade ;
-  un tiers n'épuise pas les demandes d'une personne.
+- **Réinitialisation** (route retirée en 0.4bis S3, scope `reset` retiré en S15) : 3 par heure et par couple **(e-mail, IP)**
+  (`Empreintes.cle_reinitialisation`), sans escalade.
 - **Clés** : HMAC de 32 octets (poivre), l'e-mail sous sa forme `email_normalise`, l'IPv6 regroupée par /64 ; jamais
   d'adresse en base. Une clé de compte inconnue se comporte comme une connue (la fonction ne lit pas `auth.users`).
 - **Journal** : `prend_les_creneaux` rend aussi quelle clé vient de passer en blocage ; seul ce drapeau déclenche
@@ -204,7 +204,7 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
   nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h.
 - **Risque accepté : blocage par un tiers (B5).** Qui connaît l'adresse d'une personne peut ralentir **sa** connexion en
-  épuisant ses 5 essais : au plus 60 min par blocage (plafond), « mot de passe oublié » restant ouvert. Accepté pour
+  épuisant ses 5 essais : au plus 60 min par blocage (plafond), « mot de passe oublié » restant ouvert jusqu'à S5 (code par mail). Accepté pour
   un foyer de deux personnes ; l'alternative (ne pas limiter par compte) laisserait la force brute ouverte.
 
 ### 4.4 Sessions côté base (0.4, migration 0139 ; code : `security/sessions_base.py`, `security/appareil.py`)
@@ -255,7 +255,7 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait
   un jeton en base ; chaque succès ouvre une session neuve, chaque échec se compte.
 - **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus
-  60 minutes ; « mot de passe oublié » reste ouvert (foyer de deux personnes).
+  60 minutes ; le code par mail (S5) reste ouvert (foyer de deux personnes).
 
 ### 4.6 Les appareils et la déconnexion (0.4, migration 0140 ; code : `api/appareils.py`, `security/cookie.py`)
 
@@ -616,36 +616,32 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   `tests/integration/test_suppression_route.py` ; mutations rejouées : sans garde de réauth, sans effacement, sans appel à
   Auth, et effacement dans la transaction de session (le `503` annule alors l'effacement) font chacun échouer un test.
 
-### 4.12 Demander la réinitialisation du mot de passe (0.4 T15a, migration 0146 ; code : `api/reinitialisation.py`, `security/reinitialisation.py`, `infra/mails.py`)
+### 4.12 L'interface d'envoi des mails (0.4bis S3 ; code : `infra/mails.py`, `infra/mails_textes.py`)
 
-- **`POST /api/v1/password-resets` `{email}`** : publique, toujours `202` et le même corps (`{message}`) et les mêmes en-têtes
-  pour une adresse connue, inconnue, bannie, supprimée ou sans profil ; la réponse ne dit rien du compte. UNE transaction de
-  contexte connexion : le créneau `reset` (3 par heure, clé HMAC du **couple (adresse normalisée, IP)** : B5, un tiers
-  n'épuise que ses propres demandes ; pris même pour une adresse inconnue, donc `429` pour tous), `cree_reinitialisation` et
-  l'événement `reinitialisation_demandee` **pour un compte qui reçoit un lien seulement** (clés HMAC ; une adresse inconnue
-  n'écrit qu'un compteur, purgé en 24 h : sinon une IP remplirait la base de lignes gardées 90 jours). Le refus de limite
-  est rendu, puis levé hors de la transaction : le compteur reste. Sans poivre : `503` (rien ne se compte sans clé).
-- **Le lien** : jeton de 32 octets (43 caractères base64url), tiré avant la base dans tous les cas ; seule l'empreinte SHA-256
-  est écrite. 30 minutes au plus (`CHECK`), usage unique, un seul lien actif par personne (une nouvelle demande révoque la
-  précédente ; verrou consultatif par personne). `<public_base_url>/reinitialisation#<jeton>` : le jeton après `#`, que le
-  navigateur n'envoie à personne. Un compte **sans profil** ne reçoit pas de lien (B10 : il repasse par une invitation) ; B24 :
-  une seule forme d'adresse (`email_normalise`).
-- **L'envoi** : après la réponse (`BackgroundTasks`), derrière `EnvoiMail`. `POPOTE_MAIL_PROVIDER` : `aucun` (défaut ; chaque
-  envoi échoue proprement, `MailAbsent`) ou `local` (boîte en mémoire `BoiteDeTest`, **local seulement** : refusé ailleurs).
-  Un échec se journalise par son type seul (ni adresse ni lien, ni jeton) et laisse la réponse `202`. Hors local, `aucun`
-  et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage : la réinitialisation est inopérante. L'envoi réel
-  attend D6 (T16).
-- **Risques acceptés** (foyer de deux personnes, offre gratuite) : (a) **mail-bombing** : la clé est le couple (adresse, IP) ;
-  une IP peut écrire à autant d'adresses que la limite par adresse IP le laisse passer (`Debit`, 120 écritures par minute) et
-  une adresse reçoit au plus 3 mails par heure et par IP, donc davantage depuis plusieurs IP ; (b) **révocation par un tiers** :
-  toute demande pour une adresse révoque le lien actif de la personne (le lien reçu avant meurt) ; elle redemande ; (c) un
-  compteur par adresse inconnue : une ligne `login_throttle` par couple, purgée à 24 h ; (d) fenêtre fixe : 3 demandes à
-  00:59 et 3 à 01:00 passent ; (e) le temps de réponse d'un compte connu (verrou, mise à jour, insertion) diffère de
-  quelques ms de celui d'un inconnu : l'envoi différé cache le seul écart important ; (f) un envoi plus long que le délai de
-  la requête est annulé : le lien est écrit, le mail non, et le journal le dit (`annulé (délai dépassé)`). À reprendre avec
-  T16 (envoi réel) et 0.7.
-- **Risque accepté (B5)** : un tiers qui connaît l'adresse peut ralentir la connexion de cette personne en épuisant ses essais
-  (blocage de 60 minutes au plus ; « mot de passe oublié » reste ouvert). Foyer de deux personnes : accepté.
-- **Sessions de GoTrue (B9)** : l'usage du lien (T15b) les fermera par `private.ferme_les_sessions_auth` ; la force brute par
-  `/auth/v1/token` n'est couverte qu'après 0.7. Tests : `tests/integration/test_reinitialisation.py`. Mutations rejouées : ne
-  pas révoquer le lien précédent, envoyer pour une adresse inconnue, ne pas prendre le créneau, une clé sans l'IP.
+- **La réinitialisation du mot de passe n'existe plus** (décision D3 du 13/11/2026 : plus aucun mot de passe ; le code par mail
+  *est* la récupération). `POST /api/v1/password-resets` répond désormais `401` comme toute route inconnue sans session. Restent
+  en base, retirés par S15 : la table `password_reset`, `cree_reinitialisation`, le créneau `reset` (`prend_un_creneau_reinit`)
+  et, côté Python, `Empreintes.cle_reinitialisation` (et `_requise`, `ETIQUETTE_REINITIALISATION`), `prendre_un_creneau_de_reinitialisation` et les
+  réglages `reinitialisation_essais` et `reinitialisation_fenetre_s`, que plus aucune route n'appelle.
+- **`EnvoiMail`** (`Protocol`) : `envoie_le_code(MessageCode)` et `envoie_l_invitation(MessageInvitation)`. C'est ce que la demande
+  de code (S5) et l'invitation (S12) appellent. Garanties : (1) l'envoi se fait **après** la réponse HTTP (`BackgroundTasks`) :
+  un échec ne change jamais la réponse ; (2) un échec lève `MailIndisponible` et rien d'autre ; l'appelant le journalise par son
+  type seul ; (3) un retour sans erreur veut dire « accepté par le fournisseur », pas « remis » ; (4) les textes viennent de
+  `mails_textes.py`. `envoie_sans_remonter(envoyer, message, quoi)` est l'enveloppe de la tâche d'arrière-plan : elle journalise le type
+  de l'erreur seul et laisse remonter l'annulation (le délai de 25 s de la requête englobe la tâche : un envoi trop long est annulé).
+- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII, l'adresse n'a ni blanc ni saut de ligne : ils s'écrivent
+  tels quels dans le texte) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
+  l'heure de Paris ; le lien est un lien web sans blanc, `<public_base_url>/invitation#<jeton>`). Leur `__repr__` masque tout : ni adresse, ni code, ni lien, ni prénom.
+- **Les textes** : du texte clair, en français. L'objet du code est constant (`Ton code de connexion Popote`) et **ne porte jamais
+  le code** : le fournisseur garde l'objet. Aucun prénom dans un objet. Dans le texte, un prénom passe par `prenom_affichable` :
+  lettres Unicode (NFC d'abord, marques combinantes admises à trois de suite), espaces, tirets, apostrophes, 30 caractères au
+  plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Limites dites : pas de contrôle de
+  script mixte ni d'homoglyphes (« Mаrc » avec un a cyrillique passe) ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
+  30 lettres (« Support Popote » passe) : le filtre réduit l'hameçonnage par prénom sans le supprimer (menace F6). Un prénom ne se garde jamais sans ce filtre : S12 l'applique aussi à la saisie.
+- **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`) ou `local`
+  (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs). L'envoi réel par Scaleway TEM vient
+  avec S4 ; hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage.
+- Tests : `tests/unit/test_mails.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
+  pas filtrer le prénom (hôte et invité), ne pas normaliser en NFC, marques et remplissages invisibles, avaler l'annulation,
+  journaliser le message de l'erreur.
+
