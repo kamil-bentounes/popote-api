@@ -120,15 +120,16 @@ class Authentificateur:
         cross_origin: Any = False,
         top_origin: str | None = None,
         format_d_attestation: str = "none",
-        declaration: dict[str, Any] | None = None,
+        declaration: Any = None,
         identifiant_brut_different: bool = False,
         identifiant_de_l_attestation: bytes | None = None,
         cle_cose: bytes | None = None,
+        attestation_brute: bytes | None = None,
     ) -> dict[str, Any]:
         """La réponse à `navigator.credentials.create()` pour ces options ; tout se règle à l'appel.
 
         `identifiant_de_l_attestation` et `cle_cose` remplacent ce que l'attestation porte (identifiant,
-        clé publique COSE) sans changer `id` ni la vraie clé.
+        clé publique COSE) sans changer `id` ni la vraie clé ; `attestation_brute` remplace tout l'objet.
         """
         rp_id = options["rp"]["id"] if rp_id is None else rp_id
         self.identifiant_utilisateur = base64url_to_bytes(options["user"]["id"])
@@ -144,8 +145,12 @@ class Authentificateur:
             + ecrit
             + (self.cle_publique_cose() if cle_cose is None else cle_cose)
         )
-        attestation = cbor2.dumps(
-            {"fmt": format_d_attestation, "attStmt": declaration or {}, "authData": donnees}
+        attestation = attestation_brute or cbor2.dumps(
+            {
+                "fmt": format_d_attestation,
+                "attStmt": {} if declaration is None else declaration,
+                "authData": donnees,
+            }
         )
         return {
             "id": bytes_to_base64url(self.identifiant),

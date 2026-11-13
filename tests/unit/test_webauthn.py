@@ -7,11 +7,15 @@ par la base (S8b) ; ici, une réponse n'est valable que pour le défi qu'on donn
 import copy
 import random
 import secrets
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
+import cbor2
 import pytest
 from _authentificateur import Algorithme, Authentificateur
 from _commun import reglages
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 from popote_api.infra.webauthn import (
@@ -19,10 +23,12 @@ from popote_api.infra.webauthn import (
     CleDeConnexion,
     CleEnregistree,
     CleExistante,
+    CleStockeeIllisible,
     CompteurDeCleRegresse,
     OptionsDeCeremonie,
     PartieDeConfiance,
     ReponseDeCleRefusee,
+    defi_de_la_reponse,
     identifiant_de_la_cle,
     options_d_enregistrement,
     options_de_connexion,
@@ -57,6 +63,15 @@ CADRES_ETRANGERS: list[dict[str, Any]] = [
     {"top_origin": "https://notre-popote.fr"},
     {"top_origin": "https://x.example"},
 ]
+
+
+@contextmanager
+def refuse(motif: str) -> Iterator[None]:
+    """Un refus, et pour CE motif : le texte de l'erreur de la bibliothèque (la cause) le dit."""
+    with pytest.raises(ReponseDeCleRefusee) as erreur:
+        yield
+    cause = erreur.value.__cause__
+    assert motif in (str(cause) if cause else str(erreur.value))
 
 
 def nouvelle_cle(**champs: Any) -> Authentificateur:
@@ -126,7 +141,6 @@ def test_le_defi_fait_32_octets_et_change_a_chaque_demande() -> None:
     for options in premieres + secondes:
         assert len(options.defi) == TAILLE_DU_DEFI == 32
         assert base64url_to_bytes(options.options["challenge"]) == options.defi
-    assert {options.defi for options in premieres + secondes} == {o.defi for o in premieres + secondes}
     assert len({options.defi for options in premieres + secondes}) == 4
 
 
@@ -201,25 +215,25 @@ def test_l_enregistrement_ne_garde_que_les_transports_connus_sans_doublon() -> N
 
 @pytest.mark.parametrize("origine", ORIGINES_ETRANGERES)
 def test_l_enregistrement_refuse_une_origine_etrangere(origine: str) -> None:
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("origin"):
         enregistre(nouvelle_cle(), origine=origine)
 
 
 @pytest.mark.parametrize("rp_id", ["evil.example", "essai.notre-popote.fr", "popote.fr", "localhost"])
 def test_l_enregistrement_refuse_un_autre_rp_id(rp_id: str) -> None:
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("RP ID"):
         enregistre(nouvelle_cle(), rp_id=rp_id)
 
 
 def test_l_enregistrement_refuse_un_defi_qui_n_est_pas_celui_des_options() -> None:
     options = options_de_creation()
     reponse = nouvelle_cle().cree(options.options, defi=secrets.token_bytes(32))
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("challenge"):
         verifie_l_enregistrement(PARTIE, reponse=reponse, defi=options.defi)
     # Le défi d'une autre cérémonie, valide en soi, ne vaut pas non plus.
     autres_options = options_de_creation()
     reponse_valide = nouvelle_cle().cree(options.options)
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("challenge"):
         verifie_l_enregistrement(PARTIE, reponse=reponse_valide, defi=autres_options.defi)
 
 
@@ -230,19 +244,21 @@ def test_un_defi_trop_court_donne_a_la_verification_est_une_erreur_du_code_appel
         verifie_l_enregistrement(PARTIE, reponse=reponse, defi=defi)
 
 
-@pytest.mark.parametrize("indicateur", ["uv", "up"])
-def test_l_enregistrement_exige_la_presence_et_la_verification_de_la_personne(indicateur: str) -> None:
-    with pytest.raises(ReponseDeCleRefusee):
+@pytest.mark.parametrize(("indicateur", "motif"), [("uv", "verification"), ("up", "presence")])
+def test_l_enregistrement_exige_la_presence_et_la_verification_de_la_personne(
+    indicateur: str, motif: str
+) -> None:
+    with refuse(motif):
         enregistre(nouvelle_cle(), **{indicateur: False})
 
 
 def test_l_enregistrement_refuse_une_cle_sauvegardee_sans_etre_eligible() -> None:
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("backed up"):
         enregistre(nouvelle_cle(), be=False, bs=True)
 
 
 def test_l_enregistrement_refuse_le_type_d_une_assertion() -> None:
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("client data type"):
         enregistre(nouvelle_cle(), type_de_donnees="webauthn.get")
 
 
@@ -337,14 +353,14 @@ def test_une_assertion_rend_l_etat_de_sauvegarde_courant() -> None:
 @pytest.mark.parametrize("origine", ORIGINES_ETRANGERES)
 def test_la_connexion_refuse_une_origine_etrangere(origine: str) -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("origin"):
         connecte(authentificateur, cle_de_connexion(enregistree), origine=origine)
 
 
 @pytest.mark.parametrize("rp_id", ["evil.example", "essai.notre-popote.fr", "localhost"])
 def test_la_connexion_refuse_un_autre_rp_id(rp_id: str) -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("RP ID"):
         connecte(authentificateur, cle_de_connexion(enregistree), rp_id=rp_id)
 
 
@@ -352,12 +368,12 @@ def test_la_connexion_refuse_un_defi_qui_n_est_pas_celui_des_options() -> None:
     authentificateur, enregistree = une_cle_enregistree()
     options, autres_options = options_de_connexion(PARTIE), options_de_connexion(PARTIE)
     reponse = authentificateur.signe(options.options)
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("challenge"):
         verifie_la_connexion(
             PARTIE, reponse=reponse, defi=autres_options.defi, cle=cle_de_connexion(enregistree)
         )
     reponse_changee = authentificateur.signe(options.options, defi=secrets.token_bytes(32))
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("challenge"):
         verifie_la_connexion(
             PARTIE, reponse=reponse_changee, defi=options.defi, cle=cle_de_connexion(enregistree)
         )
@@ -365,7 +381,7 @@ def test_la_connexion_refuse_un_defi_qui_n_est_pas_celui_des_options() -> None:
 
 def test_la_connexion_refuse_une_signature_fausse() -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("signature"):
         connecte(authentificateur, cle_de_connexion(enregistree), signature_fausse=True)
 
 
@@ -373,7 +389,7 @@ def test_la_connexion_refuse_la_signature_d_une_autre_cle_sous_le_meme_identifia
     authentificateur, enregistree = une_cle_enregistree()
     imitation = nouvelle_cle(identifiant=authentificateur.identifiant)
     imitation.identifiant_utilisateur = PERSONNE
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("signature"):
         connecte(imitation, cle_de_connexion(enregistree))
 
 
@@ -390,16 +406,18 @@ def test_la_connexion_refuse_un_identifiant_brut_qui_differe_de_l_identifiant() 
         connecte(authentificateur, cle_de_connexion(enregistree), identifiant_brut_different=True)
 
 
-@pytest.mark.parametrize("indicateur", ["uv", "up"])
-def test_la_connexion_exige_la_presence_et_la_verification_de_la_personne(indicateur: str) -> None:
+@pytest.mark.parametrize(("indicateur", "motif"), [("uv", "verification"), ("up", "not present")])
+def test_la_connexion_exige_la_presence_et_la_verification_de_la_personne(
+    indicateur: str, motif: str
+) -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse(motif):
         connecte(authentificateur, cle_de_connexion(enregistree), **{indicateur: False})
 
 
 def test_la_connexion_refuse_le_type_d_un_enregistrement() -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("client data type"):
         connecte(authentificateur, cle_de_connexion(enregistree), type_de_donnees="webauthn.create")
 
 
@@ -438,7 +456,7 @@ def test_l_eligibilite_a_la_sauvegarde_ne_change_jamais(
 
 def test_la_connexion_refuse_une_cle_sauvegardee_sans_etre_eligible() -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    with pytest.raises(ReponseDeCleRefusee):
+    with refuse("backed up"):
         connecte(authentificateur, cle_de_connexion(enregistree), be=False, bs=True)
 
 
@@ -500,17 +518,40 @@ def test_un_compteur_en_recul_sous_un_autre_defaut_n_est_pas_un_signal(refus: di
 # ---- le message d'un refus ne porte rien de la réponse ----
 
 
-def test_un_refus_ne_recopie_ni_identifiant_ni_signature_ni_defi() -> None:
+def _formes(secret: bytes) -> list[str]:
+    """Toutes les écritures sous lesquelles un octet secret pourrait finir dans un message."""
+    return [bytes_to_base64url(secret), repr(secret), str(secret), secret.hex(), secret.decode("latin-1")]
+
+
+@pytest.mark.parametrize(
+    "refus",
+    [
+        {"signature_fausse": True},
+        {"origine": "https://evil.example"},
+        {"uv": False},
+        {"identifiant_utilisateur": AUTRE_PERSONNE},
+        {"compteur": 0, "be": True},
+        {"cross_origin": True},
+    ],
+)
+def test_un_refus_ne_recopie_ni_identifiant_ni_signature_ni_defi_ni_poignee(refus: dict[str, Any]) -> None:
     authentificateur, enregistree = une_cle_enregistree()
     options = options_de_connexion(PARTIE)
-    reponse = authentificateur.signe(options.options, signature_fausse=True)
+    reponse = authentificateur.signe(options.options, **refus)
     with pytest.raises(ReponseDeCleRefusee) as erreur:
         verifie_la_connexion(PARTIE, reponse=reponse, defi=options.defi, cle=cle_de_connexion(enregistree))
-    texte = str(erreur.value)
-    assert reponse["id"] not in texte
-    assert reponse["response"]["signature"] not in texte
-    assert options.options["challenge"] not in texte
-    assert erreur.value.__cause__ is not None  # la cause reste pour le journal du serveur
+    secrets_a_cacher = [
+        authentificateur.identifiant,
+        base64url_to_bytes(reponse["response"]["signature"]),
+        options.defi,
+        PERSONNE,
+        AUTRE_PERSONNE,
+        enregistree.cle_publique,
+    ]
+    ecritures = [str(erreur.value), repr(erreur.value), str(erreur.value.args)]
+    for secret in secrets_a_cacher:
+        for forme in _formes(secret):
+            assert all(forme not in ecriture for ecriture in ecritures)
 
 
 # ---- les réponses mal formées : toujours un refus, jamais une autre exception ----
@@ -600,11 +641,21 @@ def test_une_assertion_mal_formee_est_un_refus_et_rien_d_autre(deforme: Any) -> 
         )
 
 
-def test_une_cle_publique_en_base_illisible_est_un_refus() -> None:
+@pytest.mark.parametrize("illisible", [b"\x00", b"\xa0", b"\x04" + b"\x00" * 10, b"", b"\xff"])
+def test_une_cle_publique_illisible_en_base_n_est_pas_un_refus_mais_une_donnee_abimee(
+    illisible: bytes,
+) -> None:
     authentificateur, enregistree = une_cle_enregistree()
-    for illisible in (b"\x00", b"\xa0", b"\x04" + b"\x00" * 10):
-        with pytest.raises(ReponseDeCleRefusee):
-            connecte(authentificateur, cle_de_connexion(enregistree, cle_publique=illisible))
+    with pytest.raises(CleStockeeIllisible) as erreur:
+        connecte(authentificateur, cle_de_connexion(enregistree, cle_publique=illisible))
+    assert not isinstance(erreur.value, ReponseDeCleRefusee)
+
+
+def test_une_cle_publique_incoherente_en_base_est_une_donnee_abimee() -> None:
+    authentificateur, enregistree = une_cle_enregistree()
+    incoherente = cbor2.dumps({1: 3, 3: -7, -1: b"\x01" * 256, -2: b"\x01\x00\x01"})  # du RSA annoncé ES256
+    with pytest.raises(CleStockeeIllisible):
+        connecte(authentificateur, cle_de_connexion(enregistree, cle_publique=incoherente))
 
 
 @pytest.mark.parametrize("reponse", [None, [], {}, {"rawId": 1}, {"id": "a", "rawId": "***"}])
@@ -689,3 +740,185 @@ def test_une_assertion_aux_octets_abimes_est_un_refus_ou_reste_valide(champ: str
     except ReponseDeCleRefusee:
         return
     assert champ == "clientDataJSON"  # seul un octet sans effet passe (un blanc du JSON)
+
+
+# ---- des entrées démesurées : un refus, jamais une exception qui finirait en 500 ----
+
+IMBRICATIONS = [b"[" * 20_000, b'{"a":' * 20_000]
+
+
+@pytest.mark.parametrize("donnees", IMBRICATIONS)
+def test_un_json_imbrique_a_l_exces_dans_les_donnees_du_client_est_un_refus(donnees: bytes) -> None:
+    options = options_de_creation()
+    valide = nouvelle_cle().cree(options.options)
+    valide["response"]["clientDataJSON"] = bytes_to_base64url(donnees)
+    with pytest.raises(ReponseDeCleRefusee):
+        verifie_l_enregistrement(PARTIE, reponse=valide, defi=options.defi)
+    authentificateur, enregistree = une_cle_enregistree()
+    options_connexion = options_de_connexion(PARTIE)
+    assertion = authentificateur.signe(options_connexion.options)
+    assertion["response"]["clientDataJSON"] = bytes_to_base64url(donnees)
+    with pytest.raises(ReponseDeCleRefusee):
+        verifie_la_connexion(
+            PARTIE, reponse=assertion, defi=options_connexion.defi, cle=cle_de_connexion(enregistree)
+        )
+    with pytest.raises(ReponseDeCleRefusee):
+        defi_de_la_reponse(assertion)
+
+
+@pytest.mark.parametrize(
+    "auth_data", [2**70, 2**40, -(2**70), 1.5, True, None, "texte", [1, 2], {"a": 1}, b"", b"\x00" * 36]
+)
+def test_un_auth_data_qui_n_est_pas_une_chaine_d_octets_valide_est_un_refus(auth_data: Any) -> None:
+    # `bytes(2**40)` alloue un téraoctet : le type se contrôle avant la bibliothèque.
+    options = options_de_creation()
+    attestation = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": auth_data})
+    reponse = nouvelle_cle().cree(options.options, attestation_brute=attestation)
+    with pytest.raises(ReponseDeCleRefusee):
+        verifie_l_enregistrement(PARTIE, reponse=reponse, defi=options.defi)
+
+
+@pytest.mark.parametrize("contenu", [None, 12, [1], "none", {"fmt": "none"}, {"authData": b"x"}])
+def test_une_attestation_qui_n_est_pas_un_objet_complet_est_un_refus(contenu: Any) -> None:
+    options = options_de_creation()
+    reponse = nouvelle_cle().cree(options.options, attestation_brute=cbor2.dumps(contenu))
+    with pytest.raises(ReponseDeCleRefusee, match="attestation"):
+        verifie_l_enregistrement(PARTIE, reponse=reponse, defi=options.defi)
+
+
+@pytest.mark.parametrize("declaration", [[1], "x", 0, {"sig": b"x"}])
+def test_une_attestation_none_dont_la_declaration_n_est_pas_vide_est_un_refus(declaration: Any) -> None:
+    with pytest.raises(ReponseDeCleRefusee, match="attestation"):
+        enregistre(nouvelle_cle(), declaration=declaration)
+
+
+# ---- la clé publique d'un enregistrement : chargeable et cohérente avec son algorithme ----
+
+
+def _cose_ec2(alg: int, crv: int = 1, x: bytes | None = None, y: bytes | None = None) -> bytes:
+    nombres = ec.generate_private_key(ec.SECP256R1()).public_key().public_numbers()
+    return cbor2.dumps(
+        {
+            1: 2,
+            3: alg,
+            -1: crv,
+            -2: nombres.x.to_bytes(32, "big") if x is None else x,
+            -3: nombres.y.to_bytes(32, "big") if y is None else y,
+        }
+    )
+
+
+def _cose_rsa(alg: int, bits: int, e: int = 65537) -> bytes:
+    n = rsa.generate_private_key(public_exponent=e, key_size=bits).public_key().public_numbers().n
+    return cbor2.dumps({1: 3, 3: alg, -1: n.to_bytes((bits + 7) // 8, "big"), -2: e.to_bytes(3, "big")})
+
+
+def _cose_okp(alg: int, crv: int = 6) -> bytes:
+    brute = ed25519.Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    return cbor2.dumps({1: 1, 3: alg, -1: crv, -2: brute})
+
+
+CLES_INCOHERENTES = {
+    "P-256 annoncée EdDSA": _cose_ec2(-8),
+    "P-256 annoncée RS256": _cose_ec2(-257),
+    "P-384 annoncée ES256": _cose_ec2(-7, crv=2),
+    "point hors de la courbe": _cose_ec2(-7, x=b"\x01" * 32, y=b"\x02" * 32),
+    "coordonnées courtes": _cose_ec2(-7, x=b"\x01" * 8, y=b"\x02" * 8),
+    "Ed25519 annoncée ES256": _cose_okp(-7),
+    "Ed25519 annoncée RS256": _cose_okp(-257),
+    "Ed448 annoncée EdDSA": _cose_okp(-8, crv=7),
+    "RSA annoncée ES256": _cose_rsa(-7, 2048),
+    "RSA annoncée EdDSA": _cose_rsa(-8, 2048),
+    "RSA de 1024 bits": _cose_rsa(-257, 1024),
+    "RSA d'exposant 3": _cose_rsa(-257, 2048, e=3),
+}
+
+
+@pytest.mark.parametrize("cle_cose", CLES_INCOHERENTES.values(), ids=CLES_INCOHERENTES.keys())
+def test_l_enregistrement_refuse_une_cle_publique_incoherente_ou_inutilisable(cle_cose: bytes) -> None:
+    # La bibliothèque admet ces clés à l'enregistrement et les refuse ensuite à chaque connexion.
+    with pytest.raises(ReponseDeCleRefusee):
+        enregistre(nouvelle_cle(), cle_cose=cle_cose)
+
+
+# ---- lire le défi annoncé, l'identifiant : bornes et refus ----
+
+
+def test_le_defi_de_la_reponse_est_celui_du_client_pour_les_deux_ceremonies() -> None:
+    options = options_de_creation()
+    assert defi_de_la_reponse(nouvelle_cle().cree(options.options)) == options.defi
+    authentificateur, _ = une_cle_enregistree()
+    connexion = options_de_connexion(PARTIE)
+    assert defi_de_la_reponse(authentificateur.signe(connexion.options)) == connexion.defi
+
+
+@pytest.mark.parametrize("reponse", [None, [], {}, {"response": None}, {"response": {}}])
+def test_le_defi_d_une_reponse_mal_formee_est_un_refus(reponse: Any) -> None:
+    with pytest.raises(ReponseDeCleRefusee):
+        defi_de_la_reponse(reponse)
+
+
+@pytest.mark.parametrize("taille", [0, 15, 1024, 5000])
+def test_l_identifiant_d_une_reponse_hors_des_bornes_est_un_refus(taille: int) -> None:
+    reponse = nouvelle_cle().signe(options_de_connexion(PARTIE).options)
+    reponse["rawId"] = reponse["id"] = bytes_to_base64url(bytes(taille))
+    with pytest.raises(ReponseDeCleRefusee, match="taille"):
+        identifiant_de_la_cle(reponse)
+
+
+def test_un_defi_qui_n_est_pas_des_octets_est_une_erreur_du_code_appelant() -> None:
+    reponse = nouvelle_cle().cree(options_de_creation().options)
+    with pytest.raises(TypeError, match="défi"):
+        verifie_l_enregistrement(PARTIE, reponse=reponse, defi="a" * 32)  # type: ignore[arg-type]
+
+
+# ---- ce qui sort d'un refus ou d'un objet ne porte rien de secret ----
+
+
+def test_un_refus_dit_le_type_de_sa_cause_sans_en_recopier_le_message() -> None:
+    options = options_de_creation()
+    reponse = nouvelle_cle().cree(options.options, origine="https://evil.example/" + "x" * 5000)
+    with pytest.raises(ReponseDeCleRefusee) as erreur:
+        verifie_l_enregistrement(PARTIE, reponse=reponse, defi=options.defi)
+    assert erreur.value.type_de_la_cause == "InvalidRegistrationResponse"
+    assert "evil.example" not in str(erreur.value)
+    assert "evil.example" in str(erreur.value.__cause__)  # c'est bien ce qu'un journal ne doit pas écrire
+
+
+def test_aucun_repr_ne_montre_un_identifiant_une_cle_ou_un_defi() -> None:
+    authentificateur = nouvelle_cle()
+    options = options_de_creation()
+    enregistree = verifie_l_enregistrement(
+        PARTIE, reponse=authentificateur.cree(options.options), defi=options.defi
+    )
+    existante = CleExistante(authentificateur.identifiant)
+    de_connexion = cle_de_connexion(enregistree)
+    secrets_a_cacher = [
+        authentificateur.identifiant,
+        enregistree.cle_publique,
+        PERSONNE,
+        options.defi,
+    ]
+    for objet in (options, enregistree, existante, de_connexion):
+        texte = repr(objet)
+        for secret in secrets_a_cacher:
+            assert repr(secret) not in texte
+            assert bytes_to_base64url(secret) not in texte
+    assert enregistree.aaguid not in repr(enregistree)
+
+
+# ---- la connexion admet chaque origine de la liste, et elles seules ----
+
+
+def test_la_connexion_admet_chaque_origine_de_la_liste_et_elles_seules() -> None:
+    partie = PartieDeConfiance(
+        "notre-popote.fr", "Popote", frozenset({"https://notre-popote.fr", "https://essai.notre-popote.fr"})
+    )
+    for origine in sorted(partie.origines):
+        authentificateur = nouvelle_cle()
+        cle = cle_de_connexion(enregistre(authentificateur, partie=partie, origine=origine))
+        assert connecte(authentificateur, cle, partie=partie, origine=origine).compteur == 1
+    authentificateur = nouvelle_cle()
+    cle = cle_de_connexion(enregistre(authentificateur, partie=partie))
+    with refuse("origin"):
+        connecte(authentificateur, cle, partie=partie, origine="https://sub.notre-popote.fr")

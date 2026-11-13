@@ -672,7 +672,8 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9)
   `403 cle_origine_non_admise` (S8b), le code par mail reste possible. Le démarrage échoue si une origine n'est pas celle que le
   navigateur écrit (`schéma://hôte[:port]`, minuscules, sans chemin, barre finale ni port par défaut), si, hors local, elle n'est pas
   `https` sans port ou vise `localhost` ou une adresse IP, si, en local, `http` vise autre chose que `localhost`, ou si le RP ID n'est pas
-  l'hôte (ou un domaine parent, à la frontière d'un point) de **chaque** origine, ou n'a pas de point (`com`).
+  l'hôte (ou un domaine parent, à la frontière d'un point) de **chaque** origine, ou n'a pas de point (`com`). **Hors local, le RP ID est
+  `notre-popote.fr` ou l'un de ses sous-domaines** : ni un suffixe public (`workers.dev`, `co.uk`) ni le domaine d'un autre ne démarrent.
 - **Ce que la bibliothèque est tenue de faire** (lu dans `webauthn` 3.0.1) et ce que `infra/webauthn.py` y ajoute, W3C WebAuthn niveau 3
   (Recommandation du 25/08/2026) :
   - **options d'enregistrement** : clé découvrable (`residentKey: required`), `userVerification: required`, attestation `none`,
@@ -682,16 +683,27 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9)
   - **vérifications des deux cérémonies** : défi égal à celui des options (la base le tient à usage unique, S8b), origine dans la liste
     **exacte**, hachage du RP ID, UP, **UV exigé**, signature, BS jamais sans BE ; en plus, ici : **`crossOrigin` autre que `false`
     ou `topOrigin` présents refusés** (la bibliothèque lit « crossOrigin » avec `bool()` : la chaîne `"false"` vaudrait vrai et elle ne
-    lit pas `topOrigin`), **attestation autre que `none` refusée** (Popote n'a aucune racine de confiance à offrir), identifiant de
-    clé de 16 à 1023 octets et **égal** à celui de l'attestation ;
+    lit pas `topOrigin`), **attestation autre que `none` refusée** (Popote n'a aucune racine de confiance à offrir ; le CBOR est
+    décodé ici avant la bibliothèque : `fmt` vaut `none`, `attStmt` est vide, `authData` est une chaîne d'octets : un `authData`
+    entier lui ferait allouer `bytes(n)`), identifiant de clé de 16 à 1023 octets et **égal** à celui de l'attestation, **clé publique
+    chargée et cohérente avec son algorithme** (la bibliothèque ne la charge pas : une P-256 annoncée EdDSA, un RSA de 1024 bits, un
+    point hors courbe seraient écrits, puis refusés à toute connexion en comptant dans la limite des clés ; ici : -7 suppose
+    EC2 P-256, -8 Ed25519, -257 RSA d'au moins 2048 bits et d'exposant 65537 au moins) ;
   - **connexion en plus** : l'identifiant de la réponse est celui de la clé lue en base ; **`userHandle` présent et égal** à celui de la
     personne (§ 7.2) ; éligibilité à la sauvegarde (BE) **inchangée** ; compteur : si l'un des deux n'est pas nul, il doit croître. Un
     compteur qui ne croît pas lève `CompteurDeCleRegresse`, **après** la vérification de la signature : sans signature valide, ce
     n'est qu'un refus ordinaire (S9 n'écrit `cle_suspecte` que sur cette erreur, un inconnu ne peut pas en provoquer) ;
   - **toute entrée illisible** (JSON, base64url, CBOR, clé COSE tronquée) donne `ReponseDeCleRefusee`, au message fixe : ni clé, ni
-    identifiant, ni signature, ni défi n'y entrent ; la cause reste chaînée pour le journal du serveur. Les erreurs de la
-    bibliothèque attrapées sont `WebAuthnException`, `ValueError`, `TypeError`, `KeyError`, `IndexError` (les deux dernières viennent d'une clé
-    COSE incomplète : trouvé en abîmant des réponses) ; toute autre exception est un bogue et remonte.
+    identifiant, ni signature, ni défi n'y entrent. La cause reste chaînée pour le débogage, mais **son message recopie la réponse**
+    (la bibliothèque écrit l'origine reçue, jusqu'à 1 Mio) : **un journal n'écrit que `erreur.type_de_la_cause`** (à tenir en S8b et S9).
+    Les erreurs de la bibliothèque attrapées sont `WebAuthnException`, `ValueError`, `TypeError`, `KeyError`, `IndexError` (une clé COSE
+    incomplète), `RecursionError` (un JSON imbriqué sur des milliers de niveaux, tenable dans 1 Mio) et `OverflowError` ; `MemoryError` n'est
+    pas attrapée, le type de `authData` est contrôlé avant. Toute autre exception est un bogue et remonte ;
+  - **une clé publique illisible en base** lève `CleStockeeIllisible` (hors de `ReponseDeCleRefusee`) : une donnée abîmée, pas une
+    mauvaise réponse ; S9 alerte au lieu de répondre « clé refusée » ;
+  - `defi_de_la_reponse` lit le défi annoncé dans la réponse, pour retrouver en base **le** défi (haché sur les octets décodés) ;
+    `identifiant_de_la_cle` borne l'identifiant (16 à 1023 octets) avant que la route ne lise la base. Les dataclasses
+    (`OptionsDeCeremonie`, `CleEnregistree`, `CleDeConnexion`, `CleExistante`) cachent défi, identifiants et clés dans leur `repr` ;
 - **Limites dites.** (1) L'attestation `none` ne prouve pas que l'authentificateur détient la clé privée à l'enregistrement : W3C § 7.1
   note qu'un attaquant qui connaît un identifiant et une clé publique pourrait les enregistrer comme siens ; la parade est la base :
   **identifiant de clé unique pour tout le monde** (`409 cle_deja_enregistree`, S8b). (2) Le défi n'est vérifié qu'égal à celui qu'on
@@ -699,7 +711,7 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9)
 - **Authentificateur de test** : `tests/unit/_authentificateur.py` (ES256, EdDSA, RS256 ; UP, UV, BE, BS, compteur, `userHandle`,
   origine, RP ID, défi, signature, cadre, attestation réglables) ; il sert à tous les tests de S8b à S16.
 - Tests : `tests/unit/test_webauthn.py` (refus d'origine, RP ID, défi, UV, UP, `userHandle`, BE, compteur, signature, cadre, attestation,
-  identifiant ; réponses mal formées et 750 réponses aux octets abîmés), `tests/unit/test_config_cles.py`. Mutations rejouées
+  identifiant ; réponses mal formées, JSON imbriqué, `authData` démesuré, clés publiques incohérentes, 750 réponses aux octets abîmés), `tests/unit/test_config_cles.py`. Mutations rejouées
   (`scripts` non versionnés, liste dans la demande de fusion) : UV non exigée (deux cérémonies, deux options), clé non découvrable,
   origine admise sans liste (deux cérémonies), attestation non filtrée, `crossOrigin`, `topOrigin`, `userHandle` (non exigé ou absent admis),
   clé de la réponse non comparée, BE libre, compteur (ignoré, égal admis, zéro des deux refusé, zéro après un compteur admis, contrôlé

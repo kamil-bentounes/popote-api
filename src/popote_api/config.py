@@ -42,6 +42,9 @@ WEBAUTHN_PAR_ENV: dict[str, tuple[str, frozenset[str]]] = {
     "local": ("localhost", frozenset({"http://localhost:5173"})),
 }
 HOTE_LOCAL_DES_CLES = "localhost"
+# Hors local, le RP ID est ce domaine ou un sous-domaine : ni un suffixe public (`workers.dev`) ni le
+# domaine de quelqu'un d'autre ne peuvent être posés par erreur.
+DOMAINE_DES_CLES = "notre-popote.fr"
 PORTS_PAR_DEFAUT = {"http": 80, "https": 443}
 # Le Worker du front d'essai (`name` de `popote-web/wrangler.jsonc`) : seul son nom entre dans le motif.
 WORKER_DU_FRONT = "popote-web-essai"
@@ -308,6 +311,12 @@ class Settings(BaseSettings):
         # local ou une écriture non canonique ne passent donc pas. Reste le nom sans point (`com`).
         if "." not in rp_id and rp_id != HOTE_LOCAL_DES_CLES:
             raise ValueError("webauthn_rp_id : un nom de domaine (localhost en local seulement).")
+        if (
+            self.env is not Env.local
+            and rp_id != DOMAINE_DES_CLES
+            and not rp_id.endswith(f".{DOMAINE_DES_CLES}")
+        ):
+            raise ValueError(f"webauthn_rp_id : {DOMAINE_DES_CLES} ou l'un de ses sous-domaines hors local.")
         for origine in self.origines_webauthn:
             try:
                 hote = hote_de_l_origine_de_cle(origine, self.env)

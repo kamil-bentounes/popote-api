@@ -27,7 +27,7 @@ import hmac
 import json
 import secrets
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from webauthn import (
@@ -37,15 +37,24 @@ from webauthn import (
     verify_registration_response,
 )
 from webauthn.helpers import (
+    base64url_to_bytes,
+    decode_credential_public_key,
+    decoded_public_key_to_cryptography,
     options_to_json_dict,
-    parse_attestation_object,
     parse_authentication_credential_json,
+    parse_cbor,
+    parse_client_data_json,
     parse_registration_credential_json,
+)
+from webauthn.helpers.cose import COSECRV, COSEAlgorithmIdentifier
+from webauthn.helpers.decode_credential_public_key import (
+    DecodedEC2PublicKey,
+    DecodedOKPPublicKey,
+    DecodedRSAPublicKey,
 )
 from webauthn.helpers.exceptions import WebAuthnException
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
-    AttestationFormat,
     AuthenticatorSelectionCriteria,
     AuthenticatorTransport,
     CredentialDeviceType,
@@ -60,18 +69,28 @@ from popote_api.config import Settings
 TAILLE_DU_DEFI = 32
 # Valable aussi longtemps que la cérémonie (W3C § 15.1 : de 5 à 10 minutes) ; la base le fait respecter (S8b).
 DELAI_DE_LA_CEREMONIE_MS = 300_000
-VALIDITE_DU_DEFI_S = 600
 # W3C § 4 « Credential ID » : 16 octets au moins pour être inattendu, 1023 au plus.
 TAILLE_MINIMALE_D_UN_IDENTIFIANT = 16
 TAILLE_MAXIMALE_D_UN_IDENTIFIANT = 1023
 # W3C § 5.4.3 : l'identifiant d'utilisateur fait de 1 à 64 octets.
 TAILLE_MAXIMALE_D_UN_IDENTIFIANT_D_UTILISATEUR = 64
+# Une clé RSA plus petite se factorise ; l'exposant 65537 est celui de tous les authentificateurs.
+TAILLE_MINIMALE_D_UNE_CLE_RSA = 2048
+EXPOSANT_MINIMAL_D_UNE_CLE_RSA = 65537
 
 
 # Ce que la bibliothèque lève sur des octets qu'elle ne sait pas lire : ses propres erreurs, mais aussi
 # `KeyError` et `IndexError` d'une clé COSE incomplète (`decode_credential_public_key`). Toutes veulent dire
-# « cette entrée ne se vérifie pas » ; toute autre exception est un bogue et doit remonter.
-ERREURS_DE_LA_BIBLIOTHEQUE = (WebAuthnException, ValueError, TypeError, KeyError, IndexError)
+# « cette entrée ne se vérifie pas » ; `RecursionError` vient d'un JSON imbriqué à l'excès. Toute autre
+# exception est un bogue et doit remonter.
+ERREURS_DE_LA_BIBLIOTHEQUE = (
+    WebAuthnException,
+    ValueError,
+    TypeError,
+    KeyError,
+    IndexError,
+    RecursionError,
+)
 
 
 class ErreurDeCle(Exception):
@@ -82,7 +101,20 @@ class ReponseDeCleRefusee(ErreurDeCle):
     """La réponse du navigateur ne passe pas : mal formée, fausse, d'ailleurs ou trop faible.
 
     Le message est fixe : la réponse porte des identifiants de clé et des signatures, qui n'ont rien à faire
-    dans un journal. La cause reste dans `__cause__`.
+    dans un journal. La cause reste dans `__cause__` pour le débogage, mais SON message recopie des
+    morceaux de la réponse (la bibliothèque écrit l'origine reçue, jusqu'à la taille du corps) : un
+    journal n'écrit que `type_de_la_cause`.
+    """
+
+    @property
+    def type_de_la_cause(self) -> str:
+        return type(self.__cause__).__name__
+
+
+class CleStockeeIllisible(ErreurDeCle):
+    """La clé publique lue en base ne se charge pas : une donnée abîmée, pas une réponse du navigateur.
+
+    Ce n'est pas un refus : l'appelant ne répond pas « mauvaise clé » mais alerte et rend une erreur serveur.
     """
 
 
@@ -110,7 +142,7 @@ class PartieDeConfiance:
 class CleExistante:
     """Une clé déjà enregistrée, pour que le navigateur n'en crée pas une seconde sur le même appareil."""
 
-    identifiant: bytes
+    identifiant: bytes = field(repr=False)
     transports: tuple[str, ...] = ()
 
 
@@ -118,21 +150,21 @@ class CleExistante:
 class OptionsDeCeremonie:
     """`options` : la forme JSON que le navigateur lit (`parse…OptionsFromJSON`) ; `defi` : à garder."""
 
-    options: dict[str, Any]
-    defi: bytes
+    options: dict[str, Any] = field(repr=False)
+    defi: bytes = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class CleEnregistree:
     """Ce qu'une réponse d'enregistrement valide donne à écrire en base."""
 
-    identifiant: bytes
-    cle_publique: bytes
+    identifiant: bytes = field(repr=False)
+    cle_publique: bytes = field(repr=False)
     compteur: int
     peut_etre_sauvegardee: bool
     est_sauvegardee: bool
     verification_initialisee: bool
-    aaguid: str
+    aaguid: str = field(repr=False)
     transports: tuple[str, ...]
 
 
@@ -140,11 +172,11 @@ class CleEnregistree:
 class CleDeConnexion:
     """La clé telle que la base la tient, pour vérifier une assertion."""
 
-    identifiant: bytes
-    cle_publique: bytes
+    identifiant: bytes = field(repr=False)
+    cle_publique: bytes = field(repr=False)
     compteur: int
     peut_etre_sauvegardee: bool
-    identifiant_utilisateur: bytes
+    identifiant_utilisateur: bytes = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,7 +262,10 @@ def options_de_connexion(partie: PartieDeConfiance) -> OptionsDeCeremonie:
 
 
 def _verifie_le_defi(defi: bytes) -> None:
-    # Une erreur du code appelant, pas un refus : un défi vide ou court validerait presque n'importe quoi.
+    # Une erreur du code appelant, pas un refus : un défi vide ou court validerait presque n'importe quoi,
+    # et un défi qui n'est pas des octets fausserait la comparaison de la bibliothèque.
+    if not isinstance(defi, bytes):
+        raise TypeError("défi : des octets, ceux que la base a gardés")
     if len(defi) < TAILLE_DU_DEFI:
         raise ValueError("défi trop court : celui que `options_*` a rendu, en entier")
 
@@ -239,7 +274,7 @@ def _refuse_un_cadre_etranger(donnees_du_client: bytes) -> None:
     """`crossOrigin` vrai ou `topOrigin` présent : la clé servirait dans un cadre d'une autre origine."""
     try:
         contenu = json.loads(donnees_du_client)
-    except ValueError as erreur:
+    except (ValueError, RecursionError) as erreur:  # un JSON imbriqué sur des milliers de niveaux
         raise ReponseDeCleRefusee("réponse de clé refusée : données du client illisibles") from erreur
     if (
         not isinstance(contenu, dict)
@@ -252,9 +287,64 @@ def _refuse_un_cadre_etranger(donnees_du_client: bytes) -> None:
 def identifiant_de_la_cle(reponse: dict[str, Any]) -> bytes:
     """L'identifiant de la clé que la réponse prétend utiliser : de quoi la lire en base avant de vérifier."""
     try:
-        return parse_authentication_credential_json(reponse).raw_id
+        identifiant = parse_authentication_credential_json(reponse).raw_id
     except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
         raise ReponseDeCleRefusee("réponse de clé refusée : mal formée") from erreur
+    if not TAILLE_MINIMALE_D_UN_IDENTIFIANT <= len(identifiant) <= TAILLE_MAXIMALE_D_UN_IDENTIFIANT:
+        raise ReponseDeCleRefusee("réponse de clé refusée : identifiant de clé de taille inadmise")
+    return identifiant
+
+
+def defi_de_la_reponse(reponse: dict[str, Any]) -> bytes:
+    """Le défi que la réponse annonce avoir signé (`clientDataJSON.challenge`), en octets.
+
+    Il sert à retrouver, en base, le défi qu'on a donné : on ne vérifie JAMAIS contre lui, mais contre le
+    défi que la base rend (`defi` de `verifie_*`). À hacher en octets, pas en texte : la base64url de la
+    bibliothèque ignore les caractères hors de l'alphabet.
+    """
+    try:
+        donnees = base64url_to_bytes(reponse["response"]["clientDataJSON"])
+        return parse_client_data_json(donnees).challenge
+    except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
+        raise ReponseDeCleRefusee("réponse de clé refusée : données du client illisibles") from erreur
+
+
+def _refuse_une_attestation_autre_que_none(attestation: bytes) -> None:
+    """`fmt` vaut `none`, `attStmt` est vide, `authData` est une chaîne d'octets (W3C § 8.7).
+
+    On décode le CBOR ici, avant la bibliothèque : un `authData` entier lui ferait allouer `bytes(n)`.
+    """
+    try:
+        contenu = parse_cbor(attestation)
+    except WebAuthnException as erreur:
+        raise ReponseDeCleRefusee("réponse de clé refusée : attestation illisible") from erreur
+    if not isinstance(contenu, dict) or not isinstance(contenu.get("authData"), bytes):
+        raise ReponseDeCleRefusee("réponse de clé refusée : attestation illisible")
+    if contenu.get("fmt") != "none" or contenu.get("attStmt", {}) != {}:
+        raise ReponseDeCleRefusee("réponse de clé refusée : attestation autre que none")
+
+
+def _controle_la_cle_publique(cle_publique: bytes) -> None:
+    """La clé COSE se charge et son type correspond à l'algorithme annoncé ; sinon `ValueError` ou une erreur
+    de la bibliothèque.
+
+    La bibliothèque ne charge pas la clé à l'enregistrement : une clé P-256 annoncée EdDSA, un RSA de 512
+    bits ou un point hors courbe seraient écrits, puis refusés à toute connexion, en comptant dans la limite.
+    """
+    decodee = decode_credential_public_key(cle_publique)
+    decoded_public_key_to_cryptography(decodee)  # lève sur un point hors courbe, un exposant impair…
+    match decodee:
+        case DecodedEC2PublicKey(alg=COSEAlgorithmIdentifier.ECDSA_SHA_256, crv=COSECRV.P256):
+            return
+        case DecodedOKPPublicKey():
+            return  # la conversion plus haut exige déjà EdDSA et Ed25519
+        case DecodedRSAPublicKey(alg=COSEAlgorithmIdentifier.RSASSA_PKCS1_v1_5_SHA_256):
+            if (
+                int.from_bytes(decodee.n, "big").bit_length() >= TAILLE_MINIMALE_D_UNE_CLE_RSA
+                and int.from_bytes(decodee.e, "big") >= EXPOSANT_MINIMAL_D_UNE_CLE_RSA
+            ):
+                return
+    raise ValueError("clé publique incohérente avec son algorithme")
 
 
 def verifie_l_enregistrement(
@@ -274,12 +364,7 @@ def verifie_l_enregistrement(
     if not TAILLE_MINIMALE_D_UN_IDENTIFIANT <= len(credential.raw_id) <= TAILLE_MAXIMALE_D_UN_IDENTIFIANT:
         raise ReponseDeCleRefusee("réponse de clé refusée : identifiant de clé de taille inadmise")
     _refuse_un_cadre_etranger(credential.response.client_data_json)
-    try:
-        format_d_attestation = parse_attestation_object(credential.response.attestation_object).fmt
-    except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
-        raise ReponseDeCleRefusee("réponse de clé refusée : attestation illisible") from erreur
-    if format_d_attestation != AttestationFormat.NONE:
-        raise ReponseDeCleRefusee("réponse de clé refusée : attestation autre que none")
+    _refuse_une_attestation_autre_que_none(credential.response.attestation_object)
     try:
         verifiee = verify_registration_response(
             credential=credential,
@@ -289,6 +374,7 @@ def verifie_l_enregistrement(
             require_user_presence=True,
             require_user_verification=True,
         )
+        _controle_la_cle_publique(verifiee.credential_public_key)
     except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
         raise ReponseDeCleRefusee("réponse de clé refusée : enregistrement non vérifié") from erreur
     # L'identifiant écrit dans l'attestation est celui que le navigateur annoncera ensuite (`rawId`) : s'ils
@@ -318,6 +404,10 @@ def verifie_la_connexion(
     qui croît (sauf une clé qui reste à 0).
     """
     _verifie_le_defi(defi)
+    try:
+        _controle_la_cle_publique(cle.cle_publique)
+    except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
+        raise CleStockeeIllisible("clé publique lue en base illisible") from erreur
     try:
         credential = parse_authentication_credential_json(reponse)
     except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:

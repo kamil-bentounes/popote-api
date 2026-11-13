@@ -6,7 +6,7 @@ import pytest
 from _commun import reglages
 from pydantic import ValidationError
 
-from popote_api.config import Settings
+from popote_api.config import Env, Settings, hote_de_l_origine_de_cle
 
 
 @pytest.mark.parametrize(
@@ -138,3 +138,63 @@ def test_une_valeur_vide_vaut_absente_comme_les_autres_reglages() -> None:
     configuration = Settings.model_validate({"env": "local"} | valeurs)
     assert configuration.rp_id_webauthn == "localhost"
     assert configuration.origines_webauthn == {"http://localhost:5173"}
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+@pytest.mark.parametrize(
+    "domaine",
+    [
+        "workers.dev",  # un suffixe public : le RP ID d'un aperçu de fusion
+        "co.uk",  # un suffixe public d'un autre pays
+        "popote-web-essai.moncompte.workers.dev",  # l'aperçu lui-même, en toutes lettres
+        "autre.example",
+        "evilnotre-popote.fr",
+        "notre-popote.fr.evil.example",
+        "fr",
+    ],
+)
+def test_hors_local_le_rp_id_est_le_domaine_de_popote_ou_l_un_de_ses_sous_domaines(
+    env: str, domaine: str
+) -> None:
+    with pytest.raises(ValidationError, match="webauthn_rp_id"):
+        reglages(
+            env, webauthn_rp_id=domaine, webauthn_origins=f"https://popote-web-essai.moncompte.{domaine}"
+        )
+    with pytest.raises(ValidationError, match="webauthn_rp_id"):
+        reglages(env, webauthn_rp_id=domaine, webauthn_origins=f"https://{domaine}")
+
+
+def test_hors_local_un_sous_domaine_de_popote_passe() -> None:
+    configuration = reglages(
+        "essai", webauthn_rp_id="essai.notre-popote.fr", webauthn_origins="https://app.essai.notre-popote.fr"
+    )
+    assert configuration.origines_webauthn == {"https://app.essai.notre-popote.fr"}
+
+
+@pytest.mark.parametrize(
+    ("env", "origine"),
+    [
+        ("local", "http://localhost:0"),  # le port 0 n'existe pas
+        ("local", "http://evillocalhost:5173"),  # `localhost` à la frontière d'un point seulement
+        ("local", "http://notlocalhost"),
+        ("prod", "https://a_b.notre-popote.fr"),  # `_` n'est pas une lettre d'un nom d'hôte
+        ("prod", "https://-a.notre-popote.fr"),
+        ("prod", "https://notre-popote.fr."),
+    ],
+)
+def test_le_controle_d_une_origine_de_cle_refuse_ces_formes(env: str, origine: str) -> None:
+    with pytest.raises(ValueError):
+        hote_de_l_origine_de_cle(origine, Env(env))
+
+
+def test_un_sous_domaine_de_localhost_passe_en_local() -> None:
+    assert hote_de_l_origine_de_cle("http://app.localhost:5173", Env.local) == "app.localhost"
+
+
+def test_en_local_le_port_par_defaut_ne_s_ecrit_pas_et_un_rp_id_sans_point_echoue() -> None:
+    with pytest.raises(ValidationError, match="webauthn_origins"):
+        reglages("local", webauthn_origins="http://localhost:80")
+    with pytest.raises(ValidationError, match="webauthn_origins"):
+        reglages("local", webauthn_rp_id="localhost", webauthn_origins="https://localhost:443")
+    with pytest.raises(ValidationError, match="webauthn_rp_id"):
+        reglages("local", webauthn_rp_id="fr", webauthn_origins="https://notre-popote.fr")
