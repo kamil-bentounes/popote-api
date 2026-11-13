@@ -22,7 +22,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Literal, Protocol
 
@@ -49,7 +49,9 @@ class MailIndisponible(Exception):
 
 @dataclass(frozen=True, slots=True)
 class MessageCode:
-    """Le code à six chiffres de connexion ; `validite_min` : combien de minutes il vaut.
+    """Le code à six chiffres de connexion ; `validite_min` : combien de minutes il vaut (le texte du mail) ;
+    `expire_le` : l'instant ABSOLU où la base le refuse (avec fuseau), fixé à la demande et jamais recalculé à
+    l'envoi : le fournisseur ne livre pas un code après lui (`send_before`).
 
     Les tests comparent le texte rendu ou `validite_min`, pas deux messages : le diff d'une assertion qui
     échoue afficherait les codes.
@@ -58,6 +60,7 @@ class MessageCode:
     destinataire: str
     code: str
     validite_min: int
+    expire_le: datetime
 
     def __post_init__(self) -> None:
         # Le code et l'adresse s'écrivent tels quels dans un mail : rien d'autre n'y entre.
@@ -67,9 +70,11 @@ class MessageCode:
             raise ValueError("MessageCode : destinataire : une seule adresse, forme stricte")
         if type(self.validite_min) is not int or self.validite_min < 1:
             raise ValueError("MessageCode : validite_min est un entier d'au moins 1")
+        if not isinstance(self.expire_le, datetime) or self.expire_le.utcoffset() is None:
+            raise ValueError("MessageCode : expire_le est une date avec fuseau horaire")
 
     def __repr__(self) -> str:
-        return "MessageCode(destinataire=…, code=…, validite_min=…)"
+        return "MessageCode(destinataire=…, code=…, validite_min=…, expire_le=…)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,17 +152,11 @@ class EnvoiParEnveloppe(ABC):
     elle n'a ni le code, ni le lien, ni le prénom sous les yeux, donc ne peut pas les mettre dans l'objet.
     """
 
-    def __init__(
-        self,
-        origines: frozenset[str],
-        *,
-        maintenant: Callable[[], datetime] = lambda: datetime.now(UTC),
-    ) -> None:
+    def __init__(self, origines: frozenset[str]) -> None:
         self._origines = origines  # celles du front de l'environnement (`Settings.origines`)
-        self._maintenant = maintenant
 
     async def envoie_le_code(self, message: MessageCode) -> None:
-        await self._transmet(textes.enveloppe_du_code(message, self._maintenant()))
+        await self._transmet(textes.enveloppe_du_code(message))
 
     async def envoie_l_invitation(self, message: MessageInvitation) -> None:
         await self._transmet(textes.enveloppe_de_l_invitation(message, self._origines))

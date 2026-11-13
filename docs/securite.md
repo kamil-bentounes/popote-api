@@ -330,7 +330,7 @@ Limite connue (B9) : la force brute par le point `/auth/v1/token` de Supabase Au
 Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à une session réauthentifiée depuis moins de
 5 minutes, donc vue depuis moins de 5 minutes, et `session_courante` ne verrouille la ligne que passé ce délai.
 
-### 4.13 Code par mail : la demande, côté base (0.4bis S5a, migration 0147 ; la route `POST /api/v1/login-codes` est S5b)
+### 4.13 Code par mail : la demande (0.4bis S5, migration 0147 ; code : `api/codes.py`, `security/code_de_connexion.py`, `security/codes.py`)
 
 - **Table `public.login_code`** : le HMAC du code (jamais le code), 10 minutes au plus (`CHECK`), 5 essais, usage unique,
   révocable ; **un seul code actif par clé de compte** (index unique partiel : une demande révoque la précédente).
@@ -354,15 +354,41 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   moins 10 comptes réels) voit, à l'absence du 60e mail, qu'une adresse sondée existe. Un quota global dur ne peut pas être à la fois
   indépendant de l'existence et inépuisable ; accepté pour un foyer de deux personnes, sur invitation (l'inscription est
   fermée). Un compte réel prend en plus le verrou de la personne et écrit un événement : sous contention de cette personne, sa
-  demande est plus lente ; S5b traduit les délais et erreurs de la même façon et mesure les médianes.
+  demande est plus lente ; S5b traduit les délais et erreurs de la même façon et mesure les médianes. Une panne ou un verrou propre
+  à `security_event` seule ne toucherait qu'un compte réel (`503` pour lui, `202` pour une adresse inconnue) : accepté, c'est une panne
+  partielle de la base, que la route ne peut pas masquer sans écrire aussi un événement pour les adresses inconnues (journal plein d'IP).
 - **Recherche du compte** : elle passe par `users_instance_id_email_idx (instance_id, lower(email))` ; sans `instance_id`, un
   parcours de la table arrêté à la première ligne trouvée ferait répondre une adresse connue plus vite qu'une inconnue (mesuré :
   4 ms contre 12 ms pour 20 000 comptes). Un test garde la requête et, sur une base fournie, la médiane des durées.
 - **Ordre des verrous**, que S7 reprend : clé de compte, puis personne (la clé de `cree_session`), puis `auth.users` en `for key share`
   (le compte se relit une fois le verrou de la personne pris), puis les lignes `login_code`. `for key share` n'empêche pas un
   bannissement simultané : la vérification (S7) relit l'état du compte.
-- Tests : `tests/integration/test_demande_de_code_base.py` (dont 50 demandes simultanées par adresse connue et inconnue, un
-  test de dérive entre les portées du `CHECK` et celles que les fonctions emploient) et `test_surface.py`.
+- **La route `POST /api/v1/login-codes`** `{email}` (publique, `ROUTES_PUBLIQUES`). Ordre, qui est la sécurité de la route :
+  corps validé (e-mail 254, champs inconnus refusés) -> clés HMAC (sans poivre : `503`, rien ne se compte ni ne s'écrit sans
+  clé) -> code (`secrets.randbelow(10**6)`, six chiffres) et son empreinte (HMAC d'une clé dérivée du poivre, étiquette
+  `login-code/v1`, sur identifiant de demande, clé du compte et code : une empreinte ne vaut que pour sa demande) tirés **avant**
+  la base, que le compte existe ou non -> une transaction (`base.connexion()`, validée aussi sur un refus : le compteur reste) :
+  `prend_les_creneaux_de_demande`, puis `demande_un_code`. **Toujours `202 {code_request_id, expires_in_s: 600,
+  resend_after_s: 60, message}`**, même statut, même corps hors identifiant, mêmes en-têtes. Un refus de limite est `429` +
+  `Retry-After` pour tous, connus ou non. Une erreur de la base donne `503`, jamais `500`.
+- **L'échéance du mail** : `Courrier.expire_le` = l'instant de la demande (`app.state.horloge()`, pris avant la base) + 10 minutes. Celle de la
+  base (`now()` + 10 minutes) ne peut pas être plus tôt : un code n'est jamais livré après l'avoir été. `demande_un_code` ne rend pas
+  `expires_at` (0147 est fusionnée) ; le destinataire est la forme normalisée, en minuscules.
+- **Le mail** part APRÈS la réponse (`BackgroundTasks`), pour une personne réelle et un code neuf seulement : coupe-circuit global
+  (`prend_un_envoi`) puis `envoie_sans_remonter`. Un coupe-circuit ouvert ou illisible jette le mail (le code reste valable ; la
+  clé d'accès fonctionne) et se journalise sans adresse ni code ; un envoi qui échoue se journalise par son type seul.
+  À surveiller en exploitation : une alerte sur « Mail (code) non envoyé » (coupe-circuit ouvert, base indisponible, fournisseur en
+  panne) : la réponse est `202`, la personne ne reçoit rien et ne peut pas redemander avant 60 s. Le code existe en clair dans deux
+  variables locales (`demande_le_code`, `envoie_le_courrier`) : le suivi D4 (Sentry) devra désactiver ou masquer les variables locales.
+  L'adresse est refusée en `422` si sa forme normalisée dépasse 254 **octets** (« é » en pèse deux ; NFKC peut allonger) : la base
+  compte des octets et un refus de sa part annulerait aussi les créneaux déjà pris.
+  Le code n'est ni dans une colonne (seul son HMAC l'est), ni dans un événement, ni dans un journal, ni dans l'objet du mail.
+  Sans `Idempotency-Key` : route publique, rejouer une réponse garderait un identifiant de demande.
+- Tests : `tests/integration/test_demande_de_code_base.py` (la base : 50 demandes simultanées, un test de dérive entre les portées du
+  `CHECK` et celles des fonctions), `test_demande_de_code.py` (la route : réponse et durée comparables, limites, coupe-circuit, journaux),
+  `tests/unit/test_codes.py` (code, empreinte, clés, envoi) et `test_surface.py`. Mutations rejouées : mail pour une adresse inconnue,
+  code en clair, même empreinte pour deux demandes, identifiant non effectif, créneaux seulement pour un compte connu, ordre des clés,
+  coupe-circuit retiré, code ou adresse dans un journal, validité, paire sans IP.
 
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
@@ -687,7 +713,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   l'envoi réel). **Annulation, délai ou `MailIndisponible(issue_inconnue=True)` (requête partie, réponse perdue) : « issue inconnue »** (le
   fournisseur a pu accepter le mail : le journal ne dit jamais « non envoyé » alors) ; l'annulation repart même si la réalisation l'a
   traduite en erreur.
-- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII ; le destinataire est **une seule adresse** de grammaire stricte :
+- **Les messages** : `MessageCode(destinataire, code, validite_min, expire_le)` (`expire_le` : l'échéance ABSOLUE du code, avec fuseau, fixée à la demande avant la base et jamais recalculée à l'envoi : S4 en fait `send_before` ; le code fait six chiffres ASCII ; le destinataire est **une seule adresse** de grammaire stricte :
   ASCII, partie locale de 64 caractères au plus, domaine à point, 254 au plus, ni virgule, ni espace, ni caractère de contrôle ou de
   direction, `infra.comptes.adresse_valide` et un point au domaine ; l'appelant la donne normalisée en minuscules) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
   l'heure de Paris ; le lien est `<origine du front>/invitation#<jeton>` : `enveloppe_de_l_invitation(message, origines)` le refuse si ce n'est pas une origine

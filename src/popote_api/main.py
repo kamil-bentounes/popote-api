@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, limites, relais
-from popote_api.api import connexion, health, internes, invitations_publiques, v1
+from popote_api.api import codes, connexion, health, internes, invitations_publiques, v1
 from popote_api.config import Env, MailProvider, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
@@ -138,6 +138,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
 
     app.include_router(health.router)
     app.include_router(internes.router)
+    app.include_router(codes.router)
     app.include_router(connexion.router)
     app.include_router(invitations_publiques.router)
     app.include_router(v1.cree_routeur())
