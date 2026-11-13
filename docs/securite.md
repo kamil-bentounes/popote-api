@@ -473,6 +473,11 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   factice : il faut déjà détenir un cookie valide de cette personne. (3) `demande_un_code` rend le même `code_request_id` pendant 60 s :
   qui connaît l'adresse peut brûler les 5 essais du code en cours ; la victime redemande après 60 s (même nature que le blocage du compte).
   (4) `personne_peut_entrer` compare le bannissement à `now()` : la variante à horloge n'y est pas fidèle (sans effet en production).
+  (5) Reste un cycle avec la suppression d'un compte par Auth : `login_session.person_id` référence `auth.users` en `on delete cascade`
+  (0133) ; Auth tient la ligne `auth.users` puis doit verrouiller les sessions pour la cascade, alors que la vérification tient la session
+  présentée (`for update`) puis demande `auth.users` (`key share`). Si la même personne se connecte en présentant une session valide à
+  l'instant où Auth supprime son compte : `40P01`. Issue : un `503` réessayable, aucune donnée abîmée. **S14 le ferme** en faisant prendre le
+  verrou de personne à toute suppression avant l'appel à Auth.
   Une erreur de la base (CHECK) recopie la ligne dans son `DETAIL` : `erreurs_base.py` ne l'écrit jamais.
 - **Expand seulement.** `cree_session` garde sa signature et son corps (le code déjà déployé l'appelle) ; `ouvre_la_session` a un nom neuf
   et en répète le corps jusqu'à S15, qui retire `cree_session`.
