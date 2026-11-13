@@ -619,7 +619,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
 ### 4.12 L'interface d'envoi des mails (0.4bis S3 ; code : `infra/mails.py`, `infra/mails_textes.py`)
 
 - **La réinitialisation du mot de passe n'existe plus** (décision D3 du 13/11/2026 : plus aucun mot de passe ; le code par mail
-  *est* la récupération). `POST /api/v1/password-resets` répond désormais `401` comme toute route inconnue sans session. Restent
+  *est* la récupération). `POST /api/v1/password-resets` n'est plus ni dans le registre des routes ni dans `openapi.json` (un test le lit : sans session, toute route inconnue rend `401`, ce qui ne prouverait rien). Restent
   en base, retirés par S15 : la table `password_reset`, `cree_reinitialisation`, le créneau `reset` (`prend_un_creneau_reinit`)
   et, côté Python, `Empreintes.cle_reinitialisation` (et `_requise`, `ETIQUETTE_REINITIALISATION`), `prendre_un_creneau_de_reinitialisation` et les
   réglages `reinitialisation_essais` et `reinitialisation_fenetre_s`, que plus aucune route n'appelle.
@@ -627,21 +627,39 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   de code (S5) et l'invitation (S12) appellent. Garanties : (1) l'envoi se fait **après** la réponse HTTP (`BackgroundTasks`) :
   un échec ne change jamais la réponse ; (2) un échec lève `MailIndisponible` et rien d'autre ; l'appelant le journalise par son
   type seul ; (3) un retour sans erreur veut dire « accepté par le fournisseur », pas « remis » ; (4) les textes viennent de
-  `mails_textes.py`. `envoie_sans_remonter(envoyer, message, quoi)` est l'enveloppe de la tâche d'arrière-plan : elle journalise le type
-  de l'erreur seul et laisse remonter l'annulation (le délai de 25 s de la requête englobe la tâche : un envoi trop long est annulé).
-- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII, l'adresse n'a ni blanc ni saut de ligne : ils s'écrivent
-  tels quels dans le texte) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
-  l'heure de Paris ; le lien est un lien web sans blanc, `<public_base_url>/invitation#<jeton>`). Leur `__repr__` masque tout : ni adresse, ni code, ni lien, ni prénom.
+  `mails_textes.py`, et **une réalisation n'envoie que l'`Enveloppe`** (destinataire, objet, texte, heure d'expiration d'un code) qu'il rend :
+  la base `EnvoiParEnveloppe` rend l'enveloppe et ne passe que celle-ci à `_transmet`, que la réalisation écrit ; seules
+  `enveloppe_du_code` et `enveloppe_de_l_invitation` la fabriquent (cachet privé au module ; tests d'architecture : aucun autre appel,
+  aucun autre fichier ne nomme le cachet, et un fichier `infra/mail_*.py` ne lit ni `.code`, ni `.lien`, ni un prénom, ni `MessageCode`), l'objet est vérifié contre
+  `OBJETS_AUTORISES` (deux constantes, sans code, prénom ni lien) et doit être un `str` exact. `envoie_sans_remonter(envoyer,
+  message, quoi)` est l'enveloppe de la tâche d'arrière-plan : `quoi` est un `TypeDeMail` (`code`, `invitation`, ou ces deux littéraux ; liste fermée,
+  vérifiée à l'exécution, appariée au type exact du message : aucune adresse ni aucun code ne peut entrer dans le journal par là) ; elle
+  journalise le type de l'erreur seul et borne l'envoi par son propre délai (20 s, sous les 25 s de la requête et au-dessus des 15 s de
+  l'envoi réel). **Annulation, délai ou `MailIndisponible(issue_inconnue=True)` (requête partie, réponse perdue) : « issue inconnue »** (le
+  fournisseur a pu accepter le mail : le journal ne dit jamais « non envoyé » alors) ; l'annulation repart même si la réalisation l'a
+  traduite en erreur.
+- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII ; le destinataire est **une seule adresse** de grammaire stricte :
+  ASCII, partie locale de 64 caractères au plus, domaine à point, 254 au plus, ni virgule, ni espace, ni caractère de contrôle ou de
+  direction, `infra.comptes.adresse_valide` et un point au domaine ; l'appelant la donne normalisée en minuscules) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
+  l'heure de Paris ; le lien est `<origine du front>/invitation#<jeton>` : `enveloppe_de_l_invitation(message, origines)` le refuse si ce n'est pas une origine
+  de `Settings.origines`, s'il porte une partie utilisateur (`https://notre-popote.fr@evil.example/…`), un port non admis, un autre chemin,
+  une requête (même vide), un blanc ou une tabulation, un jeton de plus de 128 caractères, ou s'il est en `http` ailleurs que vers l'hôte
+  local ; un `POPOTE_PUBLIC_BASE_URL` hors de `Settings.origines` est signalé au démarrage hors local, car tous les liens seraient refusés). Leur `__repr__` masque tout : ni adresse, ni code, ni lien, ni prénom.
 - **Les textes** : du texte clair, en français. L'objet du code est constant (`Ton code de connexion Popote`) et **ne porte jamais
   le code** : le fournisseur garde l'objet. Aucun prénom dans un objet. Dans le texte, un prénom passe par `prenom_affichable` :
   lettres Unicode (NFC d'abord, marques combinantes admises à trois de suite), espaces, tirets, apostrophes, 30 caractères au
-  plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Limites dites : pas de contrôle de
-  script mixte ni d'homoglyphes (« Mаrc » avec un a cyrillique passe) ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
+  plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Sont refusés : les remplissages invisibles (U+3164, U+115F, U+1160, U+FFA0, U+2800), les caractères sans largeur (U+200B à U+200F, U+2060 à
+  U+2064, U+FEFF) où qu'ils soient, les marques combinantes invisibles (U+034F, sélecteurs de variante, U+17B4, U+17B5, U+180B à
+  U+180D, U+180F), tout prénom que NFKC change (pleine chasse, lettres mathématiques, ligatures) et tout mélange de deux écritures dans un
+  même prénom (latin avec grec, cyrillique, arménien, cherokee ou coptique ; un titlo cyrillique sur une lettre latine). **Limites
+  dites** : les homoglyphes d'une seule écriture passent (un prénom entièrement cyrillique qui ressemble à un prénom latin) ; un prénom
+  qui mêle deux écritures légitimement (hiragana et kanji) reçoit le repli ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
   30 lettres (« Support Popote » passe) : le filtre réduit l'hameçonnage par prénom sans le supprimer (menace F6). Un prénom ne se garde jamais sans ce filtre : S12 l'applique aussi à la saisie.
 - **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`) ou `local`
   (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs). L'envoi réel par Scaleway TEM vient
   avec S4 ; hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage.
-- Tests : `tests/unit/test_mails.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
+- Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
   pas filtrer le prénom (hôte et invité), ne pas normaliser en NFC, marques et remplissages invisibles, avaler l'annulation,
-  journaliser le message de l'erreur.
+  journaliser le message de l'erreur, `quoi` libre, objet non contrôlé ou portant le code, destinataire en `\S+`, origine du lien non vérifiée,
+  invisible au milieu d'un prénom, écritures mêlées, NFKC, annulation dite « non envoyé » ou traduite en erreur, envoi sans délai propre.
 

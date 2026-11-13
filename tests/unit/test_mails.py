@@ -1,11 +1,12 @@
 """L'interface d'envoi (0.4bis S3) : messages, textes, prénom affiché, boîte de test, route retirée."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, tzinfo
+from pathlib import Path
 
-import httpx
 import pytest
-from _commun import ECRITURE_LOCALE, reglages
+from _commun import reglages
 
 from popote_api.infra import mails_textes as textes
 from popote_api.infra.mails import (
@@ -14,6 +15,7 @@ from popote_api.infra.mails import (
     MailIndisponible,
     MessageCode,
     MessageInvitation,
+    TypeDeMail,
     cree_envoi_mail,
     envoie_sans_remonter,
 )
@@ -128,6 +130,18 @@ def test_un_prenom_invisible_ou_aux_marques_abusives_donne_le_repli(prenom: str)
     assert textes.prenom_affichable(prenom) == textes.REPLI_DU_PRENOM
 
 
+def test_les_blancs_de_bord_d_un_prenom_sont_retires() -> None:
+    assert textes.prenom_affichable("  Marc \t") == "Marc"
+    assert textes.prenom_valide("\u00a0Marc ") == "Marc"
+
+
+@pytest.mark.parametrize(("marques", "attendu"), [(3, True), (4, False)])
+def test_trois_marques_combinantes_de_suite_passent_la_quatrieme_non(marques: int, attendu: bool) -> None:
+    prenom = "x" + "\u0301" * marques  # « x » n'a pas de forme précomposée : NFC ne retire aucune marque
+    assert (textes.prenom_valide(prenom) is not None) is attendu
+    assert textes.MARQUES_DE_SUITE_MAX == 3
+
+
 def test_un_prenom_decompose_est_recompose() -> None:
     assert textes.prenom_affichable("E\u0301loi") == "\u00c9loi"  # « E » + accent combinant devient « É »
 
@@ -223,7 +237,7 @@ async def test_la_boite_de_test_en_panne_leve_mail_indisponible() -> None:
 
 async def test_envoie_sans_remonter_rend_vrai_quand_le_message_part() -> None:
     boite = BoiteDeTest()
-    assert await envoie_sans_remonter(boite.envoie_le_code, code(), "code") is True
+    assert await envoie_sans_remonter(boite.envoie_le_code, code(), TypeDeMail.code) is True
     assert len(boite.codes) == 1
 
 
@@ -234,7 +248,7 @@ async def test_envoie_sans_remonter_journalise_le_type_seul_et_ne_remonte_pas(
     async def tombe(message: MessageCode) -> None:
         raise erreur
 
-    assert await envoie_sans_remonter(tombe, code(), "code") is False
+    assert await envoie_sans_remonter(tombe, code(), TypeDeMail.code) is False
     assert f"Mail (code) non envoyé : {type(erreur).__name__}" in caplog.text
     assert ADRESSE not in caplog.text and "123456" not in caplog.text and "a@b.fr" not in caplog.text
 
@@ -246,8 +260,9 @@ async def test_envoie_sans_remonter_journalise_l_annulation_puis_la_laisse_remon
         raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
-        await envoie_sans_remonter(annule, invitation(), "invitation")
-    assert "Mail (invitation) non envoyé : annulé (délai dépassé)" in caplog.text
+        await envoie_sans_remonter(annule, invitation(), TypeDeMail.invitation)
+    assert "Mail (invitation) : annulé pendant l'envoi, issue inconnue" in caplog.text
+    assert "non envoyé" not in caplog.text
     assert ADRESSE not in caplog.text and LIEN not in caplog.text
 
 
@@ -268,12 +283,17 @@ def test_le_fournisseur_choisit_la_realisation(fournisseur: str, attendu: type) 
 
 # --- La route retirée ---------------------------------------------------------------------------------
 
+CHEMIN_RETIRE = "/api/v1/password-resets"
 
-async def test_la_demande_de_reinitialisation_n_existe_plus_et_rend_401() -> None:
-    app = create_app(reglages("local"))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        reponse = await client.post(
-            "/api/v1/password-resets", json={"email": ADRESSE}, headers=ECRITURE_LOCALE
-        )
-    assert reponse.status_code == 401
-    assert reponse.json()["code"] == "pas_de_session"
+
+def test_la_demande_de_reinitialisation_n_est_plus_dans_le_registre_des_routes() -> None:
+    chemins = {getattr(route, "path", "") for route in create_app(reglages("local")).routes}
+    assert not [c for c in chemins if "password-reset" in c or "reinitialisation" in c]
+    assert CHEMIN_RETIRE not in chemins
+
+
+def test_la_demande_de_reinitialisation_n_est_plus_dans_le_contrat() -> None:
+    contrat = json.loads((Path(__file__).parents[2] / "openapi.json").read_text())
+    assert CHEMIN_RETIRE not in contrat["paths"]
+    assert not [c for c in contrat["paths"] if "password-reset" in c]
+    assert CHEMIN_RETIRE not in create_app(reglages("local")).openapi()["paths"]
