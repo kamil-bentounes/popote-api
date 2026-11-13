@@ -5,6 +5,8 @@
    Garde-fou de relecture : il lit les chaînes littérales, pas celles qu'on assemblerait à l'exécution.
 2. `Base.service()` (le contournement de la RLS) n'est appelé que par les modules de la liste fermée.
 3. `Base.connexion()` (le rôle de connexion nu, pour les fonctions réservées à `popote_api`) de même.
+4. L'`Enveloppe` d'un mail (destinataire, objet, texte) n'est fabriquée que dans `infra/mails_textes.py` : une
+   réalisation d'`EnvoiMail` n'envoie rien d'autre, donc jamais un objet qui porte un code ou un prénom.
 """
 
 import ast
@@ -132,3 +134,85 @@ def test_le_controle_attrape_un_appel_a_connexion() -> None:
     assert appels_a_connexion("async def f(base):\n    async with base.connexion() as c:\n        pass") == 1
     assert appels_a_connexion("async def f(base):\n    async with base.service() as c:\n        pass") == 0
     assert appels_a_connexion("async def f(base):\n    async with base.personne(p) as c:\n        pass") == 0
+
+
+FABRIQUE_DES_ENVELOPPES = "infra/mails_textes.py"
+
+
+def appels_a_enveloppe(source: str) -> int:
+    return sum(
+        1
+        for noeud in ast.walk(ast.parse(source))
+        if isinstance(noeud, ast.Call)
+        and (
+            (isinstance(noeud.func, ast.Name) and noeud.func.id == "Enveloppe")
+            or (isinstance(noeud.func, ast.Attribute) and noeud.func.attr == "Enveloppe")
+        )
+    )
+
+
+def test_seul_mails_textes_fabrique_une_enveloppe() -> None:
+    fabricants = {
+        str(chemin.relative_to(SRC)) for chemin in fichiers_source() if appels_a_enveloppe(chemin.read_text())
+    }
+    assert fabricants == {FABRIQUE_DES_ENVELOPPES}  # et pas un autre : le contrôle ne passe pas à vide
+
+
+def test_le_controle_attrape_une_enveloppe_fabriquee_ailleurs() -> None:
+    assert appels_a_enveloppe("e = Enveloppe(a, 'Code 123456', t, c)") == 1
+    assert appels_a_enveloppe("e = textes.Enveloppe(a, 'Code 123456', t, c)") == 1
+    assert appels_a_enveloppe("e = textes.enveloppe_du_code(m)") == 0
+
+
+# Les réalisations qui envoient pour de bon (`infra/mail_*.py`, hors `mails.py` et `mails_textes.py`) ne
+# voient que l'`Enveloppe` : jamais le code, le lien, le prénom ni la durée d'un message, jamais le cachet.
+ATTRIBUTS_DES_MESSAGES = frozenset({"code", "lien", "prenom_invite", "prenom_hote", "validite_min"})
+NOMS_DES_MESSAGES = frozenset({"MessageCode", "MessageInvitation"})
+
+
+def acces_interdits_a_un_message(source: str) -> list[str]:
+    fautes = []
+    for noeud in ast.walk(ast.parse(source)):
+        if isinstance(noeud, ast.Attribute) and noeud.attr in ATTRIBUTS_DES_MESSAGES:
+            fautes.append(noeud.attr)
+        elif isinstance(noeud, ast.Name) and noeud.id in NOMS_DES_MESSAGES | {"_CACHET"}:
+            fautes.append(noeud.id)
+        elif isinstance(noeud, ast.alias) and noeud.name in NOMS_DES_MESSAGES | {"_CACHET"}:
+            fautes.append(noeud.name)
+    return fautes
+
+
+def realisations_reelles() -> list[Path]:
+    return sorted(p for p in (SRC / "infra").glob("mail_*.py"))
+
+
+@pytest.mark.parametrize("chemin", realisations_reelles(), ids=lambda c: c.name)
+def test_une_realisation_reelle_ne_voit_que_l_enveloppe(chemin: Path) -> None:
+    assert acces_interdits_a_un_message(chemin.read_text()) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "subject = f'Code {message.code}'",
+        "lien = message.lien",
+        "from popote_api.infra.mails import MessageCode",
+        "x: MessageInvitation",
+        "from popote_api.infra.mails_textes import _CACHET",
+        "n = message.validite_min",
+    ],
+)
+def test_le_controle_attrape_une_realisation_qui_lit_le_message(source: str) -> None:
+    assert acces_interdits_a_un_message(source) != []
+
+
+def test_le_controle_laisse_passer_l_enveloppe() -> None:
+    source = "def f(enveloppe: Enveloppe) -> str:\n    return enveloppe.objet + enveloppe.texte"
+    assert acces_interdits_a_un_message(source) == []
+
+
+def test_le_cachet_des_enveloppes_n_est_nomme_que_par_mails_textes() -> None:
+    nommeurs = {
+        str(chemin.relative_to(SRC)) for chemin in fichiers_source() if "_CACHET" in chemin.read_text()
+    }
+    assert nommeurs == {FABRIQUE_DES_ENVELOPPES}

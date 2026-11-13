@@ -160,7 +160,7 @@ refusent de démarrer avec autre chose que `hibp`.
   `connexion_ratee`, `connexion_bloquee`, `deconnexion`, `reauthentification_reussie`, `reauthentification_ratee`,
   `session_fermee`, `mot_de_passe_change`, `reinitialisation_demandee`, `reinitialisation_utilisee`,
   `invitation_creee`, `invitation_acceptee`, `invitation_revoquee`, `compte_supprime`, `compte_repris`,
-  `verification_fuites_indisponible` ; un test compare cette liste à l'énumération `Evenement`), `person_id`
+  `verification_fuites_indisponible`, `code_demande` ; un test compare cette liste à l'énumération `Evenement`), `person_id`
   (`on delete set null`), `session_id` et `invitation_id` (sans clé étrangère : la session ou le lien peut être
   purgé avant l'événement), `account_key` et `ip_hash` (32 octets), `request_id` (32 caractères hexadécimaux, celui
   de l'API). **Rien d'autre** : ni e-mail, ni IP, ni agent utilisateur, ni champ libre. RLS activée et forcée, aucune
@@ -174,7 +174,7 @@ refusent de démarrer avec autre chose que `hibp`.
   l'événement s'écrit **sans clés** (on perd le lien entre événements, pas l'événement) et un avertissement part au
   démarrage. Un appelant qui compte par clé (les limites de connexion) refuse au lieu de compter sans clé. En local
   le poivre est tiré au hasard par processus.
-- **Conservation.** `connexion_ratee` et `connexion_bloquee`, liées à une clé de compte et non à une personne :
+- **Conservation.** `connexion_ratee`, `connexion_bloquee` et `code_demande` (0147), liées à une clé de compte et non à une personne :
   **90 jours** ; tout le reste **1 an**. Purge par lots de 5 000, idempotente, qui rend un nombre de lignes et jamais
   une valeur ; tâche `pg_cron` quotidienne (`journal-securite-purge`, 03 h 41 UTC) en SQL pur, gardée comme celle des
   rappels (sans l'extension, la migration passe et avertit).
@@ -329,6 +329,40 @@ Limite connue (B9) : la force brute par le point `/auth/v1/token` de Supabase Au
 **couverte qu'après 0.7** (verrouillage de Supabase Auth) ; d'ici là elle n'est comptée par aucune de nos limites.
 Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à une session réauthentifiée depuis moins de
 5 minutes, donc vue depuis moins de 5 minutes, et `session_courante` ne verrouille la ligne que passé ce délai.
+
+### 4.13 Code par mail : la demande, côté base (0.4bis S5a, migration 0147 ; la route `POST /api/v1/login-codes` est S5b)
+
+- **Table `public.login_code`** : le HMAC du code (jamais le code), 10 minutes au plus (`CHECK`), 5 essais, usage unique,
+  révocable ; **un seul code actif par clé de compte** (index unique partiel : une demande révoque la précédente).
+  `id` est l'identifiant de demande (`code_request_id`) : pas un secret, le code est protégé par le poivre. `person_id` est
+  nul pour une **ligne factice** (adresse inconnue, bannie, supprimée ou sans profil) : même insertion, même durée, aucun mail.
+  RLS forcée, aucun droit. Purge à l'échéance + 1 jour (`login-code-purge`, 03 h 43 UTC).
+- **`demande_un_code`** (`popote_api` seul) : le même travail pour une adresse connue et inconnue (verrou sur la clé du
+  compte, puis sur la personne pour un compte réel : la même clé que `cree_session`). **Un code de moins de 60 s n'est pas
+  remplacé** (même identifiant rendu, `nouveau` faux, donc pas de mail : un double clic ne tue pas le code déjà parti) ;
+  un code mort (5 essais) se remplace. `code_demande` ne s'écrit que pour un compte réel : une IP ne remplit pas le journal.
+- **Créneaux** (`prend_les_creneaux_de_demande`) : IP (10), (adresse, IP) (3), adresse (6 par heure), dans cet ordre ;
+  **un refus n'use pas les suivants** ; sans escalade (le créneau de trop attend la fin de la fenêtre, ne compte pas, ne
+  prolonge rien). **Aucun créneau global à la demande** : dix adresses bidon depuis une IP l'auraient épuisé pour tous.
+  Le **coupe-circuit global** (`prend_un_envoi`, 60 mails par heure) se prend à l'envoi réel, après la réponse, pour un compte
+  réel seulement : il protège le quota du fournisseur. Une adresse inventée n'envoie rien, donc n'y compte pas ; un anonyme ne
+  l'atteint qu'en connaissant **au moins 10 comptes réels** (6 demandes par heure chacun) : le foyer en compte deux.
+- **Risques acceptés** (plan, risque 6) : qui connaît une adresse peut user ses 6 demandes par heure depuis une seule IP (3 par
+  15 minutes) et priver la personne de **code** jusqu'à une heure ; la clé d'accès n'est pas touchée. Les fenêtres sont fixes :
+  jusqu'au double de la limite peut passer à cheval sur deux fenêtres (12 demandes d'une adresse, 120 envois globaux).
+  Le coupe-circuit, qui ne compte que les comptes réels, est observable : qui a déjà fait partir 59 envois (donc détient au
+  moins 10 comptes réels) voit, à l'absence du 60e mail, qu'une adresse sondée existe. Un quota global dur ne peut pas être à la fois
+  indépendant de l'existence et inépuisable ; accepté pour un foyer de deux personnes, sur invitation (l'inscription est
+  fermée). Un compte réel prend en plus le verrou de la personne et écrit un événement : sous contention de cette personne, sa
+  demande est plus lente ; S5b traduit les délais et erreurs de la même façon et mesure les médianes.
+- **Recherche du compte** : elle passe par `users_instance_id_email_idx (instance_id, lower(email))` ; sans `instance_id`, un
+  parcours de la table arrêté à la première ligne trouvée ferait répondre une adresse connue plus vite qu'une inconnue (mesuré :
+  4 ms contre 12 ms pour 20 000 comptes). Un test garde la requête et, sur une base fournie, la médiane des durées.
+- **Ordre des verrous**, que S7 reprend : clé de compte, puis personne (la clé de `cree_session`), puis `auth.users` en `for key share`
+  (le compte se relit une fois le verrou de la personne pris), puis les lignes `login_code`. `for key share` n'empêche pas un
+  bannissement simultané : la vérification (S7) relit l'état du compte.
+- Tests : `tests/integration/test_demande_de_code_base.py` (dont 50 demandes simultanées par adresse connue et inconnue, un
+  test de dérive entre les portées du `CHECK` et celles que les fonctions emploient) et `test_surface.py`.
 
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
@@ -632,7 +666,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
 ### 4.12 L'interface d'envoi des mails (0.4bis S3 ; code : `infra/mails.py`, `infra/mails_textes.py`)
 
 - **La réinitialisation du mot de passe n'existe plus** (décision D3 du 13/11/2026 : plus aucun mot de passe ; le code par mail
-  *est* la récupération). `POST /api/v1/password-resets` répond désormais `401` comme toute route inconnue sans session. Restent
+  *est* la récupération). `POST /api/v1/password-resets` n'est plus ni dans le registre des routes ni dans `openapi.json` (un test le lit : sans session, toute route inconnue rend `401`, ce qui ne prouverait rien). Restent
   en base, retirés par S15 : la table `password_reset`, `cree_reinitialisation`, le créneau `reset` (`prend_un_creneau_reinit`)
   et, côté Python, `Empreintes.cle_reinitialisation` (et `_requise`, `ETIQUETTE_REINITIALISATION`), `prendre_un_creneau_de_reinitialisation` et les
   réglages `reinitialisation_essais` et `reinitialisation_fenetre_s`, que plus aucune route n'appelle.
@@ -640,23 +674,43 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   de code (S5) et l'invitation (S12) appellent. Garanties : (1) l'envoi se fait **après** la réponse HTTP (`BackgroundTasks`) :
   un échec ne change jamais la réponse ; (2) un échec lève `MailIndisponible` et rien d'autre ; l'appelant le journalise par son
   type seul ; (3) un retour sans erreur veut dire « accepté par le fournisseur », pas « remis » ; (4) les textes viennent de
-  `mails_textes.py`. `envoie_sans_remonter(envoyer, message, quoi)` est l'enveloppe de la tâche d'arrière-plan : elle journalise le type
-  de l'erreur seul et laisse remonter l'annulation (le délai de 25 s de la requête englobe la tâche : un envoi trop long est annulé).
-- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII, l'adresse n'a ni blanc ni saut de ligne : ils s'écrivent
-  tels quels dans le texte) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
-  l'heure de Paris ; le lien est un lien web sans blanc, `<public_base_url>/invitation#<jeton>`). Leur `__repr__` masque tout : ni adresse, ni code, ni lien, ni prénom.
+  `mails_textes.py`, et **une réalisation n'envoie que l'`Enveloppe`** (destinataire, objet, texte, heure d'expiration d'un code) qu'il rend :
+  la base `EnvoiParEnveloppe` rend l'enveloppe et ne passe que celle-ci à `_transmet`, que la réalisation écrit ; seules
+  `enveloppe_du_code` et `enveloppe_de_l_invitation` la fabriquent (cachet privé au module ; tests d'architecture : aucun autre appel,
+  aucun autre fichier ne nomme le cachet, et un fichier `infra/mail_*.py` ne lit ni `.code`, ni `.lien`, ni un prénom, ni `MessageCode`), l'objet est vérifié contre
+  les gabarits d'objet (`objet_admis`) et doit être un `str` exact. Les objets sont fixes, sauf un : celui de l'invitation, « {Hôte}
+  t'a gardé une place en cuisine », où l'hôte est le **seul** prénom admis (jamais celui de l'invité), filtré par `prenom_valide`, 30 caractères
+  au plus ; refusé, l'objet de repli « Une place t'attend en cuisine » s'applique. Jamais de code ni de lien dans un objet. `envoie_sans_remonter(envoyer,
+  message, quoi)` est l'enveloppe de la tâche d'arrière-plan : `quoi` est un `TypeDeMail` (`code`, `invitation`, ou ces deux littéraux ; liste fermée,
+  vérifiée à l'exécution, appariée au type exact du message : aucune adresse ni aucun code ne peut entrer dans le journal par là) ; elle
+  journalise le type de l'erreur seul et borne l'envoi par son propre délai (20 s, sous les 25 s de la requête et au-dessus des 15 s de
+  l'envoi réel). **Annulation, délai ou `MailIndisponible(issue_inconnue=True)` (requête partie, réponse perdue) : « issue inconnue »** (le
+  fournisseur a pu accepter le mail : le journal ne dit jamais « non envoyé » alors) ; l'annulation repart même si la réalisation l'a
+  traduite en erreur.
+- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII ; le destinataire est **une seule adresse** de grammaire stricte :
+  ASCII, partie locale de 64 caractères au plus, domaine à point, 254 au plus, ni virgule, ni espace, ni caractère de contrôle ou de
+  direction, `infra.comptes.adresse_valide` et un point au domaine ; l'appelant la donne normalisée en minuscules) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
+  l'heure de Paris ; le lien est `<origine du front>/invitation#<jeton>` : `enveloppe_de_l_invitation(message, origines)` le refuse si ce n'est pas une origine
+  de `Settings.origines`, s'il porte une partie utilisateur (`https://notre-popote.fr@evil.example/…`), un port non admis, un autre chemin,
+  une requête (même vide), un blanc ou une tabulation, un jeton de plus de 128 caractères, ou s'il est en `http` ailleurs que vers l'hôte
+  local ; un `POPOTE_PUBLIC_BASE_URL` hors de `Settings.origines` est signalé au démarrage hors local, car tous les liens seraient refusés). Leur `__repr__` masque tout : ni adresse, ni code, ni lien, ni prénom.
 - **Les textes** : du texte clair, en français. L'objet du code est constant (`Ton code de connexion Popote`) et **ne porte jamais
-  le code** : le fournisseur garde l'objet. Aucun prénom dans un objet. Dans le texte, un prénom passe par `prenom_affichable` :
+  le code** : le fournisseur garde l'objet. Le seul prénom d'un objet est celui de l'hôte, dans l'invitation (voir plus haut). Dans le texte, un prénom passe par `prenom_affichable` :
   lettres Unicode (NFC d'abord, marques combinantes admises à trois de suite), espaces, tirets, apostrophes, 30 caractères au
-  plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Limites dites : pas de contrôle de
-  script mixte ni d'homoglyphes (« Mаrc » avec un a cyrillique passe) ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
+  plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Sont refusés : les remplissages invisibles (U+3164, U+115F, U+1160, U+FFA0, U+2800), les caractères sans largeur (U+200B à U+200F, U+2060 à
+  U+2064, U+FEFF) où qu'ils soient, les marques combinantes invisibles (U+034F, sélecteurs de variante, U+17B4, U+17B5, U+180B à
+  U+180D, U+180F), tout prénom que NFKC change (pleine chasse, lettres mathématiques, ligatures) et tout mélange de deux écritures dans un
+  même prénom (latin avec grec, cyrillique, arménien, cherokee ou coptique ; un titlo cyrillique sur une lettre latine). **Limites
+  dites** : les homoglyphes d'une seule écriture passent (un prénom entièrement cyrillique qui ressemble à un prénom latin) ; un prénom
+  qui mêle deux écritures légitimement (hiragana et kanji) reçoit le repli ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
   30 lettres (« Support Popote » passe) : le filtre réduit l'hameçonnage par prénom sans le supprimer (menace F6). Un prénom ne se garde jamais sans ce filtre : S12 l'applique aussi à la saisie.
 - **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`) ou `local`
   (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs). L'envoi réel par Scaleway TEM vient
   avec S4 ; hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage.
-- Tests : `tests/unit/test_mails.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
+- Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
   pas filtrer le prénom (hôte et invité), ne pas normaliser en NFC, marques et remplissages invisibles, avaler l'annulation,
-  journaliser le message de l'erreur.
+  journaliser le message de l'erreur, `quoi` libre, objet non contrôlé ou portant le code, destinataire en `\S+`, origine du lien non vérifiée,
+  invisible au milieu d'un prénom, écritures mêlées, NFKC, annulation dite « non envoyé » ou traduite en erreur, envoi sans délai propre.
 
 
 ### 4.13 Les clés d'accès : le socle (0.4bis S8a ; code : `infra/webauthn.py`, `config.py`)
