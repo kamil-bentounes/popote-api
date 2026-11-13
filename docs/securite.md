@@ -295,6 +295,41 @@ refusent de démarrer avec autre chose que `hibp`.
   `app.state.horloge()` : `403 reauthentification_requise`. 300 s exactement passe. Posé par la connexion, donc un
   changement juste après la connexion n'exige rien. Aucune route ne l'utilise encore (T11, T14).
 
+### 4.8 Changer son mot de passe (0.4 T11, migration 0141 ; code : `api/moi.py`, `security/connexion.py`)
+
+`PUT /api/v1/me/password` `{new_password}`, derrière `exige_reauth`. L'ordre est celui qui laisse l'état le plus sûr
+après un échec à n'importe quelle étape :
+
+1. **Avant tout changement d'état** : normalisation NFKC, règles NIST (§ 4.1), liste de fuites. Refus : `422`, pointeur
+   `/new_password`, aucun appel à Auth, rien d'écrit. **Liste indisponible (B23) : le mot de passe est accepté**,
+   l'événement `verification_fuites_indisponible` est écrit et un avertissement est journalisé (cause seule : ni
+   valeur, ni empreinte).
+2. **Une transaction SQL** (`public.fait_tourner_et_ferme_les_autres`, exécutable par `popote_api` seul) : change
+   l'empreinte de la session courante (la rotation sert de verrou : un second changement simultané qui arrive avec
+   l'ancien cookie ne trouve plus de session et reçoit `401` sans `Set-Cookie`, sans jamais atteindre Auth), ferme
+   toutes les autres sessions (un `session_fermee` chacune) et supprime les lignes `auth.sessions` et
+   `auth.refresh_tokens` de la personne (B9, `private.ferme_les_sessions_auth`).
+3. **Auth** (`change_mot_de_passe`, forme NFKC, un seul appel). Échec : `503` **avec le nouveau cookie** (la session
+   a déjà tourné), les autres sessions restent fermées par précaution, le mot de passe n'a pas changé (sur un
+   délai d'Auth il a pu l'être : le message dit « n'a pas pu être confirmé »). Toute erreur imprévue à cette étape
+   rend la même réponse : après la rotation, le client reçoit toujours son cookie.
+4. **Succès** : `password_set` à vrai (l'ancienne appli en dépend pendant la fenêtre de retour), événement
+   `mot_de_passe_change` (jamais avant), **seconde fermeture des autres sessions** (une connexion faite avec l'ancien
+   mot de passe pendant l'appel à Auth ne survit pas), `204` et nouveau `Set-Cookie`. Un échec de la base à cette étape
+   est journalisé (`error`) mais ne retire pas son cookie à la personne : le mot de passe est déjà changé.
+
+Cas acceptés : une déconnexion simultanée qui arrive avec l'ancien cookie APRÈS la rotation ne trouve rien et la session
+survit sous son nouveau cookie ; une suppression de compte simultanée rend `503` (Auth répond `404`) avec le cookie d'un
+compte supprimé, sans effet.
+
+Sans `Idempotency-Key` : un `PUT` est idempotent par nature, et la réponse rejouée garderait en base un mot de passe.
+Le mot de passe ne figure ni dans un journal, ni dans une réponse, ni dans le `repr` du modèle d'entrée.
+
+Limite connue (B9) : la force brute par le point `/auth/v1/token` de Supabase Auth, que le front n'utilise plus, n'est
+**couverte qu'après 0.7** (verrouillage de Supabase Auth) ; d'ici là elle n'est comptée par aucune de nos limites.
+Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à une session réauthentifiée depuis moins de
+5 minutes, donc vue depuis moins de 5 minutes, et `session_courante` ne verrouille la ligne que passé ce délai.
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |

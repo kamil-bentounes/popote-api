@@ -63,6 +63,23 @@
         "title": "Appareil",
         "type": "object"
       },
+      "ChangementDeMotDePasse": {
+        "additionalProperties": false,
+        "properties": {
+          "new_password": {
+            "description": "Le nouveau mot de passe : 15 à 64 caractères, 72 octets UTF-8 au plus.",
+            "format": "password",
+            "maxLength": 256,
+            "title": "New Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "new_password"
+        ],
+        "title": "ChangementDeMotDePasse",
+        "type": "object"
+      },
       "Connexion": {
         "additionalProperties": false,
         "properties": {
@@ -795,6 +812,248 @@
           }
         ],
         "summary": "La personne connectée",
+        "tags": [
+          "moi"
+        ]
+      }
+    },
+    "/api/v1/me/password": {
+      "put": {
+        "description": "Exige une réauthentification de moins de 5 minutes. Les règles de fond et la liste de fuites sont refusées en `422` (pointeur `/new_password`) AVANT tout changement. Le jeton de la session courante tourne (l'ancien cookie ne sert plus ; un second changement simultané avec lui reçoit `401`), les autres sessions et celles de Supabase Auth sont fermées, puis le mot de passe est écrit dans Auth. Si Auth ne répond pas : `503` AVEC le nouveau cookie, mot de passe inchangé. Liste de fuites indisponible : le mot de passe est accepté et l'événement `verification_fuites_indisponible` est écrit. Sans `Idempotency-Key` : un `PUT` est naturellement idempotent, et rejouer une réponse garderait un mot de passe en base.",
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangementDeMotDePasse"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Le mot de passe est changé ; le cookie de session est remplacé.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Le nouveau jeton.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Corps trop gros",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Type de contenu non supporté",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "Le nouveau jeton, car la session a déjà tourné.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Changer son mot de passe",
         "tags": [
           "moi"
         ]

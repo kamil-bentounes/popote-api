@@ -1,14 +1,33 @@
 """`GET /api/v1/me` : la personne connectée, son adresse et son foyer."""
 
+import logging
 from typing import Any, Final, LiteralString
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from popote_api.conditionnel import EN_TETES_CONDITIONNELS, REPONSE_304, etag_de_contenu, repond_ou_304
-from popote_api.errors import reponses_erreur
-from popote_api.schemas.moi import Moi
+from popote_api.errors import (
+    CODE_AUTH_INDISPONIBLE,
+    DEFI_D_AUTHENTIFICATION,
+    PAS_DE_SESSION,
+    Probleme,
+    reponse,
+    reponses_erreur,
+)
+from popote_api.infra.fuites import EtatFuite
+from popote_api.schemas.moi import ChangementDeMotDePasse, Moi
+from popote_api.security.connexion import (
+    confirme_le_mot_de_passe_change,
+    fait_tourner_la_session_et_ferme_les_autres,
+    journalise_la_liste_de_fuites_indisponible,
+)
+from popote_api.security.cookie import pose_le_cookie_de_session
+from popote_api.security.mots_de_passe import normalise, verifie_nouveau
+from popote_api.security.reauth import EXIGE_UNE_REAUTHENTIFICATION
 from popote_api.security.session import PersonneDeLaSession
+
+journal = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/me", tags=["moi"])
 
@@ -59,3 +78,105 @@ async def lire_moi(request: Request, personne: PersonneDeLaSession) -> Response:
     # L'`ETag` est celui des octets que `repond_ou_304` enverra : il change quand la représentation change.
     etag = etag_de_contenu(bytes(JSONResponse(corps).body))
     return repond_ou_304(request, etag, corps)
+
+
+MOT_DE_PASSE_FUITE: Final = (
+    "Ce mot de passe figure dans une liste de mots de passe volés : choisis-en un autre."
+)
+AUTH_EN_PANNE: Final = (
+    "Le changement n'a pas pu être confirmé : réessaie dans un instant. Ta session reste ouverte, "
+    "tes autres appareils ont été déconnectés."
+)
+
+
+@router.put(
+    "/password",
+    operation_id="change_password",
+    summary="Changer son mot de passe",
+    description=(
+        "Exige une réauthentification de moins de 5 minutes. Les règles de fond et la liste de fuites sont "
+        "refusées en `422` (pointeur `/new_password`) AVANT tout changement. Le jeton de la session courante "
+        "tourne (l'ancien cookie ne sert plus ; un second changement simultané avec lui reçoit `401`), les "
+        "autres sessions et celles de Supabase Auth sont fermées, puis le mot de passe est écrit dans Auth. "
+        "Si Auth ne répond pas : `503` AVEC le nouveau cookie, mot de passe inchangé. Liste de fuites "
+        "indisponible : le mot de passe est accepté et l'événement `verification_fuites_indisponible` est "
+        "écrit. Sans `Idempotency-Key` : un `PUT` est naturellement idempotent, et rejouer une réponse "
+        "garderait un mot de passe en base."
+    ),
+    status_code=204,
+    response_class=Response,
+    dependencies=[EXIGE_UNE_REAUTHENTIFICATION],
+    responses={
+        204: {
+            "description": "Le mot de passe est changé ; le cookie de session est remplacé.",
+            "headers": {"Set-Cookie": {"description": "Le nouveau jeton.", "schema": {"type": "string"}}},
+        },
+        503: {
+            **reponses_erreur(503)[503],
+            "headers": {
+                "Set-Cookie": {
+                    "description": "Le nouveau jeton, car la session a déjà tourné.",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        **reponses_erreur(403, 422),
+    },
+)
+async def change_le_mot_de_passe(
+    corps: ChangementDeMotDePasse, request: Request, personne: PersonneDeLaSession
+) -> Response:
+    app = request.app
+    request_id = getattr(request.state, "request_id", None)
+    # (1) Avant tout changement d'état : règles de fond, puis liste de fuites.
+    defauts = verifie_nouveau(corps.new_password, "/new_password")
+    if defauts:
+        return reponse(
+            request,
+            422,
+            "donnees_invalides",
+            "Le mot de passe est refusé.",
+            errors=[defaut.en_erreur_de_champ() for defaut in defauts],
+        )
+    forme = normalise(corps.new_password)  # la forme que la connexion essaie d'abord
+    verdict = await app.state.fuites.verifie(forme)
+    if verdict.etat is EtatFuite.fuite:
+        return reponse(
+            request,
+            422,
+            "donnees_invalides",
+            "Le mot de passe est refusé.",
+            errors=[{"pointer": "/new_password", "message": MOT_DE_PASSE_FUITE}],
+        )
+    if verdict.etat is EtatFuite.indisponible:
+        # B23 : on accepte, et on le dit. Ni la valeur ni son empreinte ne sont journalisées.
+        journal.warning("Liste de fuites indisponible (%s) : mot de passe accepté", verdict.cause)
+        await journalise_la_liste_de_fuites_indisponible(app.state.base, personne.id, request_id)
+    # (2) La rotation fait aussi verrou : un second changement avec l'ancien cookie ne trouve plus de session.
+    tournee = await fait_tourner_la_session_et_ferme_les_autres(app.state.base, personne.empreinte_de_session)
+    if tournee is None:
+        raise Probleme(
+            401, "pas_de_session", PAS_DE_SESSION, headers={"WWW-Authenticate": DEFI_D_AUTHENTIFICATION}
+        )
+    nouveau_cookie = Response()
+    pose_le_cookie_de_session(nouveau_cookie, app.state.settings, tournee.jeton)
+    # (3) Auth. Un échec laisse le mot de passe inchangé ; la session a tourné : le client reçoit son cookie.
+    try:
+        await app.state.auth_admin.change_mot_de_passe(personne.id, forme)
+    except Exception as erreur:  # la session a tourné : le client doit recevoir son cookie
+        # Le texte d'une erreur d'Auth ne porte que le statut et le code (ni e-mail ni mot de passe).
+        journal.warning("Changement de mot de passe refusé ou impossible : %s", erreur)
+        raise Probleme(
+            503,
+            CODE_AUTH_INDISPONIBLE,
+            AUTH_EN_PANNE,
+            headers={"Set-Cookie": nouveau_cookie.headers["set-cookie"]},
+        ) from erreur
+    # (4) Le succès : `password_set`, l'événement, les autres sessions refermées. Le mot de passe EST changé :
+    # un échec de la base ici ne retire pas son cookie au client (il se reconnecterait sinon sans comprendre).
+    try:
+        await confirme_le_mot_de_passe_change(app.state.base, personne.id, tournee.session, request_id)
+    except Exception:
+        journal.error("Mot de passe changé, mais la confirmation en base a échoué", exc_info=True)
+    nouveau_cookie.status_code = 204
+    return nouveau_cookie
