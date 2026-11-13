@@ -390,6 +390,35 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   code en clair, même empreinte pour deux demandes, identifiant non effectif, créneaux seulement pour un compte connu, ordre des clés,
   coupe-circuit retiré, code ou adresse dans un journal, validité, paire sans IP.
 
+### 4.14 Le verrou de personne et l'activité des sessions (0.4bis S6, migration 0148 ; code : `infra/db.py`, `tests/integration/_course.py`)
+
+- **Le défaut (leçon 1).** Une connexion en vol (preuve vérifiée, session pas encore créée) survit à la fermeture de toutes les
+  sessions si la preuve et la session sont deux instructions sans verrou commun. On pose le verrou **une fois** :
+  `private.verrouille_la_personne(personne)` est le verrou consultatif de transaction que `cree_session` posait en ligne (même clé,
+  `hashtextextended(personne::text, 0)`), nommé ; `public.verrouille_la_personne` est son chemin Python (`popote_api`, `service_role`).
+  Une personne nulle est refusée (le verrou serait un « rien »).
+- **Ordre des verrous, partout : foyer, puis personne, puis lignes** (session, code, clé). Tout code qui ouvre une session, en ferme
+  plusieurs, révoque ou consomme un code, ajoute ou retire une clé ou supprime un compte prend d'abord la personne. `cree_session`,
+  `ferme_les_autres_sessions`, `ferme_les_autres_appareils`, `fait_tourner_et_ferme_les_autres` et
+  `confirme_le_changement_de_mot_de_passe` la prennent **avant toute écriture** (un test regarde, dans `pg_locks`, que B attend sans avoir
+  encore d'identifiant de transaction). `ferme_les_autres_sessions` et `ferme_les_autres_appareils` **révoquent aussi les codes en attente**
+  de la personne : un code demandé avant la fermeture ne rouvre rien après. Un test d'architecture lit les migrations : toute fonction qui
+  écrit `login_session.revoked_at` ou supprime des lignes de `login_session` appelle `verrouille_la_personne`, sauf quatre exceptions écrites
+  avec leur raison (`ferme_session`, `ferme_un_appareil` : une seule session désignée ; la purge ; `efface_mes_donnees` jusqu'à S14).
+- **L'activité d'une session (amendement A2).** `private.session_valide` écrivait `last_seen_at` en tenant la ligne jusqu'à la fin de la
+  requête, **avant** que la route prenne la personne ou le foyer : deux onglets d'un même navigateur s'interbloquent (`40P01`) et l'ordre
+  foyer, personne serait inversé. Désormais `Base.session` **lit** la session sans écrire ni verrouiller (`lit_la_session`, qui dit si
+  l'activité a plus de 5 minutes) ; si elle est périmée, la transaction de lecture est abandonnée, l'activité s'écrit dans **sa propre
+  transaction courte** (`note_l_activite_de_la_session` : la personne, puis la ligne, conditions relues sous le verrou), **validée avant**
+  que la route ouvre la sienne, puis la requête recommence. Dans le cas courant (activité récente) il n'y a toujours qu'une transaction.
+  À l'entrée de la route, aucun verrou de personne ni aucune écriture ne sont tenus (testé). Conséquence : l'activité s'écrit même si
+  la route échoue (la session a bien servi). `session_valide`, `session_courante` et `session_personne` ne sont pas touchées : l'API ne
+  les appelle plus, elles ne servent qu'au code déjà déployé pendant la fenêtre de déploiement.
+- **Courses déterministes** (`tests/integration/_course.py`) : A prend le verrou sans valider, B démarre, le test attend B dans
+  `pg_stat_activity`, A valide, on lit le sort de B ; jamais un `sleep` comme preuve. Les entrelacements (200 opérations de création et
+  de fermeture, 50 requêtes à activité périmée contre reconnexions et fermetures) ne donnent aucun `40P01`. Un `40P01` reste traduit en
+  `503` + `Retry-After: 1` (`erreurs_base.py`) comme filet.
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |

@@ -7,6 +7,8 @@
 3. `Base.connexion()` (le rôle de connexion nu, pour les fonctions réservées à `popote_api`) de même.
 4. L'`Enveloppe` d'un mail (destinataire, objet, texte) n'est fabriquée que dans `infra/mails_textes.py` : une
    réalisation d'`EnvoiMail` n'envoie rien d'autre, donc jamais un objet qui porte un code ou un prénom.
+5. Toute fonction SQL qui écrit `login_session.revoked_at` ou supprime des lignes de `login_session` prend
+   d'abord `verrouille_la_personne` (0.4bis S6) : sinon une connexion en vol survit à la fermeture.
 """
 
 import ast
@@ -217,3 +219,128 @@ def test_le_cachet_des_enveloppes_n_est_nomme_que_par_mails_textes() -> None:
         str(chemin.relative_to(SRC)) for chemin in fichiers_source() if "_CACHET" in chemin.read_text()
     }
     assert nommeurs == {FABRIQUE_DES_ENVELOPPES}
+
+
+# ── 5. Le verrou de personne (0.4bis S6, migration 0148) ────────────────────
+
+MIGRATIONS = Path(__file__).parents[2] / "supabase" / "migrations"
+COMMENTAIRE_DE_LIGNE = re.compile(r"--[^\n]*")
+COMMENTAIRE_DE_BLOC = re.compile(r"/\*.*?\*/", re.DOTALL)
+FONCTION = re.compile(
+    r"create\s+(?:or\s+replace\s+)?function\s+([\w.]+)\s*\((.*?)\)\s*returns\b.*?\bas\s+(\$\w*\$)(.*?)\3",
+    re.DOTALL | re.IGNORECASE,
+)
+ECRIT_LES_SESSIONS = re.compile(
+    r"update\s+public\.login_session\b[^;]*?\brevoked_at\s*=|delete\s+from\s+public\.login_session\b",
+    re.IGNORECASE,
+)
+# Les fonctions qui ferment des sessions SANS la personne, chacune avec sa raison (une fonction ajoutée ici se
+# justifie en relecture). `efface_mes_donnees` y reste jusqu'à S14, qui lui donne les trois verrous.
+SANS_VERROU_DE_PERSONNE: dict[str, str] = {
+    "public.ferme_session/1": "une seule session, désignée par son jeton : les autres ne sont pas visées",
+    "public.ferme_un_appareil/2": "une seule session désignée par la personne : pas les autres",
+    "private.purge_login_session/2": "la purge nocturne efface des lignes mortes depuis 30 jours",
+    "public.efface_mes_donnees/0": "S14 (0156) la redéfinit avec les trois verrous",
+}
+
+
+def arite(parametres: str) -> int:
+    profondeur, virgules = 0, 0
+    for caractere in parametres:
+        profondeur += caractere in "(["
+        profondeur -= caractere in ")]"
+        virgules += caractere == "," and profondeur == 0
+    return virgules + 1 if parametres.strip() else 0
+
+
+def fonctions_sql(sources: list[str]) -> dict[str, str]:
+    """Le corps de chaque fonction (`schéma.nom/arité`) telle que la dernière migration la définit."""
+    corps: dict[str, str] = {}
+    for source in sources:
+        propre = COMMENTAIRE_DE_BLOC.sub(" ", COMMENTAIRE_DE_LIGNE.sub(" ", source))
+        for nom, parametres, _, texte in FONCTION.findall(propre):
+            qualifie = nom.lower() if "." in nom else f"public.{nom.lower()}"
+            corps[f"{qualifie}/{arite(parametres)}"] = texte.lower()
+    return corps
+
+
+def fonctions_des_migrations() -> dict[str, str]:
+    return fonctions_sql([chemin.read_text() for chemin in sorted(MIGRATIONS.glob("*.sql"))])
+
+
+def ferment_des_sessions_sans_verrou(fonctions: dict[str, str]) -> list[str]:
+    return sorted(
+        nom
+        for nom, texte in fonctions.items()
+        if ECRIT_LES_SESSIONS.search(texte)
+        and "verrouille_la_personne(" not in texte
+        and nom not in SANS_VERROU_DE_PERSONNE
+    )
+
+
+def test_toute_fonction_qui_ferme_des_sessions_prend_d_abord_le_verrou_de_la_personne() -> None:
+    assert ferment_des_sessions_sans_verrou(fonctions_des_migrations()) == []
+
+
+def test_les_exceptions_au_verrou_de_personne_existent_encore_et_ferment_bien_des_sessions() -> None:
+    fonctions = fonctions_des_migrations()
+    for nom in SANS_VERROU_DE_PERSONNE:
+        assert nom in fonctions, f"{nom} n'existe plus : retirer l'exception"
+        assert ECRIT_LES_SESSIONS.search(fonctions[nom]), (
+            f"{nom} ne ferme plus de session : retirer l'exception"
+        )
+
+
+@pytest.mark.parametrize(
+    "nom",
+    [
+        "private.cree_session/6",
+        "private.ferme_les_autres_sessions/3",
+        "public.ferme_les_autres_appareils/1",
+        "private.fait_tourner_et_ferme_les_autres/3",
+        "public.confirme_le_changement_de_mot_de_passe/3",
+    ],
+)
+def test_la_fermeture_prend_le_verrou_avant_toute_ecriture(nom: str) -> None:
+    texte = fonctions_des_migrations()[nom]
+    verrou = texte.index("verrouille_la_personne(")
+    ecritures = [texte.find(mot) for mot in ("update ", "delete ", "insert ") if mot in texte]
+    assert all(verrou < position for position in ecritures), nom
+
+
+FERME_SANS_VERROU = """
+create or replace function public.ferme_tout(p_person uuid) returns void language sql as $$
+  update public.login_session set revoked_at = now() where person_id = p_person;
+$$;
+"""
+FERME_AVEC_VERROU = """
+create or replace function public.ferme_tout(p_person uuid) returns void language plpgsql as $$
+begin
+  perform private.verrouille_la_personne(p_person);
+  delete from public.login_session where person_id = p_person;
+end;
+$$;
+"""
+
+
+def test_le_controle_attrape_une_fonction_qui_ferme_sans_le_verrou() -> None:
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_SANS_VERROU])) == ["public.ferme_tout/1"]
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_AVEC_VERROU])) == []
+
+
+def test_la_derniere_definition_d_une_fonction_est_celle_qui_compte() -> None:
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_SANS_VERROU, FERME_AVEC_VERROU])) == []
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([FERME_AVEC_VERROU, FERME_SANS_VERROU])) == [
+        "public.ferme_tout/1"
+    ]
+
+
+def test_un_commentaire_qui_cite_une_fonction_n_en_cree_pas_une() -> None:
+    source = "-- create function public.ferme_tout() returns void as $$ delete from public.login_session $$;"
+    assert fonctions_sql([source]) == {}
+
+
+def test_le_controle_ne_passe_pas_a_vide() -> None:
+    fonctions = fonctions_des_migrations()
+    assert "private.cree_session/6" in fonctions and "public.ferme_session/1" in fonctions
+    assert sum(1 for texte in fonctions.values() if ECRIT_LES_SESSIONS.search(texte)) >= 7

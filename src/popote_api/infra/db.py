@@ -2,8 +2,10 @@
 
 - `Base.personne(id)` : pool `popote_api`, `set local role authenticated`, identité de la personne.
 - `Base.session(empreinte)` : le contexte « personne » d'une requête portée par une session. Lit la session
-  (`session_personne`, exécutable par `popote_api` seul) puis emprunte `authenticated`, dans la MÊME
-  transaction.
+  SANS écrire ni verrouiller (`lit_la_session`, exécutable par `popote_api` seul) puis emprunte
+  `authenticated`, dans la MÊME transaction. L'activité d'une session vue depuis plus de 5 minutes s'écrit
+  dans sa propre transaction courte, validée AVANT celle de la route : aucun verrou de personne ni de ligne
+  de session n'est tenu quand la route prend le sien (foyer, puis personne, puis lignes ; migration 0148).
 - `Base.connexion()` : pool `popote_api`, ni rôle emprunté ni identité (`current_user = popote_api`). Réservé
   aux fonctions `security definer` dont seul `popote_api` a l'`execute` : connexion, limites, sessions,
   vérification d'un mot de passe (liste fermée).
@@ -64,7 +66,13 @@ DELAI_DE_LA_BASE_DU_SERVICE = "20s"
 ROLE_PERSONNE: LiteralString = "set local role authenticated"
 PREAMBULE_PERSONNE: LiteralString = f"{ROLE_PERSONNE}; {DELAIS_API}"
 # La personne de la session, ou null. Se lit sous le rôle de connexion : `authenticated` n'a pas le droit.
-LIT_LA_SESSION: LiteralString = "select person_id, session_id, reauth_at from public.session_courante(%s)"
+# Lecture seule : ni écriture de l'activité, ni verrou (voir `NOTE_L_ACTIVITE`).
+LIT_LA_SESSION: LiteralString = (
+    "select person_id, session_id, reauth_at, activite_perimee from public.lit_la_session(%s)"
+)
+# L'activité d'une session vue depuis plus de 5 minutes : la personne d'abord, la ligne ensuite, en une
+# transaction à part que rien ne retient.
+NOTE_L_ACTIVITE: LiteralString = "select public.note_l_activite_de_la_session(%s)"
 PREAMBULE_CONNEXION: LiteralString = DELAIS_API  # pas de `set role` : la transaction reste `popote_api`
 PREAMBULE_SERVICE: LiteralString = (
     f"set local role service_role; {DELAIS_INTERNE}; "
@@ -271,22 +279,43 @@ async def _contexte(
         yield curseur
 
 
+class _ActivitePerimee(Exception):
+    """La session lue n'a pas été vue depuis plus de 5 minutes : à écrire avant la transaction de la route."""
+
+
 @asynccontextmanager
 async def _contexte_de_session(
     pool: Pool | None, empreinte: bytes, emetteur: str | None
 ) -> AsyncIterator[tuple[SessionCourante, Curseur]]:
-    async with _transaction(pool, BaseIndisponibleError()) as curseur:
-        # Les délais d'abord : la lecture de la session est elle aussi bornée. Elle se fait encore sous le
-        # rôle de connexion, le seul à pouvoir exécuter `session_courante` ; `authenticated` vient après.
-        await curseur.execute(DELAIS_API)
-        await curseur.execute(LIT_LA_SESSION, (empreinte,))
-        ligne = await curseur.fetchone()
-        if ligne is None:
-            raise SessionRefuseeError
-        session = SessionCourante(ligne["person_id"], ligne["session_id"], ligne["reauth_at"])
-        await curseur.execute(ROLE_PERSONNE)
-        await _pose_les_revendications(curseur, revendications_personne(session.personne, emetteur))
-        yield session, curseur
+    activite_notee = False
+    while True:
+        try:
+            async with _transaction(pool, BaseIndisponibleError()) as curseur:
+                # Les délais d'abord : la lecture de la session est elle aussi bornée. Elle se fait encore
+                # sous le rôle de connexion, seul à pouvoir exécuter `lit_la_session` ; `authenticated` après.
+                await curseur.execute(DELAIS_API)
+                await curseur.execute(LIT_LA_SESSION, (empreinte,))
+                ligne = await curseur.fetchone()
+                if ligne is None:
+                    raise SessionRefuseeError
+                if ligne["activite_perimee"] and not activite_notee:
+                    raise _ActivitePerimee  # rien n'est tenu : la lecture ne verrouille rien
+                session = SessionCourante(ligne["person_id"], ligne["session_id"], ligne["reauth_at"])
+                await curseur.execute(ROLE_PERSONNE)
+                await _pose_les_revendications(curseur, revendications_personne(session.personne, emetteur))
+                yield session, curseur
+            return
+        except _ActivitePerimee:
+            # Une fois : si l'activité reste périmée (écriture concurrente, session fermée entre-temps), la
+            # requête continue sans elle ; la suivante réessaiera.
+            await _note_l_activite(pool, empreinte)
+            activite_notee = True
+
+
+async def _note_l_activite(pool: Pool | None, empreinte: bytes) -> None:
+    """Écrit l'activité en sa propre transaction, validée tout de suite : rien n'est tenu pendant la route."""
+    async with _contexte(pool, PREAMBULE_CONNEXION, None, BaseIndisponibleError()) as curseur:
+        await curseur.execute(NOTE_L_ACTIVITE, (empreinte,))
 
 
 class SondeBase:

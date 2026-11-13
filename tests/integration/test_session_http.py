@@ -177,9 +177,10 @@ async def test_last_seen_at_n_est_pas_reecrit_a_chaque_requete(
     assert apres_la_seconde == apres_la_premiere  # vue à l'instant : laissée telle quelle
 
 
-async def test_une_route_qui_echoue_n_ecrit_rien_et_rend_son_erreur(
+async def test_une_route_qui_echoue_rend_son_erreur_et_l_activite_est_deja_ecrite(
     base: Base, monkeypatch: pytest.MonkeyPatch, fabrique: Fabrique
 ) -> None:
+    """L'activité s'écrit dans sa propre transaction, validée AVANT celle de la route (A2)."""
     from popote_api.errors import Probleme
 
     echec = APIRouter()
@@ -193,7 +194,7 @@ async def test_une_route_qui_echoue_n_ecrit_rien_et_rend_son_erreur(
     async with client_de(application_de_test(base, monkeypatch, echec)) as client:
         reponse = await client.get("/api/v1/essai/echec", headers=cookie(session))
     assert reponse.status_code == 409
-    assert derniere_activite(fabrique, session.id) == ancienne
+    assert derniere_activite(fabrique, session.id) != ancienne
 
 
 async def test_la_connexion_est_rendue_au_pool_avant_que_la_reponse_parte(
