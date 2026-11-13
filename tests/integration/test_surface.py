@@ -48,6 +48,9 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.prend_un_creneau(text, bytea, integer, integer, integer, boolean, timestamptz)": set(),
     "private.prend_un_creneau_reinit(bytea, integer, integer, timestamptz)": set(),
     "private.purge_login_throttle(timestamptz, integer)": set(),
+    "public.mes_sessions(integer, timestamptz, uuid)": {"authenticated"},
+    "public.ferme_un_appareil(uuid, uuid)": {"authenticated"},
+    "public.ferme_les_autres_appareils(uuid)": {"authenticated"},
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

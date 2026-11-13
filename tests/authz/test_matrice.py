@@ -13,6 +13,7 @@ Un cas dit, pour sa route, quel chemin vise la ressource de mon foyer et ce que 
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from uuid import UUID
 
 import httpx
 import pytest
@@ -27,6 +28,13 @@ from popote_api.infra.db import Base
 from popote_api.main import ROUTES_PUBLIQUES, create_app
 from popote_api.security.session import DEFI_D_AUTHENTIFICATION
 
+ECRITURE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+
+
+def _entetes(methode: str) -> dict[str, str]:
+    """La garde d'origine ne regarde que les écritures."""
+    return {} if methode == "GET" else ECRITURE
+
 
 @dataclass(frozen=True)
 class Monde:
@@ -34,6 +42,7 @@ class Monde:
 
     moi: Personne
     autre: Personne
+    a_viser: UUID  # une session de `moi`, autre que celle qui sert de cookie
 
 
 @dataclass(frozen=True)
@@ -58,8 +67,47 @@ def _me_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
     assert str(monde.moi.foyer_id) not in reponse.text
 
 
+def _sessions_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 200
+    assert str(monde.a_viser) in [i["id"] for i in reponse.json()["items"]]
+
+
+def _sessions_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Liste « de soi » : l'autre foyer ne voit que ses sessions, jamais celles de `moi`.
+    assert reponse.status_code == 200
+    assert str(monde.a_viser) not in reponse.text
+    assert len(reponse.json()["items"]) == 1
+
+
+def _fermer_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 204
+
+
+def _fermer_un_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Une session désignée par son identifiant : introuvable, sans dire qu'elle existe.
+    assert reponse.status_code == 404
+    assert str(monde.a_viser) not in reponse.text
+
+
+def _fermer_les_autres_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Route « de soi » : l'autre foyer ferme ses propres autres sessions ; celles de `moi` ne bougent pas
+    # (gardé en base par `test_appareils.py`).
+    assert reponse.status_code == 204
+
+
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
+    ("GET", "/api/v1/me/sessions"): Cas(
+        lambda _: "/api/v1/me/sessions", _sessions_chez_moi, _sessions_chez_un_autre_foyer
+    ),
+    ("DELETE", "/api/v1/me/sessions/{id}"): Cas(
+        lambda monde: f"/api/v1/me/sessions/{monde.a_viser}",
+        _fermer_chez_moi,
+        _fermer_un_chez_un_autre_foyer,
+    ),
+    ("DELETE", "/api/v1/me/sessions"): Cas(
+        lambda _: "/api/v1/me/sessions?scope=others", _fermer_chez_moi, _fermer_les_autres_chez_un_autre_foyer
+    ),
 }
 
 
@@ -100,7 +148,8 @@ def test_une_route_sans_cas_est_vue_par_l_enumeration(monkeypatch: pytest.Monkey
 
 @pytest.fixture
 def monde(fabrique: Fabrique) -> Monde:
-    return Monde(moi=fabrique.personne(fabrique.foyer()), autre=fabrique.personne(fabrique.foyer()))
+    moi = fabrique.personne(fabrique.foyer())
+    return Monde(moi=moi, autre=fabrique.personne(fabrique.foyer()), a_viser=fabrique.session(moi.id).id)
 
 
 def _cas(methode: str, chemin: str) -> Cas:
@@ -124,7 +173,7 @@ class TestMatriceParRoute:
     ) -> None:
         cas = _cas(methode, chemin)
         reponse = await client.request(
-            methode, cas.chemin(monde), headers=cookie(fabrique.session(monde.moi.id))
+            methode, cas.chemin(monde), headers=cookie(fabrique.session(monde.moi.id)) | _entetes(methode)
         )
         cas.chez_moi(monde, reponse)
 
@@ -133,21 +182,20 @@ class TestMatriceParRoute:
     ) -> None:
         cas = _cas(methode, chemin)
         reponse = await client.request(
-            methode, cas.chemin(monde), headers=cookie(fabrique.session(monde.autre.id))
+            methode, cas.chemin(monde), headers=cookie(fabrique.session(monde.autre.id)) | _entetes(methode)
         )
         cas.chez_un_autre_foyer(monde, reponse)
 
     async def test_sans_session(
         self, client: httpx.AsyncClient, monde: Monde, methode: str, chemin: str
     ) -> None:
-        reponse = await client.request(methode, _cas(methode, chemin).chemin(monde))
+        reponse = await client.request(
+            methode, _cas(methode, chemin).chemin(monde), headers=_entetes(methode)
+        )
         assert reponse.status_code == 401
         assert reponse.headers["www-authenticate"] == DEFI_D_AUTHENTIFICATION
         assert reponse.json()["code"] == "pas_de_session"
         assert str(monde.moi.id) not in reponse.text
-
-
-ECRITURE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
 
 
 async def test_la_connexion_publique_ne_change_rien_pour_qui_a_deja_une_session(
