@@ -113,6 +113,8 @@ remettrait `current_household()` à `NULL` et lui permettrait de créer un secon
 | `is_service_role()` | `session_user = 'popote_internal'`, ou `session_user = 'authenticator'` avec le claim JWT `role = service_role` (branche retirée à J+2). Voir `docs/securite.md` § 5.1. |
 | `mon_email()` | `SECURITY DEFINER`, `search_path = ''`, exécutable par `authenticated` seul (0134). L'adresse de `auth.uid()`, ou `NULL` : `user_profile` n'a pas d'e-mail et `authenticated` ne lit pas `auth.users`. Aucun paramètre : on ne peut demander que la sienne. Sert `GET /api/v1/me`. |
 | `session_personne(p_hash bytea)` | `SECURITY DEFINER`, `search_path = ''`, exécutable par `popote_api` **seul** (0133). La personne d'une session de connexion valide, ou `NULL` ; repousse l'échéance au plus une fois toutes les 5 minutes. Table `login_session` : hors des trois classes, RLS activée sans politique, aucun droit à aucun rôle de l'application (seuls les rôles de maintenance de Supabase, qui contournent la RLS, la lisent : elle ne garde que des empreintes SHA-256). Voir `docs/securite.md` § 4. |
+| `cree_invitation(p_hash bytea)` | `SECURITY DEFINER`, `search_path = ''`, exécutable par `authenticated` **seul** (0142). Le foyer est celui de `auth.uid()` ; verrou consultatif du foyer (attendu), **10 liens par 24 h glissantes, révoqués compris** ; rend `(etat, id, created_at, expires_at, attente)` avec `etat` = `creee`, `quota` (`attente` en secondes) ou `aucun_foyer`. Écrit `invitation_creee` dans la transaction. Aucun `p_now` : elle appelle `private.cree_invitation(p_person, p_hash, p_now)` (B19), que ni `authenticated` ni `service_role` n'exécutent. |
+| `private.purge_invite_link(p_now, p_lot)` | Efface les liens dont la fin de vie (la première de l'échéance, de la révocation, de l'acceptation) date de plus de 30 jours ; par lots ; `pg_cron` `invite-link-purge` à 03 h 29 UTC, gardé comme 0126. |
 | `journalise(p_kind, p_person, p_session, p_invitation, p_account_key, p_ip_hash, p_request_id)` | `SECURITY DEFINER`, `search_path = ''`, exécutable par `popote_api` et `service_role` (le rôle courant, pas `popote_internal`), jamais par `authenticated` (0136). Écrit une ligne de `security_event` (liste fermée de types ; clés HMAC de 32 octets, jamais d'e-mail ni d'IP). La table : RLS forcée, sans politique, aucun droit. Aide interne `private.ecrit_evenement` et purge `private.purge_journal_securite(p_now, p_lot)` dans le schéma `private`, fermé à tout rôle applicatif ; purge quotidienne par `pg_cron` (échecs de connexion 90 jours, le reste 1 an). Voir `docs/securite.md` § 4.2. |
 | `verifie_mot_de_passe(p_email, p_password)` / `verifie_mot_de_passe_de(p_person, p_password)` | `SECURITY DEFINER`, `search_path = ''`, exécutables par `popote_api` **seul** (0137). Comparent le mot de passe au hachage `$2a$` de `auth.users` par `crypt()` : la personne (ou vrai), jamais la raison du refus ; un seul `crypt()` dans toutes les branches (hachage factice sinon) ; `$2b$`, `$2y$`, banni, supprimé, SSO, anonyme, plus de 72 octets : refus. Cœur interne `private.mot_de_passe_correspond`. Voir `docs/securite.md` § 4. |
 | `tg_class_b_guard` | `BEFORE UPDATE` sur les 4 tables de classe B. Pose la traçabilité, refuse les lignes sûres. Générique via `to_jsonb(old) ? 'confidence'`. |
@@ -361,3 +363,13 @@ des parts recompose le montant, signe compris.
 **Ce qui protège le passé n'est pas l'historique des revenus** — il part en
 cascade avec le profil, pour que la suppression de compte aboutisse — mais la
 part figée en centimes sur chaque dépense (D60).
+
+### `invite_link` : les invitations par lien (0142, étape 0.4 T12a)
+
+`id`, `household_id` (cascade), `created_by` et `accepted_by` (`on delete set null`, indexées : un compte supprimé laisse
+le lien vivre son délai), `token_hash` (**SHA-256 du jeton, 32 octets, unique** : le jeton n'est jamais écrit),
+`created_at`, `expires_at` (défaut +7 jours, `CHECK` : jamais plus de 7 jours), `revoked_at`, `accepted_at`. Aucun droit,
+RLS activée et forcée, sans politique : on n'y passe que par les fonctions `security definer`. Index : `(household_id,
+created_at desc)` (quota) et un index partiel des liens en attente (liste de T12b). Table neuve : l'ancienne `invitation`
+et les fonctions Edge `invite` / `accept-invite` ne bougent pas jusqu'à la contraction. Retour arrière : en tête de la
+migration.

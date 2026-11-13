@@ -510,3 +510,19 @@ configuration, journalisation, protection des données.
 
 Le contrôle `xfail(strict=True)` du test sur `execute` fera échouer la suite le jour où la migration de
 fermeture retirera ce droit : il faudra alors retirer le `xfail`.
+
+### 4.9 Créer un lien d'invitation (0.4 T12a, migration 0142)
+
+- **`POST /api/v1/me/invitations`** : le jeton fait 256 bits (`secrets.token_urlsafe(32)`, 43 caractères), tiré par l'API ;
+  **seul son SHA-256 (32 octets) va en base** (`invite_link.token_hash`). Il est rendu une seule fois. Il n'entre dans
+  aucune adresse d'API (la `Location` porte l'identifiant), aucun journal, aucun `repr` (`repr=False` sur le champ), aucun
+  événement de sécurité, et **pas dans `idempotency_key`** : `champs_secrets` le remet à `null` avant l'écriture ; un
+  rejeu rend `token: null`, l'hôte révoque et recrée si la réponse d'origine s'est perdue.
+- **Quota** : 10 par 24 h glissantes et par foyer, révoqués compris, sous un verrou consultatif du foyer (attendu) : quinze
+  créations parallèles en laissent passer exactement dix. L'horloge (`p_now`) n'existe que dans `private.cree_invitation`,
+  fermée à `authenticated` : une personne ne choisit pas sa date (B19).
+- **Droits** : table sans aucun droit, RLS forcée sans politique ; `public.cree_invitation(bytea)` exécutable par
+  `authenticated` seul (jamais `anon`, `service_role`, `popote_api`). Une personne sans profil (donc sans foyer) : `403`.
+- **Personnes** : un compte supprimé laisse le lien (`created_by`, `accepted_by` passent à `null`) ; ses lignes
+  d'idempotence partent avec lui (cascade). Purge : fin de vie + 30 jours, par lots, `pg_cron` `invite-link-purge`.
+- **Compatibilité avec l'appli en ligne** : table et fonctions neuves ; `invitation`, `invite` et `accept-invite` intacts.

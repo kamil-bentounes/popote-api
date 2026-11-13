@@ -1,9 +1,16 @@
 """La lecture de `Idempotency-Key` (RFC 9651, sf-string) et l'empreinte d'une requête."""
 
+import json
+
 import pytest
 
 from popote_api.errors import Probleme
-from popote_api.security.idempotence import empreinte_de_la_requete, lit_la_cle
+from popote_api.security.idempotence import (
+    RouteIdempotente,
+    empreinte_de_la_requete,
+    lit_la_cle,
+    sans_les_champs_secrets,
+)
 
 
 @pytest.mark.parametrize(
@@ -89,3 +96,28 @@ def test_l_empreinte_ne_confond_pas_le_chemin_et_la_requete() -> None:
     assert empreinte_de_la_requete("POST", b"/a", b"b", b"") != empreinte_de_la_requete(
         "POST", b"/ab", b"", b""
     )
+
+
+def test_les_champs_secrets_sont_remis_a_null_et_le_reste_ne_bouge_pas() -> None:
+    corps = json.dumps({"id": "i", "token": "SECRET", "n": 1, "z": "é"}).encode()
+    rendu = sans_les_champs_secrets(corps, ("token",))
+    assert b"SECRET" not in rendu
+    assert json.loads(rendu) == {"id": "i", "token": None, "n": 1, "z": "é"}
+
+
+@pytest.mark.parametrize("corps", [b"pas du json", b"[1]", b'{"autre": 1}', b'"token"'])
+def test_une_route_a_champs_secrets_qui_ne_rend_pas_le_champ_est_une_faute(corps: bytes) -> None:
+    with pytest.raises(RuntimeError):
+        sans_les_champs_secrets(corps, ("token",))
+
+
+def test_avec_construit_une_classe_qui_porte_les_champs_et_la_classe_de_base_n_en_a_pas() -> None:
+    classe = RouteIdempotente.avec(champs_secrets=("token", "code"))
+    assert issubclass(classe, RouteIdempotente)
+    assert classe.champs_secrets == ("token", "code")
+    assert RouteIdempotente.champs_secrets == ()
+
+
+def test_avec_sans_champ_est_refuse() -> None:
+    with pytest.raises(ValueError, match="champ secret"):
+        RouteIdempotente.avec(champs_secrets=())

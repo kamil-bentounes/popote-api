@@ -175,7 +175,27 @@ async def exige_la_cle(request: Request, personne: PersonneDeLaSession) -> None:
     )
 
 
-async def garde_la_reponse(envoi: EnvoiAGarder, reponse: Response) -> None:
+def sans_les_champs_secrets(corps: bytes, champs: tuple[str, ...]) -> bytes:
+    """Le corps JSON de la réponse, chaque champ secret remis à `null` : c'est ce qui se garde et se rejoue.
+
+    Le champ reste présent (la forme de la réponse ne change pas) mais sa valeur n'entre jamais dans la table.
+    """
+    try:
+        objet = json.loads(corps)
+    except ValueError as exc:
+        msg = "Une route à champs secrets rend un objet JSON."
+        raise RuntimeError(msg) from exc
+    if not isinstance(objet, dict) or not set(champs) <= objet.keys():
+        msg = f"Une route à champs secrets rend un objet JSON qui porte {list(champs)}."
+        raise RuntimeError(msg)
+    for champ in champs:
+        objet[champ] = None
+    return json.dumps(objet, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+async def garde_la_reponse(
+    envoi: EnvoiAGarder, reponse: Response, champs_secrets: tuple[str, ...] = ()
+) -> None:
     """Écrit la réponse de la route dans la transaction de son effet ; une erreur ici annule aussi l'effet."""
     # Une route idempotente lève `Probleme` pour échouer : une réponse d'erreur rendue ferait valider l'effet
     # sans pouvoir le rejouer. C'est une faute de programmation, rendue bruyante, et l'effet est annulé.
@@ -188,6 +208,8 @@ async def garde_la_reponse(envoi: EnvoiAGarder, reponse: Response) -> None:
             f"La réponse d'une route idempotente tient en {TAILLE_MAX_DU_CORPS} octets, corps connu d'avance."
         )
         raise RuntimeError(msg)
+    if champs_secrets:
+        corps = sans_les_champs_secrets(corps, champs_secrets)
     en_tetes = {nom: reponse.headers[nom] for nom in EN_TETES_REJOUES if nom in reponse.headers}
     await envoi.curseur.execute(
         "insert into public.idempotency_key"
@@ -206,7 +228,25 @@ async def garde_la_reponse(envoi: EnvoiAGarder, reponse: Response) -> None:
 
 
 class RouteIdempotente(APIRoute):
-    """Une route dont le `POST` (ou `PATCH`) exige `Idempotency-Key` et garde sa réponse 24 h."""
+    """Une route dont le `POST` (ou `PATCH`) exige `Idempotency-Key` et garde sa réponse 24 h.
+
+    Une route dont la réponse porte un secret rendu une seule fois (un jeton) se déclare avec `avec` :
+
+        routeur = APIRouter(route_class=RouteIdempotente.avec(champs_secrets=("token",)))
+
+    Les champs nommés sont remis à `null` avant l'écriture dans `idempotency_key` : le client les reçoit à la
+    première réponse, un rejeu rend le même statut et le même corps sans eux.
+    """
+
+    champs_secrets: tuple[str, ...] = ()
+
+    @classmethod
+    def avec(cls, *, champs_secrets: tuple[str, ...]) -> type["RouteIdempotente"]:
+        """Une classe de route qui retire ces champs de la réponse avant de la garder."""
+        if not champs_secrets:
+            msg = "Au moins un champ secret."
+            raise ValueError(msg)
+        return type(cls.__name__, (cls,), {"champs_secrets": tuple(champs_secrets)})
 
     def __init__(self, path: str, endpoint: Callable[..., Any], **options: Any) -> None:
         methodes = {m.upper() for m in options.get("methods") or ()}
@@ -241,7 +281,7 @@ class RouteIdempotente(APIRoute):
             except RejeuIdempotent as rejeu:
                 return rejeu.reponse
             envoi: EnvoiAGarder = request.state.envoi_a_garder
-            await garde_la_reponse(envoi, reponse)
+            await garde_la_reponse(envoi, reponse, self.champs_secrets)
             return reponse
 
         return gestionnaire_idempotent

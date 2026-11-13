@@ -18,7 +18,7 @@ ROLES = [*EMPRUNTABLES, "popote_api", "popote_internal"]
 PRIVILEGES_DE_TABLE = ["select", "insert", "update", "delete", "truncate", "references", "trigger"]
 
 # Les tables de 0.4 : aucun droit aux rôles applicatifs, RLS forcée, sans politique. Une migration en ajoute.
-TABLES = ["public.security_event", "public.login_throttle"]
+TABLES = ["public.security_event", "public.login_throttle", "public.invite_link"]
 
 # Les fonctions de 0.4 et les rôles qui peuvent les exécuter (rôle COURANT). Une migration en ajoute.
 EXECUTABLES_PAR: dict[str, set[str]] = {
@@ -56,6 +56,9 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.fait_tourner_et_ferme_les_autres(bytea, bytea, timestamptz)": set(),
     "private.ferme_les_sessions_auth(uuid)": set(),
     "private.ferme_les_autres_sessions(uuid, uuid, timestamptz)": set(),
+    "public.cree_invitation(bytea)": {"authenticated"},
+    "private.cree_invitation(uuid, bytea, timestamptz)": set(),
+    "private.purge_invite_link(timestamptz, integer)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

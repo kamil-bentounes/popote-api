@@ -32,9 +32,11 @@ from popote_api.security.session import DEFI_D_AUTHENTIFICATION
 ECRITURE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
 
 
-def _entetes(methode: str) -> dict[str, str]:
-    """La garde d'origine ne regarde que les écritures."""
-    return {} if methode == "GET" else ECRITURE
+def _entetes(methode: str, cas: "Cas | None" = None) -> dict[str, str]:
+    """La garde d'origine ne regarde que les écritures ; un `POST` à effet porte sa clé d'idempotence."""
+    if methode == "GET":
+        return {}
+    return ECRITURE | ({"Idempotency-Key": '"matrice"'} if cas and cas.avec_cle_d_idempotence else {})
 
 
 MOT_DE_PASSE_DE_MOI = "le-mot-de-passe-de-moi-1234"
@@ -55,6 +57,7 @@ class Cas:
     chez_moi: Callable[[Monde, httpx.Response], None]
     chez_un_autre_foyer: Callable[[Monde, httpx.Response], None]
     corps: Callable[[Monde], dict[str, str]] | None = None  # le corps JSON d'une écriture, le même pour tous
+    avec_cle_d_idempotence: bool = False  # un `POST` à effet exige `Idempotency-Key`
 
 
 def _me_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
@@ -122,6 +125,20 @@ def _reauth_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
     assert str(monde.moi.id) not in reponse.text
 
 
+def _invitation_creee_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 201
+    assert len(reponse.json()["token"]) == 43
+    assert reponse.headers["location"] == f"/api/v1/me/invitations/{reponse.json()['id']}"
+
+
+def _invitation_creee_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Route « de soi » : le lien se crée pour le foyer de l'autre (gardé en base par
+    # `test_invitations_hote.py`), et rien de `moi` n'apparaît dans la réponse.
+    assert reponse.status_code == 201
+    assert str(monde.moi.id) not in reponse.text
+    assert str(monde.moi.foyer_id) not in reponse.text
+
+
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
     ("GET", "/api/v1/me/sessions"): Cas(
@@ -146,6 +163,12 @@ MATRICE: dict[tuple[str, str], Cas] = {
         _mot_de_passe_chez_moi,
         _mot_de_passe_chez_un_autre_foyer,
         lambda _: {"new_password": "un-tout-nouveau-mot-de-passe"},
+    ),
+    ("POST", "/api/v1/me/invitations"): Cas(
+        lambda _: "/api/v1/me/invitations",
+        _invitation_creee_chez_moi,
+        _invitation_creee_chez_un_autre_foyer,
+        avec_cle_d_idempotence=True,
     ),
 }
 
@@ -235,7 +258,7 @@ class TestMatriceParRoute:
         reponse = await client.request(
             methode,
             cas.chemin(monde),
-            headers=cookie(fabrique.session(monde.moi.id)) | _entetes(methode),
+            headers=cookie(fabrique.session(monde.moi.id)) | _entetes(methode, cas),
             json=cas.corps(monde) if cas.corps else None,
         )
         cas.chez_moi(monde, reponse)
@@ -247,7 +270,7 @@ class TestMatriceParRoute:
         reponse = await client.request(
             methode,
             cas.chemin(monde),
-            headers=cookie(fabrique.session(monde.autre.id)) | _entetes(methode),
+            headers=cookie(fabrique.session(monde.autre.id)) | _entetes(methode, cas),
             json=cas.corps(monde) if cas.corps else None,
         )
         cas.chez_un_autre_foyer(monde, reponse)
@@ -259,7 +282,7 @@ class TestMatriceParRoute:
         reponse = await client.request(
             methode,
             cas.chemin(monde),
-            headers=_entetes(methode),
+            headers=_entetes(methode, cas),
             json=cas.corps(monde) if cas.corps else None,
         )
         assert reponse.status_code == 401
