@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from _connexions import DSN_API, connecte
+from _connexions import DSN_ADMIN, DSN_API, connecte
 from _fabrique import Fabrique, SessionDeTest
 from psycopg import sql
 
@@ -37,6 +37,12 @@ def personne_de(cx: psycopg.Connection[Ligne], empreinte: bytes) -> object:
         ligne = cx.execute(APPEL, (empreinte,)).fetchone()
     assert ligne is not None
     return ligne[0]
+
+
+def note_l_activite(cx: psycopg.Connection[Ligne], empreinte: bytes) -> None:
+    """L'écriture de l'activité, en sa propre transaction (0148) : la lecture, elle, n'écrit plus."""
+    with cx.transaction():
+        cx.execute("select public.note_l_activite_de_la_session(%s)", (empreinte,))
 
 
 def une_personne(fabrique: Fabrique) -> UUID:
@@ -134,7 +140,7 @@ def test_session_vue_depuis_plus_de_5_minutes_repousse_l_echeance_glissante(
         vue_il_y_a=CINQ_MINUTES + timedelta(seconds=1),
         echeance_dans=timedelta(days=1),
     )
-    personne_de(cx_api, session.empreinte)
+    note_l_activite(cx_api, session.empreinte)
     ligne = fabrique.admin.execute(
         """
         select now() - last_seen_at < interval '1 minute',
@@ -146,6 +152,16 @@ def test_session_vue_depuis_plus_de_5_minutes_repousse_l_echeance_glissante(
     assert ligne == (True, True)
 
 
+def test_la_lecture_n_ecrit_plus_l_activite_meme_vue_depuis_longtemps(
+    cx_api: psycopg.Connection[Ligne], fabrique: Fabrique
+) -> None:
+    """Le code déjà déployé lit par `session_personne` : il ne tient plus de ligne (0148, déploiement)."""
+    session = fabrique.session(une_personne(fabrique), vue_il_y_a=timedelta(hours=1))
+    avant = ligne_de(fabrique, session)
+    assert personne_de(cx_api, session.empreinte) is not None
+    assert ligne_de(fabrique, session) == avant
+
+
 def test_echeance_glissante_ne_depasse_jamais_l_echeance_absolue(
     cx_api: psycopg.Connection[Ligne], fabrique: Fabrique
 ) -> None:
@@ -155,7 +171,7 @@ def test_echeance_glissante_ne_depasse_jamais_l_echeance_absolue(
         echeance_dans=timedelta(days=5),
         absolue_dans=timedelta(days=10),
     )
-    personne_de(cx_api, session.empreinte)
+    note_l_activite(cx_api, session.empreinte)
     ligne = fabrique.admin.execute(
         "select expires_at = absolute_expires_at from public.login_session where id = %s", (session.id,)
     ).fetchone()
@@ -176,18 +192,18 @@ def test_last_seen_at_n_est_pas_reecrit_a_chaque_requete(
     assert ligne_de(fabrique, session) == avant
 
 
-def test_une_requete_lente_ne_fait_pas_attendre_celle_qui_arrive_pendant_ce_temps(
+def test_une_lecture_heritee_ne_verrouille_pas_la_ligne_de_la_session(
     cx_api: psycopg.Connection[Ligne], fabrique: Fabrique
 ) -> None:
-    personne = une_personne(fabrique)
-    session = fabrique.session(personne, vue_il_y_a=CINQ_MINUTES * 2)
-    with connecte(DSN_API) as lente, lente.transaction():
-        lente.execute(APPEL, (session.empreinte,))  # repousse l'échéance, garde le verrou de la ligne
-        with cx_api.transaction():
-            # Sans `skip locked`, l'appel attendrait la fin de la requête lente puis échouerait ici.
-            cx_api.execute("set local lock_timeout = '300ms'")
-            ligne = cx_api.execute(APPEL, (session.empreinte,)).fetchone()
-    assert ligne == (personne,)
+    """Une lecture héritée encore ouverte : une autre connexion verrouille la ligne sans attendre."""
+    session = fabrique.session(une_personne(fabrique), vue_il_y_a=CINQ_MINUTES * 2)
+    with cx_api.transaction(force_rollback=True):
+        cx_api.execute(APPEL, (session.empreinte,))
+        with psycopg.connect(DSN_ADMIN) as autre:
+            ligne = autre.execute(
+                "select id from public.login_session where id = %s for update nowait", (session.id,)
+            ).fetchone()
+    assert ligne == (session.id,)
 
 
 def test_la_session_disparait_avec_la_personne(fabrique: Fabrique) -> None:

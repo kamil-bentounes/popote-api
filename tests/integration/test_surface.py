@@ -91,6 +91,12 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     ): set(),
     "private.prend_un_envoi(integer, integer, timestamptz)": set(),
     "private.purge_login_code(timestamptz, integer)": set(),
+    "public.verrouille_la_personne(uuid, bytea)": {"popote_api", "service_role"},
+    "private.verrouille_la_personne(uuid, bytea, timestamptz)": set(),
+    "public.lit_la_session(bytea)": {"popote_api", "service_role"},
+    "private.lit_la_session(bytea, timestamptz)": set(),
+    "public.note_l_activite_de_la_session(bytea)": {"popote_api"},
+    "private.note_l_activite_de_la_session(bytea, timestamptz)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

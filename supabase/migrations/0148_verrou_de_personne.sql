@@ -1,0 +1,605 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 0148 · LE VERROU DE PERSONNE ET LA FERMETURE DES SESSIONS (0.4bis S6 ; spec § 4 ; leçon 1, A2)
+--
+-- Une connexion en vol survit à la fermeture de toutes les sessions quand la preuve et la session qu'elle ouvre sont
+-- deux instructions sans verrou commun (relevé de la revue de T15b ; même défaut dans le changement de mot de passe,
+-- 0141). On pose le verrou UNE fois ; S7, S9, S10 et S14 s'en servent. La connexion par
+-- mot de passe (0.4) prend le verrou puis REFAIT sa vérification avant `cree_session` ; S7 (code) et S9 (clé) feront de même.
+--
+--  - `private.verrouille_la_personne` : le verrou de transaction de `cree_session` (0139), même clé
+--    `hashtextextended(personne::text, 0)`, nommé ; `public.verrouille_la_personne` : le chemin Python des preuves
+--    (`popote_api`, `service_role`).
+--  - ORDRE DES VERROUS, partout : FOYER, puis INVITATION du foyer, puis PERSONNE, puis LIGNES (session, code, clé). Tout code qui ouvre une
+--    session, en ferme plusieurs, révoque ou consomme un code, ajoute ou retire une clé ou supprime un compte prend
+--    d'abord `verrouille_la_personne`. `cree_session`, `ferme_les_autres_sessions` (qui révoque aussi les codes en
+--    attente), `ferme_les_autres_appareils` (idem), `fait_tourner_et_ferme_les_autres` et
+--    `confirme_le_changement_de_mot_de_passe` la prennent EN PREMIER, avant toute ligne.
+--  - L'ACTIVITÉ d'une session (A2). `private.session_valide` écrivait `last_seen_at` en tenant la ligne jusqu'à la fin
+--    de la requête, donc AVANT que la route prenne la personne ou le foyer : deux onglets d'un même navigateur
+--    s'interbloquent (`40P01`), et l'ordre foyer, invitation, personne serait inversé. Désormais l'API LIT la session sans écrire
+--    ni verrouiller (`lit_la_session`, qui dit si l'activité a plus de 5 minutes), et l'écrit, quand il le faut, par
+--    `note_l_activite_de_la_session` dans une transaction courte validée AVANT celle de la route : la personne,
+--    puis la ligne, et rien n'est gardé. `session_valide` (que `session_courante` et `session_personne` appellent)
+--    devient elle aussi une lecture : le code déjà déployé n'y tient plus de ligne de session (voir COMPATIBLE).
+--
+-- DROITS : `popote_api` (et `service_role` pour les deux lectures et le verrou) ; jamais `authenticated`. `popote_internal`
+-- n'a aucun droit en propre ; il n'exécute ces fonctions que par `set role service_role` (comme `cree_session`, 0139).
+-- Les variantes à horloge (`p_now`) vivent dans `private`, fermées à tous.
+--
+-- COMPATIBLE avec l'appli en ligne : six fonctions de 0.4 redéfinies à signature égale (rien de ce que la prod appelle),
+-- six fonctions neuves ; `cree_session` prend aussi la personne de la session PRÉSENTÉE, dans un ordre fixe (la plus petite
+-- d'abord). FENÊTRE DE DÉPLOIEMENT : les migrations passent avant le code, donc l'ancien code tourne quelques minutes sur
+-- cette base ; il lit par `session_courante` et `session_personne`, qui gardent leur signature et leur résultat mais
+-- n'écrivent plus l'activité (sans effet : la session glisse sur 30 jours). Sans cela l'ancien code tiendrait la ligne de
+-- sa session pendant que `ferme_les_autres_appareils`, qui prend maintenant la personne d'abord, attendrait la personne
+-- que tient une reconnexion elle-même en attente de cette ligne : un cycle. Choix retenu plutôt que deux migrations.
+--
+-- RETOUR ARRIÈRE (sans perte : aucune donnée ne change de forme), dans le sens « code d'abord, base ensuite » : revenir au
+-- code d'avant en laissant cette base ferait que plus rien n'écrirait l'activité des sessions (`session_valide` ne l'écrit
+-- plus ; elles expireraient 30 jours après la dernière écriture). Retirer d'abord le code de l'API qui appelle
+-- `lit_la_session` et `note_l_activite_de_la_session` (sinon toute requête authentifiée échoue), puis recréer les six
+-- fonctions comme les migrations 0139, 0140 et 0141 les définissent (leur `create or replace`, recopiés ci-dessous),
+-- PUIS retirer les six fonctions neuves :
+--   create or replace function private.session_valide(p_hash bytea, p_now timestamptz)
+--   returns table (person_id uuid, session_id uuid, reauth_at timestamptz)
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   begin
+--     return query
+--     with candidate as (
+--       select s.id
+--         from public.login_session s
+--         join auth.users u on u.id = s.person_id
+--        where s.token_hash = p_hash
+--          and s.revoked_at is null
+--          and s.expires_at > p_now
+--          and s.absolute_expires_at > p_now
+--          and s.last_seen_at <= p_now - interval '5 minutes'
+--          and (u.banned_until is null or u.banned_until <= p_now)
+--          and u.deleted_at is null
+--          for update of s skip locked
+--     )
+--     update public.login_session s
+--        set last_seen_at = p_now,
+--            expires_at = least(p_now + interval '30 days', s.absolute_expires_at)
+--       from candidate
+--      where s.id = candidate.id
+--     returning s.person_id, s.id, s.reauth_at;
+--     if found then
+--       return;
+--     end if;
+--
+--     return query
+--     select s.person_id, s.id, s.reauth_at
+--       from public.login_session s
+--       join auth.users u on u.id = s.person_id
+--      where s.token_hash = p_hash
+--        and s.revoked_at is null
+--        and s.expires_at > p_now
+--        and s.absolute_expires_at > p_now
+--        and (u.banned_until is null or u.banned_until <= p_now)
+--        and u.deleted_at is null;
+--   end;
+--   $$;
+--
+--   create or replace function private.cree_session(
+--     p_person uuid, p_hash bytea, p_browser text, p_os text, p_old_hash bytea, p_now timestamptz
+--   ) returns uuid
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   declare
+--     v_id uuid;
+--     v_ancienne public.login_session%rowtype;
+--   begin
+--     -- Sérialise les créations d'une même personne : sans cela deux connexions simultanées compteraient 9 sessions
+--     -- chacune et en laisseraient 11.
+--     perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_person::text, 0));
+--
+--     -- Pas de session pour une personne bannie ou supprimée : elle mourrait à la première lecture, autant refuser ici.
+--     if exists (select 1 from auth.users u
+--                 where u.id = p_person and (u.deleted_at is not null or u.banned_until > p_now)) then
+--       raise exception 'Cette personne ne peut pas ouvrir de session.' using errcode = 'invalid_authorization_specification';
+--     end if;
+--
+--     -- La session présentée (B22) : révoquée, journalisée ; une empreinte inconnue ou déjà morte est ignorée.
+--     if p_old_hash is not null then
+--       update public.login_session
+--          set revoked_at = p_now
+--        where token_hash = p_old_hash and revoked_at is null
+--          and expires_at > p_now and absolute_expires_at > p_now
+--       returning * into v_ancienne;
+--       if found then
+--         perform private.ecrit_evenement('session_fermee', v_ancienne.person_id, v_ancienne.id);
+--       end if;
+--     end if;
+--
+--     -- Au plus 10 sessions actives, la nouvelle comprise : on ferme les plus anciennes par dernière activité.
+--     update public.login_session
+--        set revoked_at = p_now
+--      where id in (
+--        select id from public.login_session
+--         where person_id = p_person and revoked_at is null and expires_at > p_now and absolute_expires_at > p_now
+--         order by last_seen_at desc, created_at desc, id desc
+--         offset 9);
+--
+--     insert into public.login_session
+--       (token_hash, person_id, browser, os, created_at, last_seen_at, expires_at, absolute_expires_at, reauth_at)
+--     values
+--       (p_hash, p_person, p_browser, p_os, p_now, p_now, p_now + interval '30 days', p_now + interval '90 days', p_now)
+--     returning id into v_id;
+--     return v_id;
+--   end;
+--   $$;
+--
+--   create or replace function private.ferme_les_autres_sessions(p_person uuid, p_keep uuid, p_now timestamptz)
+--   returns void
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   declare
+--     v_fermees bigint;
+--   begin
+--     with fermees as (
+--       update public.login_session s
+--          set revoked_at = p_now
+--        where s.person_id = p_person
+--          and s.id <> p_keep
+--          and s.revoked_at is null
+--          and s.expires_at > p_now
+--          and s.absolute_expires_at > p_now
+--       returning s.id
+--     )
+--     select pg_catalog.count(private.ecrit_evenement('session_fermee', p_person, f.id)) into v_fermees
+--       from fermees f;
+--     perform private.ferme_les_sessions_auth(p_person);
+--   end;
+--   $$;
+--
+--   create or replace function private.fait_tourner_et_ferme_les_autres(p_old_hash bytea, p_new_hash bytea, p_now timestamptz)
+--   returns uuid
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   declare
+--     v_session uuid;
+--     v_person uuid;
+--   begin
+--     -- La rotation d'abord : c'est elle qui verrouille la ligne et départage deux changements simultanés.
+--     update public.login_session s
+--        set token_hash = p_new_hash
+--       from auth.users u
+--      where s.token_hash = p_old_hash
+--        and u.id = s.person_id
+--        and s.revoked_at is null and s.expires_at > p_now and s.absolute_expires_at > p_now
+--        and (u.banned_until is null or u.banned_until <= p_now)
+--        and u.deleted_at is null
+--     returning s.id, s.person_id into v_session, v_person;
+--     if v_session is null then
+--       return null;
+--     end if;
+--
+--     perform private.ferme_les_autres_sessions(v_person, v_session, p_now);
+--     return v_session;
+--   end;
+--   $$;
+--
+--   create or replace function public.confirme_le_changement_de_mot_de_passe(
+--     p_person uuid, p_session uuid, p_request_id text default null
+--   )
+--   returns void
+--   language sql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--     update public.user_profile set password_set = true where id = p_person and password_set is not true;
+--     select private.ecrit_evenement('mot_de_passe_change', p_person, null, null, null, null, p_request_id);
+--     select private.ferme_les_autres_sessions(p_person, p_session, pg_catalog.now());
+--   $$;
+--
+--   create or replace function public.ferme_les_autres_appareils(p_courante uuid)
+--   returns integer
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   declare
+--     v_person uuid := auth.uid();
+--     v_nombre integer;
+--   begin
+--     if v_person is null then
+--       raise exception 'Aucune personne dans ce contexte.' using errcode = 'invalid_authorization_specification';
+--     end if;
+--     if p_courante is null then
+--       raise exception 'La session à garder est obligatoire.' using errcode = 'invalid_parameter_value';
+--     end if;
+--     with fermees as (
+--       update public.login_session s
+--          set revoked_at = pg_catalog.now()
+--        where s.person_id = v_person
+--          and s.id <> p_courante
+--          and s.revoked_at is null
+--          and s.expires_at > pg_catalog.now()
+--          and s.absolute_expires_at > pg_catalog.now()
+--       returning s.id
+--     ), evenements as (
+--       select private.ecrit_evenement('session_fermee', v_person, f.id) from fermees f
+--     )
+--     select pg_catalog.count(*) into v_nombre from evenements;
+--     return v_nombre;
+--   end;
+--   $$;
+--
+--   drop function public.verrouille_la_personne(uuid, bytea);
+--   drop function public.lit_la_session(bytea);
+--   drop function public.note_l_activite_de_la_session(bytea);
+--   drop function private.note_l_activite_de_la_session(bytea, timestamptz);
+--   drop function private.lit_la_session(bytea, timestamptz);
+--   drop function private.verrouille_la_personne(uuid, bytea, timestamptz);
+-- ═══════════════════════════════════════════════════════════════════════════
+set local lock_timeout = '5s';
+set local statement_timeout = '30s';
+
+-- ── 1. Le verrou de personne ────────────────────────────────────────────────
+/* La clé est celle que `cree_session` posait en ligne (0139) : le même verrou consultatif de transaction, donc
+   une seule file par personne pour tout ce qui ouvre ou ferme ses sessions. Une personne nulle ne verrouillerait
+   RIEN (`hashtextextended(null)` est nul) : refusée.
+   Une connexion peut PRÉSENTER la session d'une autre personne (deux personnes, un navigateur : B22) et la révoquer.
+   Dans ce cas les deux personnes se verrouillent dans un ordre total (l'identifiant le plus petit d'abord), quelle que
+   soit la connexion qui les prend : deux connexions croisées ne s'attendent jamais en cercle. Un appelant qui prend le
+   verrou avant `cree_session` (pour refaire sa preuve sous lui) passe donc la session présentée ici. La session
+   présentée se lit sans verrou : sa personne ne change jamais. */
+create or replace function private.verrouille_la_personne(
+  p_person uuid, p_presentee bytea default null, p_now timestamptz default pg_catalog.now()
+)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_autre uuid;
+begin
+  if p_person is null then
+    raise exception 'Une personne est obligatoire pour la verrouiller.' using errcode = 'invalid_parameter_value';
+  end if;
+  if p_presentee is not null then
+    select s.person_id into v_autre
+      from public.login_session s
+     where s.token_hash = p_presentee and s.revoked_at is null
+       and s.expires_at > p_now and s.absolute_expires_at > p_now;
+  end if;
+  if v_autre is not null and v_autre <> p_person and v_autre::text < p_person::text then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_autre::text, 0));
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_person::text, 0));
+  if v_autre is not null and v_autre <> p_person and v_autre::text > p_person::text then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_autre::text, 0));
+  end if;
+end;
+$$;
+comment on function private.verrouille_la_personne(uuid, bytea, timestamptz) is
+  'Le verrou de transaction d''une personne (et de celle de la session présentée, dans l''ordre des identifiants) : ouvrir une session, en fermer plusieurs, révoquer ou consommer un code, ajouter ou retirer une clé, supprimer le compte. Ordre des verrous : foyer, puis invitation du foyer, puis personne, puis lignes. Interne.';
+revoke all on function private.verrouille_la_personne(uuid, bytea, timestamptz)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+
+create or replace function public.verrouille_la_personne(p_person uuid, p_session_presentee bytea default null)
+returns void
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+  select private.verrouille_la_personne(p_person, p_session_presentee, pg_catalog.now());
+$$;
+comment on function public.verrouille_la_personne(uuid, bytea) is
+  'Prend le verrou de transaction d''une personne, et de la personne de la session présentée s''il y en a une, dans l''ordre des identifiants (le chemin Python des preuves). popote_api et service_role seulement.';
+revoke all on function public.verrouille_la_personne(uuid, bytea)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+grant execute on function public.verrouille_la_personne(uuid, bytea) to popote_api, service_role;
+
+-- ── 2. L'activité d'une session : lue sans écrire, écrite en sa propre transaction ──────────────
+/* Pourquoi deux fonctions. Lire une session ne doit tenir AUCUN verrou de ligne : `session_valide` (0139) met
+   `last_seen_at` à jour quand il a plus de 5 minutes, et la ligne reste verrouillée jusqu'à la fin de la requête,
+   donc avant que la route prenne le verrou de la personne ou du foyer (ordre inversé : deux onglets d'un même
+   navigateur s'interbloquent, `40P01`). `lit_la_session` ne fait que lire et dit si l'activité est périmée ;
+   l'API l'écrit alors par `note_l_activite_de_la_session`, dans une transaction courte validée AVANT celle de la
+   route : elle prend la personne, puis la ligne, et ne garde rien. */
+create or replace function private.lit_la_session(p_hash bytea, p_now timestamptz)
+returns table (person_id uuid, session_id uuid, reauth_at timestamptz, activite_perimee boolean)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select s.person_id, s.id, s.reauth_at, s.last_seen_at <= p_now - interval '5 minutes'
+    from public.login_session s
+    join auth.users u on u.id = s.person_id
+   where s.token_hash = p_hash
+     and s.revoked_at is null
+     and s.expires_at > p_now
+     and s.absolute_expires_at > p_now
+     and (u.banned_until is null or u.banned_until <= p_now)
+     and u.deleted_at is null;
+$$;
+comment on function private.lit_la_session(bytea, timestamptz) is
+  'La règle de lecture d''une session SANS écriture ni verrou de ligne (même règle que session_valide) ; dit si l''activité a plus de 5 minutes. Interne.';
+revoke all on function private.lit_la_session(bytea, timestamptz)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+
+create or replace function public.lit_la_session(p_hash bytea)
+returns table (person_id uuid, session_id uuid, reauth_at timestamptz, activite_perimee boolean)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select * from private.lit_la_session(p_hash, pg_catalog.now());
+$$;
+comment on function public.lit_la_session(bytea) is
+  'La personne, la session, reauth_at et « activité périmée » de ce jeton, ou aucune ligne ; n''écrit rien et ne verrouille rien. popote_api et service_role seulement.';
+revoke all on function public.lit_la_session(bytea)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+grant execute on function public.lit_la_session(bytea) to popote_api, service_role;
+
+create or replace function private.note_l_activite_de_la_session(p_hash bytea, p_now timestamptz)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_person uuid;
+  v_notee boolean;
+begin
+  -- Sans verrou : on ne sait pas encore s'il y a quelque chose à écrire, ni pour qui.
+  select s.person_id into v_person
+    from public.login_session s
+    join auth.users u on u.id = s.person_id
+   where s.token_hash = p_hash
+     and s.revoked_at is null and s.expires_at > p_now and s.absolute_expires_at > p_now
+     and s.last_seen_at <= p_now - interval '5 minutes'
+     and (u.banned_until is null or u.banned_until <= p_now) and u.deleted_at is null;
+  if v_person is null then
+    return false;
+  end if;
+  -- La personne d'abord, la ligne ensuite : l'ordre de `cree_session`.
+  perform private.verrouille_la_personne(v_person);
+  -- Les conditions se relisent sous le verrou : une session fermée entre-temps n'est pas rouverte.
+  with notee as (
+    update public.login_session s
+       set last_seen_at = p_now,
+           expires_at = least(p_now + interval '30 days', s.absolute_expires_at)
+      from auth.users u
+     where s.token_hash = p_hash and u.id = s.person_id
+       and s.revoked_at is null and s.expires_at > p_now and s.absolute_expires_at > p_now
+       and s.last_seen_at <= p_now - interval '5 minutes'
+       and (u.banned_until is null or u.banned_until <= p_now) and u.deleted_at is null
+    returning 1)
+  select exists (select 1 from notee) into v_notee;
+  return v_notee;
+end;
+$$;
+comment on function private.note_l_activite_de_la_session(bytea, timestamptz) is
+  'Repousse l''activité d''une session vue depuis plus de 5 minutes, sous le verrou de sa personne. Variante à horloge. Interne.';
+revoke all on function private.note_l_activite_de_la_session(bytea, timestamptz)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+
+create or replace function public.note_l_activite_de_la_session(p_hash bytea)
+returns boolean
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+  select private.note_l_activite_de_la_session(p_hash, pg_catalog.now());
+$$;
+comment on function public.note_l_activite_de_la_session(bytea) is
+  'Écrit l''activité d''une session vue depuis plus de 5 minutes (vrai), sinon ne fait rien (faux). À valider seule, avant la transaction de la route. popote_api seul.';
+revoke all on function public.note_l_activite_de_la_session(bytea)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+grant execute on function public.note_l_activite_de_la_session(bytea) to popote_api;
+
+/* `private.session_valide` (0139, que `session_courante` et `session_personne` appellent) devient une lecture : même
+   règle, même résultat, mais elle n'écrit plus l'activité. Le code déjà déployé, qui tourne quelques minutes sur cette
+   base avant son remplacement (les migrations passent avant le code), ne tient donc plus la ligne d'une session
+   jusqu'à la fin de sa requête : aucune fermeture, qui prend la personne d'abord, ne peut former de cycle avec lui.
+   Le prix, pendant cette fenêtre : il ne repousse plus l'activité (la session glisse sur 30 jours : sans effet). */
+create or replace function private.session_valide(p_hash bytea, p_now timestamptz)
+returns table (person_id uuid, session_id uuid, reauth_at timestamptz)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+begin
+  return query
+  select l.person_id, l.session_id, l.reauth_at from private.lit_la_session(p_hash, p_now) l;
+end;
+$$;
+
+-- ── 3. Tout ce qui ferme des sessions prend la personne en premier ──────────────────────────────
+/* `cree_session` : le corps de 0139, la clé posée en ligne devient l'appel nommé, qui prend aussi la personne de la
+   session PRÉSENTÉE (B22) dans l'ordre des identifiants. */
+create or replace function private.cree_session(
+  p_person uuid, p_hash bytea, p_browser text, p_os text, p_old_hash bytea, p_now timestamptz
+) returns uuid
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_id uuid;
+  v_ancienne public.login_session%rowtype;
+begin
+  perform private.verrouille_la_personne(p_person, p_old_hash, p_now);
+
+  if exists (select 1 from auth.users u
+              where u.id = p_person and (u.deleted_at is not null or u.banned_until > p_now)) then
+    raise exception 'Cette personne ne peut pas ouvrir de session.' using errcode = 'invalid_authorization_specification';
+  end if;
+
+  if p_old_hash is not null then
+    update public.login_session
+       set revoked_at = p_now
+     where token_hash = p_old_hash and revoked_at is null
+       and expires_at > p_now and absolute_expires_at > p_now
+    returning * into v_ancienne;
+    if found then
+      perform private.ecrit_evenement('session_fermee', v_ancienne.person_id, v_ancienne.id);
+    end if;
+  end if;
+
+  update public.login_session
+     set revoked_at = p_now
+   where id in (
+     select id from public.login_session
+      where person_id = p_person and revoked_at is null and expires_at > p_now and absolute_expires_at > p_now
+      order by last_seen_at desc, created_at desc, id desc
+      offset 9);
+
+  insert into public.login_session
+    (token_hash, person_id, browser, os, created_at, last_seen_at, expires_at, absolute_expires_at, reauth_at)
+  values
+    (p_hash, p_person, p_browser, p_os, p_now, p_now, p_now + interval '30 days', p_now + interval '90 days', p_now)
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+/* `ferme_les_autres_sessions` (0141) : le verrou en premier, et les codes en attente de la personne meurent
+   avec ses autres sessions (un code demandé avant la fermeture ne ré-ouvre rien après). */
+create or replace function private.ferme_les_autres_sessions(p_person uuid, p_keep uuid, p_now timestamptz)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_fermees bigint;
+begin
+  perform private.verrouille_la_personne(p_person);
+  with fermees as (
+    update public.login_session s
+       set revoked_at = p_now
+     where s.person_id = p_person
+       and s.id <> p_keep
+       and s.revoked_at is null
+       and s.expires_at > p_now
+       and s.absolute_expires_at > p_now
+    returning s.id
+  )
+  select pg_catalog.count(private.ecrit_evenement('session_fermee', p_person, f.id)) into v_fermees
+    from fermees f;
+  update public.login_code c
+     set revoked_at = p_now
+   where c.person_id = p_person and c.used_at is null and c.revoked_at is null;
+  perform private.ferme_les_sessions_auth(p_person);
+end;
+$$;
+
+/* `fait_tourner_et_ferme_les_autres` (0141, retirée en S15) : la personne avant la rotation de la ligne. */
+create or replace function private.fait_tourner_et_ferme_les_autres(p_old_hash bytea, p_new_hash bytea, p_now timestamptz)
+returns uuid
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_session uuid;
+  v_person uuid;
+begin
+  select s.person_id into v_person from public.login_session s where s.token_hash = p_old_hash;
+  if v_person is null then
+    return null;
+  end if;
+  perform private.verrouille_la_personne(v_person);
+  -- La rotation ensuite : c'est elle qui verrouille la ligne et départage deux changements simultanés.
+  update public.login_session s
+     set token_hash = p_new_hash
+    from auth.users u
+   where s.token_hash = p_old_hash
+     and u.id = s.person_id
+     and s.revoked_at is null and s.expires_at > p_now and s.absolute_expires_at > p_now
+     and (u.banned_until is null or u.banned_until <= p_now)
+     and u.deleted_at is null
+  returning s.id, s.person_id into v_session, v_person;
+  if v_session is null then
+    return null;
+  end if;
+
+  perform private.ferme_les_autres_sessions(v_person, v_session, p_now);
+  return v_session;
+end;
+$$;
+
+/* `confirme_le_changement_de_mot_de_passe` (0141) : la personne avant l'écriture du profil. */
+create or replace function public.confirme_le_changement_de_mot_de_passe(
+  p_person uuid, p_session uuid, p_request_id text default null
+)
+returns void
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+  select private.verrouille_la_personne(p_person);
+  update public.user_profile set password_set = true where id = p_person and password_set is not true;
+  select private.ecrit_evenement('mot_de_passe_change', p_person, null, null, null, null, p_request_id);
+  select private.ferme_les_autres_sessions(p_person, p_session, pg_catalog.now());
+$$;
+
+/* `ferme_les_autres_appareils` (0140) : le verrou en premier, les codes en attente révoqués. */
+create or replace function public.ferme_les_autres_appareils(p_courante uuid)
+returns integer
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_person uuid := auth.uid();
+  v_nombre integer;
+begin
+  if v_person is null then
+    raise exception 'Aucune personne dans ce contexte.' using errcode = 'invalid_authorization_specification';
+  end if;
+  if p_courante is null then
+    raise exception 'La session à garder est obligatoire.' using errcode = 'invalid_parameter_value';
+  end if;
+  perform private.verrouille_la_personne(v_person);
+  with fermees as (
+    update public.login_session s
+       set revoked_at = pg_catalog.now()
+     where s.person_id = v_person
+       and s.id <> p_courante
+       and s.revoked_at is null
+       and s.expires_at > pg_catalog.now()
+       and s.absolute_expires_at > pg_catalog.now()
+    returning s.id
+  ), evenements as (
+    select private.ecrit_evenement('session_fermee', v_person, f.id) from fermees f
+  )
+  select pg_catalog.count(*) into v_nombre from evenements;
+  update public.login_code c
+     set revoked_at = pg_catalog.now()
+   where c.person_id = v_person and c.used_at is null and c.revoked_at is null;
+  return v_nombre;
+end;
+$$;

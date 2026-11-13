@@ -35,6 +35,7 @@ MIN = timedelta(minutes=1)
 JOUR = timedelta(days=1)
 CREE = "select private.cree_session(%s, %s, 'chrome', 'linux', %s, %s)"
 LIT = "select person_id, session_id, reauth_at from private.session_valide(%s, %s)"
+NOTE = "select private.note_l_activite_de_la_session(%s, %s)"
 
 
 @pytest.fixture
@@ -266,6 +267,7 @@ def test_session_courante_s_arrete_au_bout_des_quatre_vingt_dix_jours_malgre_l_a
 ) -> None:
     _, empreinte = cree(admin, personne)
     for jours in range(10, 90, 10):  # une visite tous les 10 jours repousse l'échéance glissante
+        admin.execute(NOTE, (empreinte, T0 + jours * JOUR))
         assert lit(admin, empreinte, T0 + jours * JOUR) is not None
     assert lit(admin, empreinte, T0 + 90 * JOUR - timedelta(seconds=1)) is not None
     assert lit(admin, empreinte, T0 + 90 * JOUR) is None
@@ -298,13 +300,15 @@ def test_session_courante_refuse_une_personne_supprimee(
     assert lit(admin, empreinte, T0 + MIN) is None
 
 
-def test_l_activite_n_est_pas_reecrite_avant_cinq_minutes(
+def test_la_lecture_n_ecrit_jamais_l_activite_et_l_ecriture_attend_cinq_minutes(
     admin: psycopg.Connection[Ligne], personne: UUID
 ) -> None:
     session, empreinte = cree(admin, personne)
-    lit(admin, empreinte, T0 + 4 * MIN)
+    lit(admin, empreinte, T0 + 10 * MIN)
+    assert colonne(admin, session, "last_seen_at") == T0  # une lecture, même tardive, n'écrit rien (0148)
+    admin.execute(NOTE, (empreinte, T0 + 4 * MIN))
     assert colonne(admin, session, "last_seen_at") == T0
-    lit(admin, empreinte, T0 + 5 * MIN)
+    admin.execute(NOTE, (empreinte, T0 + 5 * MIN))
     assert colonne(admin, session, "last_seen_at") == T0 + 5 * MIN
     assert colonne(admin, session, "expires_at") == T0 + 5 * MIN + 30 * JOUR
 

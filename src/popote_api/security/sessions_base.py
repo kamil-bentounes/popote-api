@@ -20,6 +20,7 @@ __all__ = [
     "ferme_session",
     "marque_reauth",
     "session_courante",
+    "verrouille_la_personne",
 ]
 
 
@@ -43,7 +44,21 @@ async def cree_session(
     return identifiant
 
 
+async def verrouille_la_personne(
+    curseur: Curseur, personne: UUID, session_presentee: bytes | None = None
+) -> None:
+    """Le verrou de transaction de la personne (0148) : ordre foyer, invitation, personne, lignes.
+
+    À prendre AVANT d'ouvrir une session, d'en fermer plusieurs, de révoquer ou consommer un code, d'ajouter
+    ou de retirer une clé, et avant la vérification qui fait autorité : il tient jusqu'à la transaction.
+    `session_presentee` : l'empreinte du cookie que la connexion présente (B22) ; sa personne, si elle est
+    autre, se verrouille aussi, dans l'ordre des identifiants (jamais deux connexions croisées en cercle).
+    """
+    await curseur.execute("select public.verrouille_la_personne(%s, %s)", (personne, session_presentee))
+
+
 async def session_courante(curseur: Curseur, empreinte: bytes) -> SessionCourante | None:
+    """Lit la session sans écrire (0148) : l'activité s'écrit à part, par `Base.session`."""
     await curseur.execute(
         "select person_id, session_id, reauth_at from public.session_courante(%s)", (empreinte,)
     )
