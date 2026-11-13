@@ -125,6 +125,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
     `PATCH` exigent la clé, déclarent l'en-tête et les `400`, `409`, `422` au contrat ; ses autres routes (`GET`…) ne
     changent pas, et une même route ne mêle pas une méthode sûre et un `POST` (`ValueError` à la construction). `tests/unit/test_posts_idempotents.py` garde que tout `POST` ou `PATCH` de `/api/v1` en vient, sauf
     ceux de sa liste blanche écrite.
+  - **Un secret rendu une fois (`champs_secrets`, 0.4 T12a)** : `route_class=RouteIdempotente.avec(champs_secrets=("token",))`. Les champs nommés sont remis à `null` dans le corps AVANT l'écriture dans `idempotency_key` ; le client les reçoit à la première réponse, un rejeu rend le même statut et le même corps avec `null`. Une réponse qui n'est pas un objet JSON portant ces champs est une faute de programmation (`500`, effet annulé).
   - **Hors champ** : les `POST` sans session (connexion, acceptation d'invitation) n'ont pas de personne à qui
     rattacher une clé ; leur jeton à usage unique les protège du double envoi. Les effets longs (appel au modèle)
     sont des travaux asynchrones (§ 3.7) dont le `POST` de création est court, donc idempotent comme ci-dessus.
@@ -297,6 +298,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - **`POST /api/v1/sessions`** (connexion, publique) : `201` + `Set-Cookie`, corps `{id}` sans jeton ; `401
   identifiants_incorrects` ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
   (exemption écrite dans `tests/unit/test_posts_idempotents.py`). Détail : `docs/securite.md` § 4.5.
+- **Les invitations de l'hôte** (`POST /api/v1/me/invitations`, 0.4 T12a) : `201` + `Location: /api/v1/me/invitations/{id}` (jamais le jeton) et `{id, token, created_at, expires_at}` ; le jeton (32 octets, base64url, 43 caractères) est tiré côté serveur et rendu **une seule fois** (rejeu : même statut, même ligne, `token: null`). `Idempotency-Key` obligatoire (`400`, `409`, `422` : § 3.5) ; `403 aucun_foyer` ; `429 quota_invitations` + `Retry-After` (10 par 24 h glissantes et par foyer, révoqués compris). Liste et révocation : T12b. Détail : `docs/securite.md` § 4.9.
 - **Les appareils** (`/api/v1/me/sessions`, 0.4 T9) : `GET` liste paginée (§ 3.4) ; `DELETE /me/sessions/{id}` (UUID ou
   `current`) : `204`, `404 session_introuvable` pour une session d'une autre personne ou inconnue, `204` si déjà fermée,
   `401` si `current` est déjà fermée ; `DELETE /me/sessions?scope=others` : `scope` obligatoire (`others`), sinon

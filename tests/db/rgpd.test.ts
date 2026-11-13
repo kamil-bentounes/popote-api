@@ -65,6 +65,9 @@ describe('RGPD', () => {
       // Ces deux-là n'ont pas de colonne household_id propre : elles suivent
       // leur parent, déjà exporté.
       .filter(t => !['session_task_recipe', 'session_task_dependency'].includes(t))
+      // Liens d'invitation (0142) : une empreinte de jeton et des dates, aucun contenu de la personne ; ils
+      // n'ont aucun droit et ne se lisent que par fonction. Leur place dans l'export se décide en 0.5.
+      .filter(t => t !== 'invite_link')
       .filter(t => !cles.has(attendu[t] ?? t))
 
     expect(oubliees, 'tables de foyer absentes de l’export').toEqual([])

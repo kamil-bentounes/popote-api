@@ -6,6 +6,7 @@ réglage, la ligne d'idempotence et la session partent avec la personne (la fabr
 """
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
@@ -533,3 +534,63 @@ async def test_une_ligne_qui_expire_a_l_instant_meme_ne_compte_plus(base: Base, 
             ("a" * 64,),
         )
         assert await cherche_la_ligne(curseur, "k") is None
+
+
+# ── Les champs secrets (B14) ─────────────────────────────────────────────────
+
+
+def routeur_a_secret() -> APIRouter:
+    routeur = APIRouter(prefix="/secret", route_class=RouteIdempotente.avec(champs_secrets=("token",)))
+
+    @routeur.post("/avec", status_code=201)
+    async def avec(personne: PersonneDeLaSession) -> dict[str, str]:
+        await personne.curseur.execute(BASCULE, ("choisir_les_repas",))
+        return {"id": "x", "token": "valeur-a-ne-pas-garder"}
+
+    @routeur.post("/sans-le-champ", status_code=201)
+    async def sans_le_champ(personne: PersonneDeLaSession) -> dict[str, str]:
+        await personne.curseur.execute(BASCULE, ("choisir_les_repas",))
+        return {"id": "x"}
+
+    return routeur
+
+
+async def test_un_champ_secret_est_retire_avant_stockage_et_le_rejeu_ne_l_a_pas(
+    base: Base, monkeypatch: pytest.MonkeyPatch, essai: Essai, fabrique: Fabrique
+) -> None:
+    app = application_de_test(base, monkeypatch, routeur_d_essai(essai), routeur_a_secret())
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    )
+    personne = fabrique.personne(fabrique.foyer())
+    premiere = await client.post("/api/v1/secret/avec", headers=en_tetes(fabrique, personne.id))
+    assert premiere.status_code == 201
+    assert premiere.json() == {"id": "x", "token": "valeur-a-ne-pas-garder"}
+    ((_, _, _, _, _, corps),) = gardees(fabrique, personne.id)
+    assert b"valeur-a-ne-pas-garder" not in bytes(corps)
+    assert json.loads(bytes(corps)) == {"id": "x", "token": None}
+    rejeu = await client.post("/api/v1/secret/avec", headers=en_tetes(fabrique, personne.id))
+    assert (rejeu.status_code, rejeu.json()) == (201, {"id": "x", "token": None})
+
+
+async def test_une_route_a_champs_secrets_sans_le_champ_annule_l_effet(
+    base: Base, monkeypatch: pytest.MonkeyPatch, essai: Essai, fabrique: Fabrique
+) -> None:
+    app = application_de_test(base, monkeypatch, routeur_d_essai(essai), routeur_a_secret())
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    )
+    personne = fabrique.personne(fabrique.foyer())
+    reponse = await client.post("/api/v1/secret/sans-le-champ", headers=en_tetes(fabrique, personne.id))
+    assert reponse.status_code == 500
+    assert gardees(fabrique, personne.id) == []
+    assert reglages(fabrique, personne.id) == []
+
+
+async def test_les_autres_routes_gardent_leur_corps_entier(
+    application: httpx.AsyncClient, fabrique: Fabrique
+) -> None:
+    personne = fabrique.personne(fabrique.foyer())
+    reponse = await application.post("/api/v1/essai/chemin/token", headers=en_tetes(fabrique, personne.id))
+    ((_, _, _, _, _, corps),) = gardees(fabrique, personne.id)
+    assert json.loads(bytes(corps)) == reponse.json() == {"nom": "token"}
