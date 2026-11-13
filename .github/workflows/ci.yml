@@ -345,9 +345,9 @@ jobs:
     needs: [python, contrat, base, image, secrets, semgrep, migre-essai]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Déploiement (20 minutes au plus) puis rétablissement (12 minutes au plus), chacun borné par son étape : le job
-    # garde de quoi finir le rétablissement.
-    timeout-minutes: 45
+    # Chaque étape a son propre délai ; celui du job est leur somme (5 + 5 + 10 + 2 + 20 + 5 + 5 = 52) plus 5 minutes :
+    # une étape lente n'ôte jamais au rétablissement le temps qui lui est réservé.
+    timeout-minutes: 57
     environment: essai
     # Un déploiement en cours n'est jamais annulé : le suivant attend son tour.
     concurrency:
@@ -362,10 +362,12 @@ jobs:
       SCW_CONTAINER_ID: ${{ vars.SCW_CONTAINER_ID }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 5
         with:
           name: image-scannee
           path: ${{ runner.temp }}/image
       - name: Charger l'image scannée
+        timeout-minutes: 5
         env:
           IMAGE_SCANNEE: ${{ needs.image.outputs.id }}
         run: |
@@ -377,6 +379,7 @@ jobs:
           fi
       - name: Se connecter au registre, pousser l'image et lire son empreinte
         id: pousse
+        timeout-minutes: 10
         env:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
         run: |
@@ -396,6 +399,7 @@ jobs:
           echo "reference=$reference" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Préparer les outils de déploiement (fonctions partagées avec le rétablissement)
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/retablir"
@@ -408,9 +412,9 @@ jobs:
           }
           conteneur="$SCW_API/containers/v1beta1/regions/$SCW_REGION/containers/$SCW_CONTAINER_ID"
           # Dans ces fonctions, appelées sous `if`, `set -e` ne joue pas : chaque échec est un `return 1`.
-          # Attente bornée : 8 minutes au plus, sondes de 10 s au plus (la sonde ne tient jamais le job).
+          # Attente bornée par $1 secondes (8 minutes par défaut), sondes de 10 s au plus (la sonde ne tient jamais le job).
           attendre_pret() {
-            local statut fin=$((SECONDS + 480))
+            local statut fin=$((SECONDS + ${1:-480}))
             while [ "$SECONDS" -lt "$fin" ]; do
               statut=$(scw "$conteneur" | jq -r '.status') || statut=inconnu
               echo "statut du conteneur : $statut"
@@ -420,18 +424,21 @@ jobs:
               esac
               sleep 5
             done
-            echo "::error::le conteneur n'est pas prêt après 8 minutes"
+            echo "::error::le conteneur n'est pas prêt dans le délai"
             return 1
           }
           # $1 : l'image ; $2 : la carte COMPLÈTE des variables non secrètes. Un PATCH de `environment_variables`
           # remplace toute la carte (l'API ne fusionne pas) : on envoie donc l'existante, complétée. Les variables
           # secrètes ne sont pas dans le corps : elles restent telles quelles.
-          deployer() {
+          patcher() {
             local corps
             # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
             corps=$(jq -n --arg image "$1" --argjson variables "$2" \
               '{registry_image: $image, environment_variables: $variables, redeploy: true}') || return 1
-            scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null || return 1
+            scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
+          }
+          deployer() {
+            patcher "$1" "$2" || return 1
             sleep 10 # laisser le statut quitter `ready` avant de le lire
             attendre_pret
           }
@@ -523,7 +530,7 @@ jobs:
             echo "::error::la carte complétée perd ou change une variable existante (hors celles de l'envoi des mails)"
             exit 1
           fi
-          if [ "$(jq -r '[.POPOTE_MAIL_PROVIDER, .POPOTE_PUBLIC_BASE_URL] | join(" ")' <<< "$nouvelles")" != "scaleway https://essai.notre-popote.fr" ]; then
+          if [ "$(jq -r '[.POPOTE_MAIL_PROVIDER, .POPOTE_SCALEWAY_TEM_PROJECT_ID, .POPOTE_PUBLIC_BASE_URL] | join(" ")' <<< "$nouvelles")" != "scaleway $projet https://essai.notre-popote.fr" ]; then
             echo "::error::les variables de l'envoi des mails ne sont pas celles voulues"
             exit 1
           fi
@@ -539,8 +546,9 @@ jobs:
           echo "déploiement vérifié"
       - name: Rétablir l'image et les variables précédentes si le déploiement a échoué
         # Étape à part : elle tourne même si l'étape de déploiement a dépassé son délai, et relit ce qu'elle a mis de côté.
+        # Elle tient en 4 minutes au plus : GitHub arrête un workflow annulé 5 minutes après l'annulation.
         if: ${{ failure() || cancelled() }}
-        timeout-minutes: 12
+        timeout-minutes: 5
         env:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
         run: |
@@ -557,8 +565,16 @@ jobs:
           echo "::error::le déploiement n'a pas abouti : on repose l'image et les variables précédentes"
           # La carte relue doit être celle d'avant : sinon l'ancienne image (qui ne connaît pas `scaleway`) repartirait
           # avec la nouvelle carte et refuserait de démarrer.
-          if deployer "$precedente" "$anciennes" && verifier_conteneur "$precedente" "$anciennes" "$noms_secrets"; then
+          # Ordre : PATCH, puis la preuve par GET (image, carte, noms des secrets), puis l'attente de disponibilité, qui
+          # prend le reste des 4 minutes et jamais plus.
+          debut=$SECONDS
+          if patcher "$precedente" "$anciennes" && verifier_conteneur "$precedente" "$anciennes" "$noms_secrets"; then
             echo "image et variables précédentes reposées et vérifiées"
+            reste=$((240 - (SECONDS - debut)))
+            if [ "$reste" -gt 10 ]; then
+              sleep 5
+              attendre_pret "$((reste - 5))" || echo "::warning::le conteneur n'est pas encore prêt ; la carte et l'image sont celles d'avant"
+            fi
           else
             echo "::error::l'image précédente n'a pas pu être reposée : l'essai est à rétablir à la main"
           fi
@@ -566,6 +582,7 @@ jobs:
       - name: Ne garder que les 5 images les plus récentes
         # Le déploiement est déjà vérifié : un nettoyage raté ne doit pas le rougir.
         continue-on-error: true
+        timeout-minutes: 5
         env:
           TAG_COURANT: ${{ steps.pousse.outputs.tag }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}

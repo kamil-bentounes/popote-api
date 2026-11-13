@@ -134,17 +134,15 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         super().__init__(origines)
         if type(projet) is not UUID:  # un réglage contourné (`model_construct`) peut y mettre une chaîne
             raise ValueError("Projet d'envoi : un UUID est attendu.")
-        nettoyee = _cle_nettoyee(cle)  # la valeur brute ne vit que le temps de cet appel
-        if nettoyee is None:
-            # Une clé Scaleway est un UUID ; toute autre forme est une faute de dépôt, ou, avec un blanc ou un
-            # caractère hors ASCII, ferait recopier la clé par h11 dans son message (donc au journal).
-            raise ValueError("Clé d'envoi Scaleway : un UUID est attendu.")
-        self._cle_tem = nettoyee
+        # La clé reste un `SecretStr` : déballée seulement dans `_en_tetes_ou_rien`, le temps des en-têtes.
+        # L'essai ci-dessous refuse une clé mal formée au démarrage, pas au premier mail.
+        self._cle_tem = cle
         self._projet = projet
         self._expediteur = expediteur
         self._transport = transport
         self._horloge = maintenant  # sert à refuser un code déjà expiré, jamais à fixer son échéance
         self._pause = pause
+        self._en_tetes()
 
     def __repr__(self) -> str:
         return "EnvoiScaleway()"
@@ -224,9 +222,22 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         return issue
 
     def _en_tetes(self) -> dict[str, str]:
-        """Les en-têtes de la requête : la seule place où la clé brute existe, le temps de la construire."""
+        en_tetes = self._en_tetes_ou_rien()
+        if en_tetes is None:
+            # Levée ici, hors de la fonction qui a déballé la clé : la pile de l'erreur ne la garde pas.
+            # Une clé Scaleway est un UUID ; toute autre forme est une faute de dépôt, ou, avec un blanc ou un
+            # caractère hors ASCII, ferait recopier la clé par h11 dans son message (donc au journal).
+            raise ValueError("Clé d'envoi Scaleway : un UUID est attendu.")
+        return en_tetes
+
+    def _en_tetes_ou_rien(self) -> dict[str, str] | None:
+        """Les en-têtes de la requête, ou `None` si la clé n'est pas un UUID : la SEULE place où la clé est
+        déballée (et nettoyée de son saut de ligne de fin), le temps de construire le dictionnaire."""
+        brute = self._cle_tem.get_secret_value().strip()
+        if FORME_D_UNE_CLE.fullmatch(brute) is None:
+            return None
         return {
-            "X-Auth-Token": self._cle_tem.get_secret_value(),
+            "X-Auth-Token": brute,
             "Accept": "application/json",
             "Accept-Encoding": "identity",  # une réponse de quelques octets : rien à décompresser
         }
@@ -255,13 +266,6 @@ class EnvoiScaleway(EnvoiParEnveloppe):
                 # mail a pu partir, sous un 4xx la reprise ne changerait rien, un 5xx se reprend).
                 return vue
             raise
-
-
-def _cle_nettoyee(cle: SecretStr) -> SecretStr | None:
-    """La clé sans blanc de bord (un secret lu dans un fichier garde son saut de ligne), ou `None` si ce n'est
-    pas un UUID."""
-    propre = cle.get_secret_value().strip()
-    return SecretStr(propre) if FORME_D_UNE_CLE.fullmatch(propre) is not None else None
 
 
 def _a_la_seconde(quand: datetime) -> datetime:

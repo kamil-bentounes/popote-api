@@ -240,7 +240,11 @@ def _nomme_la_cle_tem(noeud: ast.AST) -> bool:
     return any(
         (isinstance(n, ast.Attribute) and n.attr in (CLE_TEM, ATTRIBUT_DE_LA_CLE_TEM))
         or (isinstance(n, ast.Name) and n.id in (CLE_TEM, ATTRIBUT_DE_LA_CLE_TEM))
-        or (isinstance(n, ast.Constant) and isinstance(n.value, str) and CLE_TEM in n.value)
+        or (
+            isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and (CLE_TEM in n.value or ATTRIBUT_DE_LA_CLE_TEM in n.value)
+        )
         for n in ast.walk(noeud)
     )
 
@@ -283,6 +287,8 @@ def test_seuls_les_reglages_la_fabrique_et_le_module_d_envoi_nomment_la_cle_tem(
         "secret = lambda: getattr(r, 'scaleway_tem_secret_key').get_secret_value()",
         "scaleway_tem_secret_key.get_secret_value()",
         "x = app.state.mails._cle_tem.get_secret_value()",
+        "x = getattr(app.state.mails, '_cle_tem').get_secret_value()",
+        "x = getattr(reglages, 'scaleway_tem_secret_key').get_secret_value()",
     ],
 )
 def test_le_controle_attrape_une_lecture_de_la_cle_tem(source: str) -> None:
@@ -321,10 +327,10 @@ def lectures_de_secret_passees_a_un_appel(source: str, autorises: frozenset[str]
     return fautes
 
 
-def test_le_module_d_envoi_ne_lit_la_cle_qu_a_deux_endroits_sans_la_passer_a_un_autre_code() -> None:
+def test_le_module_d_envoi_ne_lit_la_cle_qu_a_un_endroit_sans_la_passer_a_un_autre_code() -> None:
     source = (SRC / LECTEUR_DE_LA_CLE_TEM).read_text()
-    # Le constructeur (nettoyage et contrôle) et l'en-tête de la requête : une troisième lecture se relit.
-    assert appels_a_la_methode(source, "get_secret_value") == 2
+    # Une seule lecture, dans `_en_tetes_ou_rien` : une deuxième se relit.
+    assert appels_a_la_methode(source, "get_secret_value") == 1
     assert lectures_de_secret_passees_a_un_appel(source, frozenset({"SecretStr"})) == []
 
 
@@ -348,35 +354,52 @@ def test_le_controle_laisse_passer_secretstr_et_les_methodes_de_chaine() -> None
 def captures_de_variables_locales(source: str) -> list[str]:
     """Ce qui ferait écrire les variables locales des cadres d'une pile (donc clé, adresse, code) ailleurs."""
     arbre = ast.parse(source)
-    parle_de_sentry = "sentry_sdk" in source
     fautes = []
+    noms_de_init: set[str] = set()  # `init` importé de sentry_sdk, sous son nom ou sous un alias
     for noeud in ast.walk(arbre):
-        if isinstance(noeud, ast.Import | ast.ImportFrom):
-            modules = [a.name for a in noeud.names] + (
-                [noeud.module] if isinstance(noeud, ast.ImportFrom) else []
-            )
-            if any((m or "").startswith("rich.traceback") for m in modules):
+        if isinstance(noeud, ast.ImportFrom):
+            if noeud.module == "sentry_sdk":
+                for alias in noeud.names:
+                    if alias.name == "*":
+                        fautes.append("import * de sentry_sdk")
+                    elif alias.name == "init":
+                        noms_de_init.add(alias.asname or "init")
+            if (noeud.module or "").startswith("rich.traceback") or (
+                noeud.module == "rich" and any(a.name == "traceback" for a in noeud.names)
+            ):
                 fautes.append("rich.traceback")
-        if isinstance(noeud, ast.Attribute) and noeud.attr == "show_locals":
+        elif isinstance(noeud, ast.Import) and any(a.name.startswith("rich.traceback") for a in noeud.names):
+            fautes.append("rich.traceback")
+        elif isinstance(noeud, ast.Constant) and noeud.value == "rich.traceback":  # import_module(...)
+            fautes.append("rich.traceback")
+        elif isinstance(noeud, ast.Attribute) and noeud.attr == "show_locals":
             fautes.append("show_locals")
+    for noeud in ast.walk(arbre):
         if not isinstance(noeud, ast.Call):
             continue
-        nom = noeud.func.id if isinstance(noeud.func, ast.Name) else getattr(noeud.func, "attr", "")
         reglages = {k.arg: k.value for k in noeud.keywords}
         if "show_locals" in reglages:
             fautes.append("show_locals")
-        if nom == "TracebackException" and not _est_la_valeur(
-            reglages.get("capture_locals"), False, absent_ok=True
-        ):
-            fautes.append("capture_locals")
-        if nom == "init" and parle_de_sentry:
-            if not _est_la_valeur(reglages.get("include_local_variables"), False):
-                fautes.append("include_local_variables")
-            if not _est_la_valeur(reglages.get("send_default_pii"), False):
-                fautes.append("send_default_pii")
-            if not _est_la_valeur(reglages.get("max_request_body_size"), "never"):
-                fautes.append("max_request_body_size")
+        if "capture_locals" in reglages and not _est_la_valeur(reglages["capture_locals"], False):
+            fautes.append(
+                "capture_locals"
+            )  # où que ce soit : `TracebackException(...)`, `from_exception(...)`...
+        if _est_un_appel_a_init_de_sentry(noeud, noms_de_init, source):
+            for nom, attendue in (
+                ("include_local_variables", False),
+                ("send_default_pii", False),
+                ("max_request_body_size", "never"),
+            ):
+                if not _est_la_valeur(reglages.get(nom), attendue):
+                    fautes.append(nom)
     return fautes
+
+
+def _est_un_appel_a_init_de_sentry(appel: ast.Call, noms_de_init: set[str], source: str) -> bool:
+    if isinstance(appel.func, ast.Name):
+        return appel.func.id in noms_de_init
+    # `sentry_sdk.init(...)` ou `sdk.init(...)` après `import sentry_sdk as sdk`
+    return isinstance(appel.func, ast.Attribute) and appel.func.attr == "init" and "sentry_sdk" in source
 
 
 def _est_la_valeur(noeud: ast.expr | None, attendue: object, *, absent_ok: bool = False) -> bool:
@@ -407,6 +430,16 @@ SENTRY = "import sentry_sdk\nsentry_sdk.init(dsn='x', "
         "import traceback\ntraceback.TracebackException(a, b, c, capture_locals=True)",
         "from rich.traceback import install",
         "import rich.traceback",
+        "import rich.traceback as t",
+        "from rich import traceback",
+        "from rich import traceback as t",
+        "import importlib\nimportlib.import_module('rich.traceback')",
+        "from sentry_sdk import init as initialise\ninitialise(dsn='x')",
+        "import sentry_sdk as sdk\nsdk.init(dsn='x')",
+        "from sentry_sdk import *",
+        "import traceback\ntraceback.TracebackException.from_exception(e, capture_locals=True)",
+        "import traceback\ntraceback.print_exception(e, capture_locals=True)",
+        "x = f(capture_locals=flag)",
         "console.print_exception(show_locals=True)",
         "opts = Options(); opts.show_locals",
     ],

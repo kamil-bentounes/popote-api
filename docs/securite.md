@@ -771,7 +771,10 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   lit. Sentry (décidé le 13/11) arrivera avec `include_local_variables=False`, `send_default_pii=False` et `max_request_body_size="never"` ;
   un test d'architecture échoue si `sentry_sdk.init` apparaît sans ces trois réglages, ou si `show_locals`, `rich.traceback` ou
   `TracebackException(capture_locals=True)` apparaît dans `src/`. La clé reste un `SecretStr` jusqu'au dernier moment : la valeur brute
-  n'existe que dans `_cle_nettoyee` (à la construction) et dans `_en_tetes` (le temps de construire les en-têtes). `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
+  n'existe que dans `_en_tetes_ou_rien` (nettoyage et contrôle de forme compris), le temps de construire les en-têtes ; la construction de l'envoi
+  l'essaie une fois pour refuser une clé mal formée au démarrage, et l'erreur est levée hors de cette fonction. Le test d'architecture exige une seule
+  lecture dans le module ; il refuse aussi `sentry_sdk.init` importé sous un alias, tout `capture_locals` autre que `False`, toute forme d'import
+  de `rich.traceback`, et la constante `"_cle_tem"` hors du module. `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
   ne jamais les appeler sur les réglages sans `include_input=False`. Sources, gestes de la
   clé, rotation et quota : `docs/exploitation.md`, « L'envoi réel ».
 - Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`, `tests/unit/test_mail_scaleway.py` (faux transport
