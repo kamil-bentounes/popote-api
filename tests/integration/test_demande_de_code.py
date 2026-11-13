@@ -120,7 +120,10 @@ class TestReponseUniforme:
         assert entetes_stables(connu) == entetes_stables(inconnu)
         assert "set-cookie" not in connu.headers
 
-    async def test_le_temps_est_comparable(self, moi: Personne) -> None:
+    async def test_le_temps_est_du_meme_ordre_de_grandeur(self, moi: Personne) -> None:
+        """Garde l'ordre de grandeur (ni parcours de table, ni envoi synchrone). L'écart fin, environ 0,3 ms
+        (verrou de la personne et événement), est un risque accepté : docs/securite.md § 4.13."""
+
         async def mediane(email: str, debut_ip: int) -> float:
             durees = []
             for i in range(30):  # une IP à chaque appel : jamais de 429
@@ -145,6 +148,18 @@ class TestReponseUniforme:
         assert (await client.post(ROUTE, json={}, headers=ECRITURE)).status_code == 422
         assert boite(moi).codes == []
         assert creneaux(moi, "code_ip", moi.banc.empreintes.cle_ip(moi.banc.ip)) == []
+
+    @pytest.mark.parametrize("adresse", ["é" * 200 + "@x.fr", "ﷺ" * 30 + "@x.fr", "a" * 250 + "@x.fr"])
+    async def test_une_adresse_trop_longue_en_octets_apres_normalisation_est_refusee_sans_creneau(
+        self, moi: Personne, adresse: str
+    ) -> None:
+        """Le plafond de 254 compte des octets de la forme normalisée : « é » en pèse deux, « ﷺ » beaucoup."""
+        reponse = await moi.banc.client().post(ROUTE, json={"email": adresse}, headers=ECRITURE)
+        assert reponse.status_code == 422
+        assert creneaux(moi, "code_ip", moi.banc.empreintes.cle_ip(moi.banc.ip)) == []
+
+    async def test_une_adresse_de_254_octets_passe(self, moi: Personne) -> None:
+        assert (await demande(moi, "a" * 248 + "@x.fr")).status_code == 202
 
     async def test_sans_origine_403_et_rien_ne_compte(self, moi: Personne) -> None:
         reponse = await demande(moi, moi.email, origine=False)

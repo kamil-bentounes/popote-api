@@ -372,6 +372,11 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
 - **Le mail** part APRÈS la réponse (`BackgroundTasks`), pour une personne réelle et un code neuf seulement : coupe-circuit global
   (`prend_un_envoi`) puis `envoie_sans_remonter`. Un coupe-circuit ouvert ou illisible jette le mail (le code reste valable ; la
   clé d'accès fonctionne) et se journalise sans adresse ni code ; un envoi qui échoue se journalise par son type seul.
+  À surveiller en exploitation : une alerte sur « Mail (code) non envoyé » (coupe-circuit ouvert, base indisponible, fournisseur en
+  panne) : la réponse est `202`, la personne ne reçoit rien et ne peut pas redemander avant 60 s. Le code existe en clair dans deux
+  variables locales (`demande_le_code`, `envoie_le_courrier`) : le suivi D4 (Sentry) devra désactiver ou masquer les variables locales.
+  L'adresse est refusée en `422` si sa forme normalisée dépasse 254 **octets** (« é » en pèse deux ; NFKC peut allonger) : la base
+  compte des octets et un refus de sa part annulerait aussi les créneaux déjà pris.
   Le code n'est ni dans une colonne (seul son HMAC l'est), ni dans un événement, ni dans un journal, ni dans l'objet du mail.
   Sans `Idempotency-Key` : route publique, rejouer une réponse garderait un identifiant de demande.
 - Tests : `tests/integration/test_demande_de_code_base.py` (la base : 50 demandes simultanées, un test de dérive entre les portées du

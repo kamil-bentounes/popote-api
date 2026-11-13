@@ -92,5 +92,9 @@ async def envoie_le_courrier(app_state: State, courrier: Courrier) -> None:
     if attente:
         journal.error("Mail (code) non envoyé : coupe-circuit global ouvert")
         return
-    message = MessageCode(courrier.adresse, courrier.code, VALIDITE_DU_CODE_MIN)
+    try:
+        message = MessageCode(courrier.adresse, courrier.code, VALIDITE_DU_CODE_MIN)
+    except ValueError as erreur:  # une adresse de compte avec un blanc : le mail n'est pas écrit
+        journal.error("Mail (code) non envoyé : message invalide (%s)", type(erreur).__name__)
+        return
     await envoie_sans_remonter(app_state.mails.envoie_le_code, message, "code")

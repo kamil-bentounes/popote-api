@@ -234,6 +234,16 @@ async def test_une_erreur_de_la_base_au_coupe_circuit_jette_le_mail_et_journalis
     assert "destinataire@x.fr" not in caplog.text and "246810" not in caplog.text
 
 
+async def test_une_adresse_qui_ne_fait_pas_un_message_valide_est_jetee_et_journalisee_par_son_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    boite = BoiteDeTest()
+    caplog.set_level(logging.DEBUG)
+    await envoie_le_courrier(etat(BaseFausse(0), boite), Courrier("a b@x.fr", "246810"))  # type: ignore[arg-type]
+    assert boite.codes == [] and "message invalide (ValueError)" in caplog.text
+    assert "a b@x.fr" not in caplog.text and "246810" not in caplog.text
+
+
 async def test_un_envoi_en_panne_se_journalise_par_son_type_seul(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG)
     await envoie_le_courrier(etat(BaseFausse(0), BoiteDeTest(en_panne=True)), COURRIER)  # type: ignore[arg-type]
