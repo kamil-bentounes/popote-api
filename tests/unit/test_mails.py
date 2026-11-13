@@ -27,7 +27,7 @@ EXPIRE_LE = datetime(2026, 11, 20, 10, 30, tzinfo=UTC)
 
 
 def code(valeur: str = "123456") -> MessageCode:
-    return MessageCode(ADRESSE, valeur, 10)
+    return MessageCode(ADRESSE, valeur, 10, EXPIRE_LE)
 
 
 def invitation(prenom_invite: str = "Claire", prenom_hote: str = "Marc") -> MessageInvitation:
@@ -164,23 +164,23 @@ def test_un_prenom_non_presentable_n_entre_pas_dans_l_invitation() -> None:
 )
 def test_un_code_qui_n_est_pas_fait_de_six_chiffres_est_refuse(valeur: object) -> None:
     with pytest.raises(ValueError, match="six chiffres"):
-        MessageCode(ADRESSE, valeur, 10)  # type: ignore[arg-type]
+        MessageCode(ADRESSE, valeur, 10, EXPIRE_LE)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("validite", [0, -1, True, 1.5, "10"])
 def test_une_validite_qui_n_est_pas_un_entier_positif_est_refusee(validite: object) -> None:
     with pytest.raises(ValueError, match="validite_min"):
-        MessageCode(ADRESSE, "123456", validite)  # type: ignore[arg-type]
+        MessageCode(ADRESSE, "123456", validite, EXPIRE_LE)  # type: ignore[arg-type]
 
 
 def test_une_validite_d_une_minute_s_ecrit_au_singulier() -> None:
-    assert "valable 1 minute." in textes.texte_du_code(MessageCode(ADRESSE, "123456", 1))
+    assert "valable 1 minute." in textes.texte_du_code(MessageCode(ADRESSE, "123456", 1, EXPIRE_LE))
 
 
 @pytest.mark.parametrize("destinataire", ["", "a@b.fr\r\nBcc: x@y.fr", "a b@c.fr", 3])
 def test_un_destinataire_vide_ou_avec_un_blanc_est_refuse(destinataire: object) -> None:
     with pytest.raises(ValueError, match="destinataire"):
-        MessageCode(destinataire, "123456", 10)  # type: ignore[arg-type]
+        MessageCode(destinataire, "123456", 10, EXPIRE_LE)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="destinataire"):
         MessageInvitation(destinataire, "Claire", "Marc", LIEN, EXPIRE_LE)  # type: ignore[arg-type]
 

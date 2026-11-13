@@ -10,14 +10,15 @@ adresse inventée n'y compte pas.
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from starlette.datastructures import State
 
 from popote_api.config import Settings
 from popote_api.infra.db import Base
-from popote_api.infra.mails import MessageCode, envoie_sans_remonter
-from popote_api.security.codes import VALIDITE_DU_CODE_MIN, code_neuf
+from popote_api.infra.mails import MessageCode, TypeDeMail, envoie_sans_remonter
+from popote_api.security.codes import VALIDITE_DU_CODE_MIN, VIE_DU_CODE_S, code_neuf
 from popote_api.security.empreintes import Empreintes, email_normalise
 from popote_api.security.limites_base import prendre_les_creneaux_de_demande, prendre_un_envoi
 
@@ -30,6 +31,7 @@ class Courrier:
 
     adresse: str = field(repr=False)
     code: str = field(repr=False)
+    expire_le: datetime = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +56,14 @@ async def demande_le_code(
     email: str,
     ip: str | None,
     request_id: str | None,
+    maintenant: datetime,
 ) -> Bloquee | Demandee:
-    """Lève `PoivreAbsentError` sans poivre (rien ne se compte ni ne s'écrit sans clé)."""
+    """Lève `PoivreAbsentError` sans poivre (rien ne se compte ni ne s'écrit sans clé).
+
+    `maintenant` (avec fuseau) : l'instant de la demande, pris AVANT la base. L'échéance du mail en vient une
+    fois pour toutes : celle de la base (`now()` + 10 minutes) ne peut pas être plus tôt, donc un code n'est
+    jamais livré après l'avoir été à la base. `demande_un_code` ne rend pas `expires_at` (0147 est fusionnée).
+    """
     cle_compte = empreintes.cle_compte_requise(email)
     cle_ip = empreintes.cle_ip_requise(ip)
     cle_paire = empreintes.cle_paire_de_code_requise(email, ip)
@@ -74,7 +82,8 @@ async def demande_le_code(
         if ligne is None:  # une fonction qui rend toujours une ligne
             raise RuntimeError("demande_un_code n'a rien rendu")
     envoyer = ligne["personne"] is not None and ligne["nouveau"]
-    return Demandee(ligne["demande"], Courrier(adresse, code) if envoyer else None)
+    courrier = Courrier(adresse, code, maintenant + timedelta(seconds=VIE_DU_CODE_S)) if envoyer else None
+    return Demandee(ligne["demande"], courrier)
 
 
 async def envoie_le_courrier(app_state: State, courrier: Courrier) -> None:
@@ -93,8 +102,8 @@ async def envoie_le_courrier(app_state: State, courrier: Courrier) -> None:
         journal.error("Mail (code) non envoyé : coupe-circuit global ouvert")
         return
     try:
-        message = MessageCode(courrier.adresse, courrier.code, VALIDITE_DU_CODE_MIN)
+        message = MessageCode(courrier.adresse, courrier.code, VALIDITE_DU_CODE_MIN, courrier.expire_le)
     except ValueError as erreur:  # une adresse de compte avec un blanc : le mail n'est pas écrit
         journal.error("Mail (code) non envoyé : message invalide (%s)", type(erreur).__name__)
         return
-    await envoie_sans_remonter(app_state.mails.envoie_le_code, message, "code")
+    await envoie_sans_remonter(app_state.mails.envoie_le_code, message, TypeDeMail.code)

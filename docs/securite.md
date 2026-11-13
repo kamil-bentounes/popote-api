@@ -371,6 +371,9 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   `prend_les_creneaux_de_demande`, puis `demande_un_code`. **Toujours `202 {code_request_id, expires_in_s: 600,
   resend_after_s: 60, message}`**, même statut, même corps hors identifiant, mêmes en-têtes. Un refus de limite est `429` +
   `Retry-After` pour tous, connus ou non. Une erreur de la base donne `503`, jamais `500`.
+- **L'échéance du mail** : `Courrier.expire_le` = l'instant de la demande (`app.state.horloge()`, pris avant la base) + 10 minutes. Celle de la
+  base (`now()` + 10 minutes) ne peut pas être plus tôt : un code n'est jamais livré après l'avoir été. `demande_un_code` ne rend pas
+  `expires_at` (0147 est fusionnée) ; le destinataire est la forme normalisée, en minuscules.
 - **Le mail** part APRÈS la réponse (`BackgroundTasks`), pour une personne réelle et un code neuf seulement : coupe-circuit global
   (`prend_un_envoi`) puis `envoie_sans_remonter`. Un coupe-circuit ouvert ou illisible jette le mail (le code reste valable ; la
   clé d'accès fonctionne) et se journalise sans adresse ni code ; un envoi qui échoue se journalise par son type seul.
@@ -697,7 +700,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   l'envoi réel). **Annulation, délai ou `MailIndisponible(issue_inconnue=True)` (requête partie, réponse perdue) : « issue inconnue »** (le
   fournisseur a pu accepter le mail : le journal ne dit jamais « non envoyé » alors) ; l'annulation repart même si la réalisation l'a
   traduite en erreur.
-- **Les messages** : `MessageCode(destinataire, code, validite_min)` (le code fait six chiffres ASCII ; le destinataire est **une seule adresse** de grammaire stricte :
+- **Les messages** : `MessageCode(destinataire, code, validite_min, expire_le)` (`expire_le` : l'échéance ABSOLUE du code, avec fuseau, fixée à la demande avant la base et jamais recalculée à l'envoi : S4 en fait `send_before` ; le code fait six chiffres ASCII ; le destinataire est **une seule adresse** de grammaire stricte :
   ASCII, partie locale de 64 caractères au plus, domaine à point, 254 au plus, ni virgule, ni espace, ni caractère de contrôle ou de
   direction, `infra.comptes.adresse_valide` et un point au domaine ; l'appelant la donne normalisée en minuscules) et `MessageInvitation(destinataire, prenom_invite, prenom_hote, lien, expire_le)` (`expire_le` avec décalage horaire, écrit à
   l'heure de Paris ; le lien est `<origine du front>/invitation#<jeton>` : `enveloppe_de_l_invitation(message, origines)` le refuse si ce n'est pas une origine

@@ -8,7 +8,7 @@ prénom n'entre jamais dans un texte sans passer par `prenom_affichable`.
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Final
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -193,10 +193,9 @@ class Enveloppe:
         return "Enveloppe(destinataire=…, objet=…, texte=…)"
 
 
-def enveloppe_du_code(message: "MessageCode", maintenant: datetime) -> Enveloppe:
-    """`maintenant` (avec fuseau) : l'instant de l'envoi ; le code expire `validite_min` minutes plus tard."""
-    expire_le = maintenant + timedelta(minutes=message.validite_min)
-    return Enveloppe(message.destinataire, OBJET_DU_CODE, texte_du_code(message), _CACHET, expire_le)
+def enveloppe_du_code(message: "MessageCode") -> Enveloppe:
+    """L'échéance est celle du message (fixée à la demande) : elle n'est jamais recalculée à l'envoi."""
+    return Enveloppe(message.destinataire, OBJET_DU_CODE, texte_du_code(message), _CACHET, message.expire_le)
 
 
 def lien_d_invitation_admis(lien: str, origines: frozenset[str]) -> bool:

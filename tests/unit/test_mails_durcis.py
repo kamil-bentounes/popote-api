@@ -25,11 +25,12 @@ ADRESSE = "claire@example.org"
 LIEN = "https://essai.notre-popote.fr/invitation#jeton-secret"
 EXPIRE_LE = datetime(2026, 11, 20, 10, 30, tzinfo=UTC)
 MAINTENANT = datetime(2026, 11, 13, 9, 30, 15, tzinfo=UTC)
+ECHEANCE_DU_CODE = MAINTENANT + timedelta(minutes=10)
 ORIGINES = reglages("essai").origines
 
 
 def code() -> MessageCode:
-    return MessageCode(ADRESSE, "123456", 10)
+    return MessageCode(ADRESSE, "123456", 10, ECHEANCE_DU_CODE)
 
 
 def invitation(lien: str = LIEN, destinataire: str = ADRESSE) -> MessageInvitation:
@@ -97,15 +98,29 @@ async def test_un_nom_qui_ne_correspond_pas_au_message_est_refuse() -> None:
 # --- L'enveloppe : seule chose que les réalisations transmettent -----------------------------------------
 
 
-def test_l_enveloppe_du_code_expire_a_l_heure_de_l_envoi_plus_la_validite() -> None:
-    enveloppe = textes.enveloppe_du_code(MessageCode(ADRESSE, "123456", 7), MAINTENANT)
-    assert enveloppe.expire_le == MAINTENANT + timedelta(minutes=7)
+def test_l_enveloppe_du_code_porte_l_echeance_du_message_sans_la_recalculer() -> None:
+    echeance = datetime(2026, 11, 13, 9, 41, 2, tzinfo=UTC)  # ni l'heure de l'envoi, ni la validité du texte
+    enveloppe = textes.enveloppe_du_code(MessageCode(ADRESSE, "123456", 7, echeance))
+    assert enveloppe.expire_le == echeance
     assert textes.enveloppe_de_l_invitation(invitation(), ORIGINES).expire_le is None
 
 
 def test_une_enveloppe_refuse_une_heure_d_expiration_sans_fuseau() -> None:
     with pytest.raises(ValueError, match="fuseau"):
-        textes.enveloppe_du_code(code(), datetime(2026, 11, 13, 9, 30))
+        Enveloppe(ADRESSE, textes.OBJET_DU_CODE, "texte", textes._CACHET, datetime(2026, 11, 13, 9, 30))
+
+
+@pytest.mark.parametrize("echeance", [datetime(2026, 11, 13, 9, 30), "2026-11-13T09:30:00+00:00", None, 1.5])
+def test_un_message_de_code_refuse_une_echeance_sans_fuseau_ou_qui_n_est_pas_une_date(
+    echeance: object,
+) -> None:
+    with pytest.raises(ValueError, match="expire_le"):
+        MessageCode(ADRESSE, "123456", 10, echeance)  # type: ignore[arg-type]
+
+
+def test_le_repr_d_un_message_de_code_ne_porte_ni_adresse_ni_code_ni_echeance() -> None:
+    rendu = repr(code())
+    assert ADRESSE not in rendu and "123456" not in rendu and "2026" not in rendu
 
 
 def test_une_enveloppe_refuse_un_objet_qui_est_une_sous_classe_de_str_a_l_egalite_truquee() -> None:
@@ -124,7 +139,7 @@ def test_une_enveloppe_refuse_un_objet_qui_est_une_sous_classe_de_str_a_l_egalit
 
 class Realisation(EnvoiParEnveloppe):
     def __init__(self, origines: frozenset[str]) -> None:
-        super().__init__(origines, maintenant=lambda: MAINTENANT)
+        super().__init__(origines)
         self.recues: list[object] = []
 
     async def _transmet(self, enveloppe: Enveloppe) -> None:
@@ -140,7 +155,7 @@ async def test_une_realisation_ne_recoit_que_des_enveloppes_au_objet_constant() 
         textes.OBJET_DU_CODE,
         "Marc t'a gardé une place en cuisine",
     ]  # type: ignore[attr-defined]
-    assert realisation.recues[0].expire_le == MAINTENANT + timedelta(minutes=10)  # type: ignore[attr-defined]
+    assert realisation.recues[0].expire_le == ECHEANCE_DU_CODE  # type: ignore[attr-defined]
 
 
 async def test_une_realisation_refuse_un_lien_hors_des_origines_de_son_environnement() -> None:
@@ -155,14 +170,14 @@ def test_une_realisation_se_derive_des_origines_de_l_environnement() -> None:
 
 
 def test_le_repr_d_une_enveloppe_ne_porte_rien() -> None:
-    enveloppe = textes.enveloppe_du_code(code(), MAINTENANT)
+    enveloppe = textes.enveloppe_du_code(code())
     rendu = f"{enveloppe!r} {enveloppe}"
     for secret in (ADRESSE, "123456", "Popote"):
         assert secret not in rendu
 
 
 def test_l_enveloppe_du_code_porte_le_texte_et_l_objet_constants() -> None:
-    enveloppe = textes.enveloppe_du_code(code(), MAINTENANT)
+    enveloppe = textes.enveloppe_du_code(code())
     assert enveloppe.destinataire == ADRESSE
     assert enveloppe.objet == textes.OBJET_DU_CODE
     assert enveloppe.texte == textes.texte_du_code(code())
@@ -235,7 +250,7 @@ def test_l_objet_de_l_invitation_ne_porte_ni_l_invite_ni_le_lien() -> None:
 
 
 def test_l_objet_du_code_ne_porte_pas_le_code_et_celui_de_l_invitation_ni_prenom_ni_lien() -> None:
-    assert "123456" not in textes.enveloppe_du_code(code(), MAINTENANT).objet
+    assert "123456" not in textes.enveloppe_du_code(code()).objet
     objet = textes.enveloppe_de_l_invitation(invitation(), ORIGINES).objet
     assert "Claire" not in objet and "jeton-secret" not in objet
 
@@ -269,7 +284,7 @@ ADRESSES_REFUSEES = [
 @pytest.mark.parametrize("adresse", ADRESSES_REFUSEES)
 def test_un_destinataire_qui_n_est_pas_une_seule_adresse_stricte_est_refuse(adresse: str) -> None:
     with pytest.raises(ValueError, match="destinataire"):
-        MessageCode(adresse, "123456", 10)
+        MessageCode(adresse, "123456", 10, ECHEANCE_DU_CODE)
     with pytest.raises(ValueError, match="destinataire"):
         invitation(destinataire=adresse)
 
@@ -282,17 +297,19 @@ def adresse_de(longueur: int, local: int = 64) -> str:
 
 def test_un_destinataire_de_254_caracteres_passe_255_non() -> None:
     assert len(adresse_de(254)) == 254 and len(adresse_de(255)) == 255
-    assert MessageCode(adresse_de(254), "123456", 10).destinataire == adresse_de(254)
+    assert MessageCode(adresse_de(254), "123456", 10, ECHEANCE_DU_CODE).destinataire == adresse_de(254)
     with pytest.raises(ValueError, match="destinataire"):
-        MessageCode(adresse_de(255), "123456", 10)
+        MessageCode(adresse_de(255), "123456", 10, ECHEANCE_DU_CODE)
 
 
 def test_une_partie_locale_de_64_caracteres_passe_65_non() -> None:
-    assert MessageCode("x" * 64 + "@example.org", "123456", 10)
+    assert MessageCode("x" * 64 + "@example.org", "123456", 10, ECHEANCE_DU_CODE)
     for adresse in ("x" * 65 + "@example.org", "x" * 65 + "@b.fr"):
         with pytest.raises(ValueError, match="destinataire"):
-            MessageCode(adresse, "123456", 10)
-    assert MessageCode("a.b+c@example.org", "123456", 10).destinataire == "a.b+c@example.org"
+            MessageCode(adresse, "123456", 10, ECHEANCE_DU_CODE)
+    assert (
+        MessageCode("a.b+c@example.org", "123456", 10, ECHEANCE_DU_CODE).destinataire == "a.b+c@example.org"
+    )
 
 
 # --- Le lien d'invitation ---------------------------------------------------------------------------------

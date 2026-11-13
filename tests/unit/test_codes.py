@@ -6,6 +6,7 @@ import re
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
@@ -201,7 +202,8 @@ def etat(base: BaseFausse, mails: object) -> SimpleNamespace:
     return SimpleNamespace(base=base, settings=reglages("local"), mails=mails)
 
 
-COURRIER = Courrier("destinataire@x.fr", "246810")
+ECHEANCE = datetime(2026, 11, 13, 10, 0, tzinfo=UTC)
+COURRIER = Courrier("destinataire@x.fr", "246810", ECHEANCE)
 
 
 async def test_un_envoi_passe_par_le_coupe_circuit_puis_part_avec_dix_minutes() -> None:
@@ -209,6 +211,7 @@ async def test_un_envoi_passe_par_le_coupe_circuit_puis_part_avec_dix_minutes() 
     await envoie_le_courrier(etat(BaseFausse(0), boite), COURRIER)  # type: ignore[arg-type]
     (message,) = boite.codes
     assert (message.destinataire, message.code, message.validite_min) == ("destinataire@x.fr", "246810", 10)
+    assert message.expire_le == ECHEANCE  # l'échéance fixée à la demande, pas recalculée à l'envoi
 
 
 async def test_un_coupe_circuit_ouvert_jette_le_mail_et_le_dit_sans_adresse_ni_code(
@@ -239,7 +242,7 @@ async def test_une_adresse_qui_ne_fait_pas_un_message_valide_est_jetee_et_journa
 ) -> None:
     boite = BoiteDeTest()
     caplog.set_level(logging.DEBUG)
-    await envoie_le_courrier(etat(BaseFausse(0), boite), Courrier("a b@x.fr", "246810"))  # type: ignore[arg-type]
+    await envoie_le_courrier(etat(BaseFausse(0), boite), Courrier("a b@x.fr", "246810", ECHEANCE))  # type: ignore[arg-type]
     assert boite.codes == [] and "message invalide (ValueError)" in caplog.text
     assert "a b@x.fr" not in caplog.text and "246810" not in caplog.text
 

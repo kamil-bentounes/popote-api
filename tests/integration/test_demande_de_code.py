@@ -12,6 +12,7 @@ import re
 import statistics
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -205,6 +206,15 @@ class TestQuiRecoitUnCode:
         assert bytes(ligne[2]) == moi.banc.empreintes.empreinte_du_code(identifiant, cle, message.code)
         assert ligne[3] == 0 and ligne[6] is None and ligne[7] is None
         assert (ligne[5] - ligne[4]).total_seconds() == 600
+        # L'échéance du mail est fixée à la demande, avant la base : jamais après celle de la ligne.
+        assert message.expire_le <= ligne[5] and (ligne[5] - message.expire_le).total_seconds() < 5
+
+    async def test_l_echeance_du_mail_est_celle_de_la_demande_plus_dix_minutes(self, moi: Personne) -> None:
+        instant = datetime(2031, 5, 4, 12, 0, 0, tzinfo=UTC)
+        moi.banc.app.state.horloge = lambda: instant
+        await demande(moi, moi.email)
+        (message,) = boite(moi).codes
+        assert message.expire_le == instant + timedelta(minutes=10)
 
     async def test_l_adresse_se_normalise_comme_ailleurs(self, moi: Personne) -> None:
         pleine_largeur = "".join(
