@@ -225,6 +225,34 @@ refusent de démarrer avec autre chose que `hibp`.
   (`login-session-purge`, 03 h 53 UTC).
 
 
+### 4.5 La connexion (0.4, `POST /api/v1/sessions` ; code : `security/connexion.py`, `security/cookie.py`, `api/connexion.py`)
+
+- **Ordre, qui est la sécurité de la route.** Corps validé (e-mail 254, mot de passe 256, champs inconnus refusés)
+  -> clés HMAC (`email_normalise`, B24) -> `prend_les_creneaux` (IP d'abord, B6) -> `verifie_mot_de_passe` pour
+  chaque candidat de `candidats_de_connexion`. Un créneau refusé (`429` + `Retry-After`) n'appelle **jamais** la
+  vérification : aucun `crypt()` pour qui martèle. Un mot de passe sans candidat (plus de 72 octets) échoue sans
+  appel à la base. Sans poivre, la route répond `503` : on ne compte pas sans clé.
+- **Une seule transaction** (`base.connexion()`), validée aussi sur un refus : le compteur et l'événement d'un
+  échec ne s'annulent pas avec lui.
+- **Un seul refus.** `401 identifiants_incorrects`, « E-mail ou mot de passe incorrect. », que le compte soit
+  inconnu, banni, supprimé, sans hachage, en `$2y$` ou que le mot de passe soit faux ; même corps, mêmes en-têtes,
+  aucun `Set-Cookie`. Un compte inconnu prend créneau, `crypt()` factice et événement comme un compte connu
+  (temps comparable, mesuré). Le message ne dit rien de la limite par compte ou par IP.
+- **Jeton.** Tiré par le serveur (`jeton_neuf`, 32 octets) ; celui d'un cookie du client n'est jamais adopté. La
+  base ne garde que l'empreinte. Le corps de la réponse (`{"id"}`) ne porte pas le jeton.
+- **Cookie** (`security/cookie.py`, seul endroit qui écrit ses attributs) : `__Host-popote_session`, `HttpOnly`,
+  `Secure`, `SameSite=Lax`, `Path=/`, sans `Domain`, `Max-Age` 90 jours (le serveur tient les 30 jours glissants).
+  Hors local, démarrer avec un autre nom ou sans `Secure` (`POPOTE_SESSION_COOKIE_SECURE=false`) est refusé.
+- **Cookie déjà présent (B22).** Une connexion réussie révoque la session présentée si elle est valide (événement
+  `session_fermee`, écrit par la base) ; un cookie invalide est ignoré. Un échec ne ferme rien.
+- **Journal.** `connexion_reussie` (personne et session), `connexion_ratee` et `connexion_bloquee` (clé de compte
+  seule : ni e-mail, ni IP, ni agent). `connexion_bloquee` s'écrit une fois par fenêtre de blocage et par clé
+  (B21) : le blocage du compte et celui de l'IP sont deux fenêtres, donc au plus deux événements.
+- **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait
+  un jeton en base ; chaque succès ouvre une session neuve, chaque échec se compte.
+- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus
+  60 minutes ; « mot de passe oublié » reste ouvert (foyer de deux personnes).
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |

@@ -9,6 +9,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Any, Final
 from uuid import UUID
 
@@ -51,6 +52,8 @@ class PersonneConnectee:
     """La personne de la session, et la transaction qui agit comme elle."""
 
     id: UUID
+    session: UUID  # la session présentée : la réauthentification et la déconnexion visent celle-ci
+    reauth_at: datetime
     # Ce qui identifie la session sans la révéler : la clé de la limite de débit par personne.
     empreinte_de_session: bytes
     curseur: Curseur
@@ -77,14 +80,14 @@ async def personne_connectee(request: Request) -> AsyncIterator[PersonneConnecte
     base: Base = request.app.state.base
     async with AsyncExitStack() as pile:
         try:
-            personne_id, curseur = await pile.enter_async_context(base.session(empreinte))
+            lue, curseur = await pile.enter_async_context(base.session(empreinte))
         except SessionRefuseeError as erreur:
             raise _refus("inconnue") from erreur
         setattr(request.state, ETAT_SESSION_VALIDEE, True)
         # La limite par personne ne se compte qu'une fois la session validée : un cookie inventé n'ouvre
         # aucun compteur. Sa clé est l'identifiant de la personne (toutes ses sessions comptent ensemble).
-        await limite_par_personne(request, str(personne_id))
-        yield PersonneConnectee(personne_id, empreinte, curseur)
+        await limite_par_personne(request, str(lue.personne))
+        yield PersonneConnectee(lue.personne, lue.session, lue.reauth_at, empreinte, curseur)
 
 
 # `scope="function"` : la transaction se valide quand la route a fini, AVANT que la réponse parte. Sans cela

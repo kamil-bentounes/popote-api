@@ -9,10 +9,11 @@ from popote_api.api import v1
 from popote_api.main import create_app
 from popote_api.security.idempotence import METHODES_A_CLE, RouteIdempotente
 
-# Les écritures de `/api/v1` qui n'ont pas besoin de clé, chacune avec sa raison. Vide : la connexion et
-# l'acceptation d'une invitation n'ont pas de session, donc se montent hors de `/api/v1` (leur jeton à usage
-# unique les protège), et aucune écriture de 0.3 n'a d'effet à ne pas doubler.
-LISTE_BLANCHE: dict[str, str] = {}
+# Les écritures de `/api/v1` qui n'ont pas besoin de clé, chacune avec sa raison. Une écriture PUBLIQUE n'a
+# pas de personne, donc pas de clé d'idempotence, et rejouer sa réponse garderait un jeton en base.
+LISTE_BLANCHE: dict[str, str] = {
+    "/api/v1/sessions": "connexion : publique ; chaque succès ouvre une session neuve, un échec se compte",
+}
 PREFIXE = "/api/v1/"
 
 

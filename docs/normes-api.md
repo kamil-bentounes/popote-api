@@ -290,7 +290,13 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 ## 3.10 Par défaut, fermé
 
 - Toute route exige une session, sauf une liste écrite : connexion, lecture et acceptation d'une invitation,
-  demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`.
+  demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`. La liste est la constante
+  `ROUTES_PUBLIQUES` (`routes_publiques.py`, reprise par `main.py`), chaque entrée avec sa raison ; un test
+  d'architecture exige `personne_connectee` sur toute autre route. Sous `/api/v1/`, une route publique rend ses
+  propres `422` et `405` (les autres rendent `401` tant qu'aucune session n'est validée).
+- **`POST /api/v1/sessions`** (connexion, publique) : `201` + `Set-Cookie`, corps `{id}` sans jeton ; `401
+  identifiants_incorrects` ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
+  (exemption écrite dans `tests/unit/test_posts_idempotents.py`). Détail : `docs/securite.md` § 4.5.
 - **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
   que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
   (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte

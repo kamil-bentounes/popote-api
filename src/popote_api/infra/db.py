@@ -22,6 +22,8 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, LiteralString, Self
 from uuid import UUID
 
@@ -62,7 +64,7 @@ DELAI_DE_LA_BASE_DU_SERVICE = "20s"
 ROLE_PERSONNE: LiteralString = "set local role authenticated"
 PREAMBULE_PERSONNE: LiteralString = f"{ROLE_PERSONNE}; {DELAIS_API}"
 # La personne de la session, ou null. Se lit sous le rôle de connexion : `authenticated` n'a pas le droit.
-LIT_LA_SESSION: LiteralString = "select public.session_personne(%s) as personne"
+LIT_LA_SESSION: LiteralString = "select person_id, session_id, reauth_at from public.session_courante(%s)"
 PREAMBULE_CONNEXION: LiteralString = DELAIS_API  # pas de `set role` : la transaction reste `popote_api`
 PREAMBULE_SERVICE: LiteralString = (
     f"set local role service_role; {DELAIS_INTERNE}; "
@@ -104,6 +106,15 @@ type Pool = AsyncConnectionPool[AsyncConnection[Any]]
 
 class BaseError(Exception):
     """Racine des échecs d'accès à la base qui ne viennent pas de psycopg."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCourante:
+    """Ce que rend la lecture d'une session valide : personne, session, dernière réauthentification."""
+
+    personne: UUID
+    session: UUID
+    reauth_at: datetime
 
 
 class SessionRefuseeError(Exception):
@@ -193,7 +204,7 @@ class Base:
         revendications = revendications_personne(personne_id, self._emetteur)
         return _contexte(self._api, PREAMBULE_PERSONNE, revendications, BaseIndisponibleError())
 
-    def session(self, empreinte: bytes) -> AbstractAsyncContextManager[tuple[UUID, Curseur]]:
+    def session(self, empreinte: bytes) -> AbstractAsyncContextManager[tuple[SessionCourante, Curseur]]:
         """Une transaction qui lit la session, puis agit comme sa personne ; `SessionRefuseeError` sinon.
 
         Un seul emprunt au pool par requête : la lecture de la session (qui repousse son échéance) et tout le
@@ -263,19 +274,19 @@ async def _contexte(
 @asynccontextmanager
 async def _contexte_de_session(
     pool: Pool | None, empreinte: bytes, emetteur: str | None
-) -> AsyncIterator[tuple[UUID, Curseur]]:
+) -> AsyncIterator[tuple[SessionCourante, Curseur]]:
     async with _transaction(pool, BaseIndisponibleError()) as curseur:
         # Les délais d'abord : la lecture de la session est elle aussi bornée. Elle se fait encore sous le
-        # rôle de connexion, le seul à pouvoir exécuter `session_personne` ; `authenticated` vient après.
+        # rôle de connexion, le seul à pouvoir exécuter `session_courante` ; `authenticated` vient après.
         await curseur.execute(DELAIS_API)
         await curseur.execute(LIT_LA_SESSION, (empreinte,))
         ligne = await curseur.fetchone()
-        if ligne is None or ligne["personne"] is None:
+        if ligne is None:
             raise SessionRefuseeError
-        personne_id: UUID = ligne["personne"]
+        session = SessionCourante(ligne["person_id"], ligne["session_id"], ligne["reauth_at"])
         await curseur.execute(ROLE_PERSONNE)
-        await _pose_les_revendications(curseur, revendications_personne(personne_id, emetteur))
-        yield personne_id, curseur
+        await _pose_les_revendications(curseur, revendications_personne(session.personne, emetteur))
+        yield session, curseur
 
 
 class SondeBase:
