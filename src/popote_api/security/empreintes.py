@@ -27,6 +27,7 @@ LONGUEUR_DU_POIVRE_LOCAL = 32
 ETIQUETTE_COMPTE = b"popote/compte/v1\x00"
 ETIQUETTE_IP = b"popote/ip/v1\x00"
 ETIQUETTE_REINITIALISATION = b"popote/reinit/v1\x00"
+ETIQUETTE_LIEN = b"popote/lien/v1\x00"
 # Une requête sans adresse (relais absent ou invalide) : une clé commune, jamais « personne ».
 IP_ABSENTE = "sans-ip"
 PREFIXE_IPV6 = 64  # une IPv6 se regroupe par /64 : un foyer reçoit au moins un /64 (B12)
@@ -106,6 +107,14 @@ class Empreintes:
 
     def cle_reinitialisation_requise(self, email: str, ip: str | None) -> bytes:
         cle = self.cle_reinitialisation(email, ip)
+        if cle is None:
+            raise PoivreAbsentError
+        return cle
+
+    def cle_lien_requise(self, empreinte_du_lien: bytes) -> bytes:
+        """La clé de limite d'un lien d'invitation : un HMAC de son empreinte (la table des limites ne garde
+        donc jamais l'empreinte elle-même)."""
+        cle = self._hmac(ETIQUETTE_LIEN, empreinte_du_lien.hex())
         if cle is None:
             raise PoivreAbsentError
         return cle

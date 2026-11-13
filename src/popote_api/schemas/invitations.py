@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from popote_api.schemas.base import Sortie
+from popote_api.schemas.base import Entree, Sortie
 
 
 class InvitationCreee(Sortie):
@@ -27,3 +27,27 @@ class InvitationEnAttente(Sortie):
     id: UUID
     created_at: datetime
     expires_at: datetime = Field(description="Échéance du lien : sept jours après la création.")
+
+
+class InspectionDemandee(Entree):
+    """Le lien à lire, dans le corps : jamais dans l'adresse de la route (journaux d'accès)."""
+
+    token: str = Field(max_length=256, description="Le jeton du lien.", repr=False)
+
+
+class InvitationInspectee(Sortie):
+    """Ce que voit la personne invitée avant de créer son compte : jamais d'adresse."""
+
+    invited_by: str | None = Field(description="Le prénom de qui invite, ou `null`.")
+    expires_at: datetime = Field(description="Échéance du lien.")
+
+
+class AcceptationDemandee(Entree):
+    token: str = Field(max_length=256, description="Le jeton du lien.", repr=False)
+    email: str = Field(max_length=254, description="L'adresse du compte à créer.", repr=False)
+    password: str = Field(
+        max_length=256,
+        description="Le mot de passe du compte à créer.",
+        json_schema_extra={"format": "password"},
+        repr=False,
+    )

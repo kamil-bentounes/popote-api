@@ -536,3 +536,42 @@ fermeture retirera ce droit : il faudra alors retirer le `xfail`.
   révoqué ou échu), `utilisee` (`409`) ou `inconnue` (`404` : autre foyer ou rien, sans effet, sans événement) ;
   l'événement `invitation_revoquee` n'est écrit que lorsqu'un lien passe réellement à révoqué, dans la même transaction.
 - **Compatibilité avec l'appli en ligne** : table et fonctions neuves ; `invitation`, `invite` et `accept-invite` intacts.
+
+### 4.10 Lire et accepter une invitation (0.4 T13, migration 0144 ; code : `api/invitations_publiques.py`, `security/acceptation_invitation.py`, `infra/comptes.py`)
+
+Deux routes publiques : `POST /api/v1/invitations/inspections` `{token}` et `/acceptances` `{token, email, password}`. Le
+jeton voyage dans le **corps** (jamais dans l'adresse), son empreinte est le SHA-256 de la chaîne ASCII reçue
+(comme à la création). Aucun jeton, empreinte, adresse, mot de passe ni IP dans un journal, une réponse ou la table
+d'idempotence (pas d'`Idempotency-Key` : exemption écrite).
+
+**Ordre de l'acceptation (B1), rien ne s'exécute avant l'étape qui précède** : (1) limite `invitation_ip` (30 par
+15 min, /64 en IPv6) ; (2) lecture sans effet du lien : inconnu ou mal formé `404` (même corps), expiré / utilisé /
+révoqué `410` : un jeton inconnu n'apprend rien sur les adresses et ne coûte ni liste de fuites ni appel à Auth ; (3)
+limite `invitation_link` (10 par 15 min et par lien, clé = HMAC de l'empreinte) ; (4) adresse (`email_normalise`,
+ASCII fermé, 254 au plus : `422`), règles du mot de passe, liste de fuites ; (5) l'adresse a-t-elle un compte :
+`409 compte_existant`, lien **non consommé** ; (6) consommation atomique (`consomme_invitation` : un seul `update`) ;
+(7) création du compte (Auth), profil dans le foyer du lien, session, événements. `429` + `Retry-After`. Les scopes
+sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien avec les 20 créneaux de connexion d'une IP.
+
+- **Échecs après la consommation** : le lien est brûlé (l'hôte en recrée : 10 par jour), **sauf** la course d'adresse
+  (B20) : si Auth rend `compte déjà existant`, `rend_invitation` rouvre le lien et la réponse est `409`. Un échec du
+  profil supprime le compte créé ; si cette compensation échoue aussi, l'erreur `compte_orphelin_a_nettoyer`
+  (identifiant de personne, jamais d'adresse) est journalisée et la réponse est `503`.
+- **Reprise d'un compte (B10)** : seulement un compte **sans profil, sans foyer et sans hachage de mot de passe**
+  (reste d'un ancien lien magique : rien à prendre), sans identité d'un autre fournisseur (Google...), non SSO, non banni, non supprimé ; l'état est relu après la consommation du lien, et rien n'est posé si le compte a changé entre-temps. Tout autre compte existant (profil ou
+  hachage) : `409`, lien non consommé. L'adresse est **réservée 60 s** (`reprise_en_cours`, clé = HMAC de l'adresse)
+  pour toute création ou reprise : deux liens visant la même adresse ne s'exécutent jamais ensemble, le perdant a `409`
+  sans appeler Auth. Reprise : `updateUserById` (mot de passe, e-mail confirmé), profil, session, événement
+  `compte_repris`. Si le profil échoue après le mot de passe, le compte (qui existait avant) n'est pas supprimé : il
+  est signalé `compte_orphelin_a_nettoyer` (réparation : `docs/exploitation.md`). La réservation a un propriétaire :
+  seul lui la libère. Si Auth crée un compte puis répond mal, le compte sans profil est retiré (adresse libérée).
+  Risque accepté : une requête annulée (arrêt du processus) entre la création et le profil laisse un compte à
+  nettoyer par la requête de `docs/exploitation.md`.
+- **Liste de fuites hors service (B23)** : le mot de passe est accepté, l'événement `verification_fuites_indisponible`
+  est écrit (aucune valeur).
+- **Énumération d'adresses** : le `409` n'est rendu qu'à qui détient un lien valide, au plus 10 essais par lien et 30
+  par IP en 15 min ; un jeton inconnu rend toujours `404`. Risque accepté (spec § 4 : refus si l'adresse a un compte).
+- **Droits** : `consomme_invitation`, `rend_invitation`, `termine_invitation`, `compte_pour_email`, `reserve_reprise`,
+  `libere_reprise` : `service_role` seul ; `etat_invitation` et `prend_un_creneau_invitation` : `popote_api` et
+  `service_role`. `authenticated` et `anon` : rien. Le contexte service n'est ouvert que par
+  `security/acceptation_invitation.py` (liste fermée de `base.service()`).

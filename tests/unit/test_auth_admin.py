@@ -104,6 +104,15 @@ async def test_change_mot_de_passe_envoie_put_avec_le_seul_mot_de_passe() -> Non
     assert requete.headers["apikey"] == CLE and "authorization" not in requete.headers
 
 
+async def test_change_mot_de_passe_peut_confirmer_l_email() -> None:
+    admin, vues = client(lambda _: utilisateur())
+
+    await admin.change_mot_de_passe(IDENTIFIANT, MOT_DE_PASSE, confirme_l_email=True)
+
+    (requete,) = vues
+    assert json.loads(requete.content) == {"password": MOT_DE_PASSE, "email_confirm": True}
+
+
 async def test_supprime_compte_envoie_delete_sans_corps() -> None:
     admin, vues = client(lambda _: httpx.Response(200, json={}))
 

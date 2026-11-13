@@ -161,13 +161,19 @@ class AuthAdmin:
                 reponse.status, None, "Réponse d'Auth illisible à la création d'un compte"
             ) from None
 
-    async def change_mot_de_passe(self, identifiant: UUID, mot_de_passe: str) -> None:
-        """Remplace le mot de passe du compte. Lève `MotDePasseRefuseParAuth` ou `AuthIndisponible`.
+    async def change_mot_de_passe(
+        self, identifiant: UUID, mot_de_passe: str, *, confirme_l_email: bool = False
+    ) -> None:
+        """Remplace le mot de passe du compte (et, si demandé, marque son e-mail confirmé : reprise d'un
+        compte sans mot de passe, B10). Lève `MotDePasseRefuseParAuth` ou `AuthIndisponible`.
 
         Un identifiant que Auth ne connaît pas lève `ReponseAuthInattendue` (`code=user_not_found`).
         """
         self._exige_un_mot_de_passe_transmissible(mot_de_passe)
-        reponse = await self._appelle("PUT", _chemin_du_compte(identifiant), {"password": mot_de_passe})
+        corps: dict[str, Any] = {"password": mot_de_passe}
+        if confirme_l_email:
+            corps["email_confirm"] = True
+        reponse = await self._appelle("PUT", _chemin_du_compte(identifiant), corps)
         if not reponse.reussi:
             raise self._echec(reponse)
         # Auth rend le compte modifié : sa présence, avec le bon identifiant, distingue un vrai succès
