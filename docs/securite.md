@@ -745,8 +745,9 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   l'enveloppe. (1) **La clé n'est lue que par ce module** : test d'architecture (aucun autre fichier de `src/` ne nomme
   `scaleway_tem_secret_key`, hors réglages et fabrique, ni n'en appelle `get_secret_value` ; deux lectures dans le module, jamais passées à
   un autre code) ; `SecretStr`, `repr` des réglages et de l'envoi masqués, clé refusée à la construction si ce n'est pas un UUID (forme des
-  clés Scaleway ; un blanc ou un caractère hors ASCII ferait recopier la clé par h11 dans son message) ; expéditeur limité au domaine vérifié
-  `notre-popote.fr` (réglages et objet `Expediteur`). (2) **Aucune donnée dans les journaux ni les exceptions** : ni clé, ni
+  clés Scaleway ; un blanc ou un caractère hors ASCII ferait recopier la clé par h11 dans son message) ; expéditeur (adresse et nom) limité au
+  domaine vérifié `notre-popote.fr` et sans caractère d'en-tête ni mot encodé `=?`, projet de type `UUID` : tout est revalidé dans la fabrique,
+  même si les réglages sont contournés (`model_construct`, `model_copy`). La clé n'est gardée que sous le nom `_cle_tem`, que le test d'architecture traite comme la clé. (2) **Aucune donnée dans les journaux ni les exceptions** : ni clé, ni
   adresse, ni objet, ni texte, ni corps de réponse ; seuls le type de l'erreur et la classe du statut (`4xx`, `5xx`). (3) Délais finis
   (3 s, 5 s, 15 s au total), aucune exception d'httpx chaînée (elle porte la requête entière : clé, adresse, texte ; on n'en garde que le
   type, dans une cause neuve sans pile) ; l'issue d'une tentative est un résultat (`_Issue`), pas une exception, et l'erreur finale est levée hors de tout
@@ -758,14 +759,19 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   se voit que dans la console TEM). (6) **Un code expiré n'est jamais livré** : `send_before` est `enveloppe.expire_le`, l'échéance
   ABSOLUE fixée une fois à la demande du code (`MessageCode.expire_le`), tronquée à la seconde, identique à la reprise et **jamais
   recalculée à l'envoi** ; un code déjà expiré n'est pas envoyé (les deux heures se comparent tronquées, comme TEM les verra). (7) L'annulation de la tâche n'est ni avalée ni reprise. (8) **Issue
-  inconnue** : `MailIndisponible(issue_inconnue=True)` quand le mail a pu partir : coupure, délai (de requête ou total tombé pendant une
-  requête en vol), `2xx` illisible ou à l'état `unknown`, `502` ou `504`, exception étrangère du transport. Elle **cumule** les tentatives :
-  une première tentative sans réponse laisse l'issue inconnue quoi que dise la seconde. Elle est fausse pour un `4xx`, un `500` ou `503`, un état `failed` ou
-  `canceled`, et pour un délai total tombé pendant la pause entre deux tentatives sans incertitude. Un statut reçu décide, même si le corps ou la
-  fermeture casse ensuite. (9) **Sentry (décidé le 13/11) :** la clé et l'adresse du destinataire sont des
-  variables locales de `mail_scaleway.py` (`_poste`, `_transmet`) et des appelants (le message) pendant l'envoi, donc dans les cadres de toute
-  pile qui traverse ces fonctions : aucun code ne peut les en retirer ; à l'installation de Sentry, `include_local_variables=False` et
-  `send_default_pii=False` sont **obligatoires**, avec un `before_send` qui retire les `vars` des cadres de pile. `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
+  inconnue** : `MailIndisponible(issue_inconnue=True)` quand le mail a pu partir : coupure après l'envoi de la requête, délai (de requête ou
+  total tombé pendant une requête en vol), tout `5xx` (TEM a pu enregistrer le mail avant d'échouer à répondre), `2xx` illisible ou à l'état
+  `unknown`, exception étrangère du transport. Elle **cumule** les tentatives : une première tentative incertaine laisse l'issue
+  inconnue quoi que dise la seconde. Elle est fausse pour un `4xx`, un état `failed` ou `canceled`, une **connexion impossible** (la requête
+  n'est jamais partie : `ConnectError`, `ConnectTimeout`, `PoolTimeout`, reprise sans risque) et pour un délai total tombé pendant la pause
+  après une telle tentative. Un statut reçu décide, même si le corps ou la fermeture casse ensuite. **La reprise recontrôle l'échéance du
+  code** (sans toucher à `send_before`) : un code expiré pendant la pause n'est pas reposté. (9) **Règle globale : aucun outil ne capture les variables locales des cadres d'une pile.** La clé et l'adresse
+  du destinataire sont des variables locales de `mail_scaleway.py` (`_transmet`, `_poste`) et des appelants (le message) pendant l'envoi,
+  donc dans les cadres de toute pile qui traverse ces fonctions : aucun code ne peut les en retirer, on garantit donc qu'aucun outil ne les
+  lit. Sentry (décidé le 13/11) arrivera avec `include_local_variables=False`, `send_default_pii=False` et `max_request_body_size="never"` ;
+  un test d'architecture échoue si `sentry_sdk.init` apparaît sans ces trois réglages, ou si `show_locals`, `rich.traceback` ou
+  `TracebackException(capture_locals=True)` apparaît dans `src/`. La clé reste un `SecretStr` jusqu'au dernier moment : la valeur brute
+  n'existe que dans `_cle_nettoyee` (à la construction) et dans `_en_tetes` (le temps de construire les en-têtes). `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
   ne jamais les appeler sur les réglages sans `include_input=False`. Sources, gestes de la
   clé, rotation et quota : `docs/exploitation.md`, « L'envoi réel ».
 - Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`, `tests/unit/test_mail_scaleway.py` (faux transport

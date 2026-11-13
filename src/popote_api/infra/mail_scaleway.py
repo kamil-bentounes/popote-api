@@ -37,7 +37,13 @@ from uuid import UUID
 import httpx
 from pydantic import SecretStr
 
-from popote_api.config import DOMAINE_D_ENVOI_VERIFIE, MailProvider, Settings
+from popote_api.config import (
+    DOMAINE_D_ENVOI_VERIFIE,
+    MailProvider,
+    Settings,
+    adresse_d_expedition_valide,
+    nom_d_expediteur_valide,
+)
 from popote_api.infra.mails import EnvoiParEnveloppe, MailIndisponible
 from popote_api.infra.mails_textes import Enveloppe
 
@@ -58,7 +64,6 @@ LONGUEUR_MIN_DE_L_OBJET: Final = 10  # exigence de TEM
 FORME_D_UNE_CLE: Final = re.compile(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 ETATS_ACCEPTES: Final = frozenset({"new", "sending", "sent"})
 ETATS_REFUSES: Final = frozenset({"failed", "canceled"})  # les seuls états qui excluent un envoi
-PASSERELLES: Final = frozenset({502, 504})
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +74,12 @@ class Expediteur:
     nom: str
 
     def __post_init__(self) -> None:
-        if self.adresse.rpartition("@")[2] != DOMAINE_D_ENVOI_VERIFIE:
+        if not adresse_d_expedition_valide(self.adresse):
             raise ValueError(
-                f"Expéditeur : une adresse de {DOMAINE_D_ENVOI_VERIFIE} (domaine vérifié chez TEM)."
+                f"Expéditeur : une adresse simple de {DOMAINE_D_ENVOI_VERIFIE} (domaine vérifié chez TEM)."
             )
+        if not nom_d_expediteur_valide(self.nom):
+            raise ValueError("Expéditeur : un nom affichable, sans caractère d'en-tête.")
 
 
 class _ReponseTropGrosse(Exception):
@@ -125,13 +132,14 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         pause: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         super().__init__(origines)
-        # Un retour à la ligne de fin (secret lu dans un fichier) ne fait pas partie de la clé.
-        propre = cle.get_secret_value().strip()
-        if FORME_D_UNE_CLE.fullmatch(propre) is None:
-            # Une clé Scaleway est un UUID ; toute autre forme est une faute de dépôt, ou, avec un blanc ou
-            # un caractère hors ASCII, ferait recopier la clé par h11 dans son message (donc au journal).
+        if type(projet) is not UUID:  # un réglage contourné (`model_construct`) peut y mettre une chaîne
+            raise ValueError("Projet d'envoi : un UUID est attendu.")
+        nettoyee = _cle_nettoyee(cle)  # la valeur brute ne vit que le temps de cet appel
+        if nettoyee is None:
+            # Une clé Scaleway est un UUID ; toute autre forme est une faute de dépôt, ou, avec un blanc ou un
+            # caractère hors ASCII, ferait recopier la clé par h11 dans son message (donc au journal).
             raise ValueError("Clé d'envoi Scaleway : un UUID est attendu.")
-        self._cle = SecretStr(propre)
+        self._cle_tem = nettoyee
         self._projet = projet
         self._expediteur = expediteur
         self._transport = transport
@@ -163,7 +171,7 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         issue: _Issue | None = None
         try:
             async with asyncio.timeout(DELAI_TOTAL_S):
-                issue = await self._essaie(charge, suivi)
+                issue = await self._essaie(charge, suivi, send_before)
         except TimeoutError:
             pass  # `issue` reste `None` ; on lève plus bas, hors du bloc : ni cause ni contexte
         if issue is None:
@@ -178,12 +186,18 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         cause = _CauseDeTransport(issue.type_de_la_cause) if issue.type_de_la_cause else None
         raise MailIndisponible(f"Scaleway TEM : {issue.raison}.", issue_inconnue=issue.inconnue) from cause
 
-    async def _essaie(self, charge: dict[str, Any], suivi: _Suivi) -> _Issue:
+    async def _essaie(self, charge: dict[str, Any], suivi: _Suivi, echeance: datetime | None) -> _Issue:
         """Une tentative, puis au plus une reprise ; rend l'issue finale (`inconnue` cumule les deux)."""
         issue = await self._tente(charge, suivi)
         if issue.reprenable:
             journal.warning("Envoi Scaleway TEM : %s, une reprise", issue.raison)
             await self._pause(issue.attente_s)
+            if echeance is not None and echeance <= _a_la_seconde(self._horloge()):
+                # Le code a expiré pendant la pause : le reposter le livrerait après sa mort. `send_before`
+                # ne bouge pas, on ne reprend simplement pas.
+                return replace(
+                    issue, raison="code expiré avant la reprise", reprenable=False, inconnue=suivi.inconnue
+                )
             issue = await self._tente(charge, suivi)
         # Une première tentative sans réponse a pu faire partir le mail, quoi que dise la seconde.
         return replace(issue, inconnue=suivi.inconnue)
@@ -194,6 +208,9 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         issue: _Issue
         try:
             issue = _juge(await self._poste(charge))
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as erreur:
+            # La requête n'est jamais partie : rien n'a pu être accepté, la reprise est sans risque.
+            issue = _Issue(False, "connexion impossible", True, False, type_de_la_cause=type(erreur).__name__)
         except httpx.TimeoutException as erreur:
             issue = _Issue(
                 False, "délai de lecture ou de connexion", True, True, type_de_la_cause=type(erreur).__name__
@@ -206,12 +223,15 @@ class EnvoiScaleway(EnvoiParEnveloppe):
         suivi.inconnue = suivi.inconnue or issue.inconnue
         return issue
 
-    async def _poste(self, charge: dict[str, Any]) -> _Reponse:
-        en_tetes = {
-            "X-Auth-Token": self._cle.get_secret_value(),
+    def _en_tetes(self) -> dict[str, str]:
+        """Les en-têtes de la requête : la seule place où la clé brute existe, le temps de la construire."""
+        return {
+            "X-Auth-Token": self._cle_tem.get_secret_value(),
             "Accept": "application/json",
             "Accept-Encoding": "identity",  # une réponse de quelques octets : rien à décompresser
         }
+
+    async def _poste(self, charge: dict[str, Any]) -> _Reponse:
         delais = httpx.Timeout(DELAI_LECTURE_S, connect=DELAI_CONNEXION_S, pool=DELAI_CONNEXION_S)
         vue: _Reponse | None = None
         try:
@@ -220,7 +240,7 @@ class EnvoiScaleway(EnvoiParEnveloppe):
                 httpx.AsyncClient(
                     timeout=delais, transport=self._transport, follow_redirects=False, trust_env=False
                 ) as client,
-                client.stream("POST", URL_DES_MAILS, headers=en_tetes, json=charge) as reponse,
+                client.stream("POST", URL_DES_MAILS, headers=self._en_tetes(), json=charge) as reponse,
             ):
                 vue = _Reponse(reponse.status_code, _attente_demandee(reponse), None)
                 if 200 <= vue.statut < 300:  # le corps ne se lit que sous un 2xx : un 5xx se reprend sans lui
@@ -237,6 +257,13 @@ class EnvoiScaleway(EnvoiParEnveloppe):
             raise
 
 
+def _cle_nettoyee(cle: SecretStr) -> SecretStr | None:
+    """La clé sans blanc de bord (un secret lu dans un fichier garde son saut de ligne), ou `None` si ce n'est
+    pas un UUID."""
+    propre = cle.get_secret_value().strip()
+    return SecretStr(propre) if FORME_D_UNE_CLE.fullmatch(propre) is not None else None
+
+
 def _a_la_seconde(quand: datetime) -> datetime:
     """UTC, microsecondes retirées : jamais plus tard que l'instant reçu."""
     return quand.astimezone(UTC).replace(microsecond=0)
@@ -245,8 +272,8 @@ def _a_la_seconde(quand: datetime) -> datetime:
 def _juge(reponse: _Reponse) -> _Issue:
     """L'issue d'une réponse reçue : acceptée, à reprendre (5xx) ou définitive."""
     if reponse.statut >= 500:
-        # Une passerelle (502, 504) peut répondre après que TEM a accepté le mail : issue inconnue.
-        return _Issue(False, "réponse 5xx", True, reponse.statut in PASSERELLES, reponse.attente_s)
+        # TEM a pu enregistrer le mail avant d'échouer à répondre (passerelle, 500) : issue inconnue.
+        return _Issue(False, "réponse 5xx", True, True, reponse.attente_s)
     if not 200 <= reponse.statut < 300:
         return _Issue(False, f"réponse {reponse.statut // 100}xx")
     # Sous un 2xx illisible, TEM a pu accepter le mail : l'issue est inconnue.

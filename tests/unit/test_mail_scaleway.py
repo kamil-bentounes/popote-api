@@ -106,7 +106,11 @@ def reponses_dans_l_ordre(*reponses: Reponse | httpx.Response) -> Reponse:
 
 
 def coupure(requete: httpx.Request) -> httpx.Response:
-    raise httpx.ConnectError("coupure", request=requete)
+    raise httpx.ReadError("coupure", request=requete)  # la requête est partie, la réponse manque
+
+
+def connexion_impossible(requete: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("impossible", request=requete)  # la requête n'est jamais partie
 
 
 def delai(requete: httpx.Request) -> httpx.Response:
@@ -212,6 +216,36 @@ async def test_l_expiration_se_juge_a_la_seconde_comme_le_fournisseur(
         with pytest.raises(MailIndisponible, match="expiré"):
             await boite.envoie_le_code(message)
         assert vues == []
+
+
+async def test_la_reprise_ne_reposte_pas_un_code_expire_pendant_la_pause() -> None:
+    heures = iter([HORLOGE, HORLOGE + timedelta(seconds=3)])
+    appels: list[httpx.Request] = []
+
+    def tem(requete: httpx.Request) -> httpx.Response:
+        appels.append(requete)
+        return httpx.Response(503)
+
+    boite = EnvoiScaleway(
+        SecretStr(CLE),
+        PROJET,
+        EXPEDITEUR,
+        ORIGINES,
+        transport=httpx.MockTransport(tem),
+        maintenant=lambda: next(heures),
+        pause=lambda _: asyncio.sleep(0),
+    )
+    echeance = HORLOGE + timedelta(seconds=2)  # valable à la première tentative, expiré après la pause
+    with pytest.raises(MailIndisponible, match="expiré avant la reprise") as erreur:
+        await boite.envoie_le_code(MessageCode(ADRESSE, CODE, 10, echeance))
+    assert len(appels) == 1
+    assert erreur.value.issue_inconnue is True  # le 503 du premier essai laisse un doute
+
+
+async def test_la_reprise_d_un_code_encore_valable_part_avec_le_meme_send_before() -> None:
+    boite, vues = envoi(reponses_dans_l_ordre(httpx.Response(503), ok()))
+    await boite.envoie_le_code(message_code())
+    assert len(vues) == 2 and corps(vues[0])["send_before"] == corps(vues[1])["send_before"]
 
 
 async def test_un_code_qui_expire_dans_une_seconde_part_encore() -> None:
@@ -453,7 +487,7 @@ async def test_une_coupure_ou_un_delai_deux_fois_leve_en_gardant_la_cause(panne:
         await boite.envoie_le_code(message_code())
     assert len(vues) == 2
     # La cause garde le type de l'erreur d'httpx, jamais l'erreur (elle porte la requête entière).
-    assert str(erreur.value.__cause__) in {"ConnectError", "ReadTimeout"}
+    assert str(erreur.value.__cause__) in {"ReadError", "ReadTimeout"}
 
 
 async def test_la_reprise_attend_une_demi_seconde_par_defaut() -> None:
@@ -507,7 +541,10 @@ def une_panne(reponse: Reponse) -> MailIndisponible:
     [
         (coupure, True),
         (delai, True),
-        (lambda _: httpx.Response(503), False),
+        (connexion_impossible, False),
+        (lambda _: httpx.Response(500), True),
+        (lambda _: httpx.Response(503), True),
+        (lambda _: httpx.Response(504), True),
         (lambda _: httpx.Response(400), False),
         (lambda _: httpx.Response(429), False),
         (lambda _: httpx.Response(200, json={"emails": [{"status": "failed"}]}), False),
@@ -531,8 +568,12 @@ def test_l_erreur_dit_si_le_mail_a_pu_partir(reponse: Reponse, inconnue: bool) -
         (coupure, lambda _: httpx.Response(503), True),
         (delai, lambda _: httpx.Response(200, json={"emails": [{"status": "failed"}]}), True),
         (lambda _: httpx.Response(503), coupure, True),
-        (lambda _: httpx.Response(503), lambda _: httpx.Response(400), False),
-        (lambda _: httpx.Response(503), lambda _: httpx.Response(503), False),
+        (connexion_impossible, lambda _: httpx.Response(400), False),
+        (connexion_impossible, connexion_impossible, False),
+        (connexion_impossible, coupure, True),
+        (connexion_impossible, lambda _: httpx.Response(503), True),
+        (lambda _: httpx.Response(503), lambda _: httpx.Response(400), True),
+        (lambda _: httpx.Response(503), lambda _: httpx.Response(503), True),
         (lambda _: httpx.Response(502), lambda _: httpx.Response(400), True),
         (lambda _: httpx.Response(502), lambda _: httpx.Response(504), True),
         (lambda _: httpx.Response(504), lambda _: httpx.Response(504), True),
@@ -562,8 +603,12 @@ def test_une_exception_etrangere_du_transport_n_est_pas_reprise_et_laisse_l_issu
     assert not any(isinstance(m, RuntimeError) for m in la_chaine_des_erreurs(erreur))
 
 
-def test_un_503_puis_le_delai_total_pendant_la_pause_laisse_l_issue_connue(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("premiere", "inconnue"),
+    [(connexion_impossible, False), (coupure, True), (lambda _: httpx.Response(503), True)],
+)
+def test_le_delai_total_pendant_la_pause_garde_l_incertitude_de_la_premiere_tentative(
+    premiere: Reponse, inconnue: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
 
@@ -576,16 +621,16 @@ def test_un_503_puis_le_delai_total_pendant_la_pause_laisse_l_issue_connue(
             PROJET,
             EXPEDITEUR,
             ORIGINES,
-            transport=httpx.MockTransport(lambda _: httpx.Response(503)),
+            transport=httpx.MockTransport(premiere),
             maintenant=lambda: HORLOGE,
             pause=pause_sans_fin,
         )
         with pytest.raises(MailIndisponible) as erreur:
-            await boite.envoie_le_code(message_code())
+            await asyncio.wait_for(boite.envoie_le_code(message_code()), timeout=5)
         return erreur.value
 
-    # Aucune requête en vol, aucune tentative incertaine : le 503 de TEM dit que rien n'est parti.
-    assert asyncio.run(envoyer()).issue_inconnue is False
+    # Aucune requête en vol pendant la pause : seule la première tentative peut avoir laissé un doute.
+    assert asyncio.run(envoyer()).issue_inconnue is inconnue
 
 
 def test_un_503_puis_le_delai_total_pendant_la_seconde_requete_laisse_l_issue_inconnue(
@@ -643,9 +688,9 @@ def test_un_503_dont_la_fermeture_casse_reste_un_503_qui_se_reprend() -> None:
     assert asyncio.run(envoyer()) == 2
 
 
-def test_un_503_dont_la_fermeture_casse_ne_laisse_pas_l_issue_inconnue() -> None:
-    # Le statut reçu décide : un 503 est un refus, la fermeture cassée n'en fait pas une coupure incertaine.
-    erreur = une_panne(lambda _: httpx.Response(503, stream=CorpsQuiCasseALaFermeture()))
+def test_un_4xx_dont_la_fermeture_casse_reste_un_4xx_sans_reprise_ni_doute() -> None:
+    # Le statut reçu décide : un 400 est un refus, la fermeture cassée n'en fait pas une coupure incertaine.
+    erreur = une_panne(lambda _: httpx.Response(400, stream=CorpsQuiCasseALaFermeture()))
     assert erreur.issue_inconnue is False
 
 
@@ -843,7 +888,7 @@ def test_l_erreur_du_delai_total_n_a_ni_contexte_ni_cause(monkeypatch: pytest.Mo
             SecretStr(CLE), PROJET, EXPEDITEUR, ORIGINES, transport=Muet(), maintenant=lambda: HORLOGE
         )
         with pytest.raises(MailIndisponible) as erreur:
-            await boite.envoie_le_code(message_code())
+            await asyncio.wait_for(boite.envoie_le_code(message_code()), timeout=5)
         return erreur.value
 
     erreur = asyncio.run(envoyer())
@@ -935,6 +980,29 @@ def test_un_expediteur_hors_du_domaine_verifie_est_refuse(adresse: str) -> None:
         reglages("local", mail_from_address=adresse)
     with pytest.raises(ValueError, match=r"notre-popote\.fr"):
         Expediteur(adresse, "Popote")
+
+
+@pytest.mark.parametrize(
+    "contournement",
+    [
+        {"mail_from_address": "a@notre-popote.fr\r\nBcc: x@evil.example\r\n@notre-popote.fr"},
+        {"mail_from_address": "a\r\n@notre-popote.fr"},
+        {"mail_from_name": "Popote\r\nBcc: x@y.fr"},
+        {"mail_from_name": "=?utf-8?b?UG9wb3Rl?="},
+        {"scaleway_tem_project_id": str(PROJET)},  # une chaîne, pas un UUID
+        {"scaleway_tem_project_id": None},
+    ],
+)
+def test_la_fabrique_revalide_tous_les_reglages_meme_contournes(contournement: dict[str, Any]) -> None:
+    config = reglages("local", **COMPLET).model_copy(update=contournement)
+    with pytest.raises(ValueError):
+        cree_envoi_scaleway(config)
+
+
+@pytest.mark.parametrize("nom", ["=?utf-8?b?UG9wb3Rl?=", "Popote =? x"])
+def test_un_nom_d_expediteur_qui_ressemble_a_un_mot_encode_est_refuse(nom: str) -> None:
+    with pytest.raises(ValidationError, match="mail_from_name"):
+        reglages("local", mail_from_name=nom)
 
 
 def test_la_fabrique_refuse_un_expediteur_hors_du_domaine_meme_si_les_reglages_sont_contournes() -> None:

@@ -9,6 +9,10 @@
    réalisation d'`EnvoiMail` n'envoie rien d'autre, donc jamais un objet qui porte un code ou un prénom.
 5. La clé d'envoi des mails (`scaleway_tem_secret_key`) n'est lue que par `infra/mail_scaleway.py` ; seuls les
    réglages, la fabrique d'`EnvoiMail` et ce module la nomment (jamais pour la passer à un autre code).
+6. Aucun outil du dépôt ne capture les variables locales des cadres d'une pile (clé d'envoi, adresse, code) :
+   pas de `show_locals`, de `rich.traceback`, de `capture_locals=True`, et `sentry_sdk.init`
+   n'est appelé qu'avec
+   `include_local_variables=False`, `send_default_pii=False` et `max_request_body_size="never"`.
 """
 
 import ast
@@ -227,14 +231,15 @@ def test_le_cachet_des_enveloppes_n_est_nomme_que_par_mails_textes() -> None:
 # La clé d'envoi de Scaleway TEM : un seul module la lit (0.4bis S4). Les deux autres la nomment sans
 # la lire : les réglages la déclarent, la fabrique passe le `SecretStr` tel quel.
 CLE_TEM = "scaleway_tem_secret_key"
+ATTRIBUT_DE_LA_CLE_TEM = "_cle_tem"  # le nom unique sous lequel `mail_scaleway.py` garde la clé
 LECTEUR_DE_LA_CLE_TEM = "infra/mail_scaleway.py"
 NOMMEURS_DE_LA_CLE_TEM: set[str] = {"config.py", "infra/mails.py", LECTEUR_DE_LA_CLE_TEM}
 
 
 def _nomme_la_cle_tem(noeud: ast.AST) -> bool:
     return any(
-        (isinstance(n, ast.Attribute) and n.attr == CLE_TEM)
-        or (isinstance(n, ast.Name) and n.id == CLE_TEM)
+        (isinstance(n, ast.Attribute) and n.attr in (CLE_TEM, ATTRIBUT_DE_LA_CLE_TEM))
+        or (isinstance(n, ast.Name) and n.id in (CLE_TEM, ATTRIBUT_DE_LA_CLE_TEM))
         or (isinstance(n, ast.Constant) and isinstance(n.value, str) and CLE_TEM in n.value)
         for n in ast.walk(noeud)
     )
@@ -259,7 +264,7 @@ def test_seul_le_module_d_envoi_lit_la_cle_tem() -> None:
     lecteurs = {
         str(chemin.relative_to(SRC)) for chemin in fichiers_source() if lit_la_cle_tem(chemin.read_text())
     }
-    assert lecteurs <= {LECTEUR_DE_LA_CLE_TEM}
+    assert lecteurs == {LECTEUR_DE_LA_CLE_TEM}  # exactement lui : le contrôle ne passe pas à vide
 
 
 def test_seuls_les_reglages_la_fabrique_et_le_module_d_envoi_nomment_la_cle_tem() -> None:
@@ -277,6 +282,7 @@ def test_seuls_les_reglages_la_fabrique_et_le_module_d_envoi_nomment_la_cle_tem(
         "x = (r.scaleway_tem_secret_key or None).get_secret_value()",
         "secret = lambda: getattr(r, 'scaleway_tem_secret_key').get_secret_value()",
         "scaleway_tem_secret_key.get_secret_value()",
+        "x = app.state.mails._cle_tem.get_secret_value()",
     ],
 )
 def test_le_controle_attrape_une_lecture_de_la_cle_tem(source: str) -> None:
@@ -337,3 +343,78 @@ def test_le_controle_laisse_passer_secretstr_et_les_methodes_de_chaine() -> None
         )
         == []
     )
+
+
+def captures_de_variables_locales(source: str) -> list[str]:
+    """Ce qui ferait écrire les variables locales des cadres d'une pile (donc clé, adresse, code) ailleurs."""
+    arbre = ast.parse(source)
+    parle_de_sentry = "sentry_sdk" in source
+    fautes = []
+    for noeud in ast.walk(arbre):
+        if isinstance(noeud, ast.Import | ast.ImportFrom):
+            modules = [a.name for a in noeud.names] + (
+                [noeud.module] if isinstance(noeud, ast.ImportFrom) else []
+            )
+            if any((m or "").startswith("rich.traceback") for m in modules):
+                fautes.append("rich.traceback")
+        if isinstance(noeud, ast.Attribute) and noeud.attr == "show_locals":
+            fautes.append("show_locals")
+        if not isinstance(noeud, ast.Call):
+            continue
+        nom = noeud.func.id if isinstance(noeud.func, ast.Name) else getattr(noeud.func, "attr", "")
+        reglages = {k.arg: k.value for k in noeud.keywords}
+        if "show_locals" in reglages:
+            fautes.append("show_locals")
+        if nom == "TracebackException" and not _est_la_valeur(
+            reglages.get("capture_locals"), False, absent_ok=True
+        ):
+            fautes.append("capture_locals")
+        if nom == "init" and parle_de_sentry:
+            if not _est_la_valeur(reglages.get("include_local_variables"), False):
+                fautes.append("include_local_variables")
+            if not _est_la_valeur(reglages.get("send_default_pii"), False):
+                fautes.append("send_default_pii")
+            if not _est_la_valeur(reglages.get("max_request_body_size"), "never"):
+                fautes.append("max_request_body_size")
+    return fautes
+
+
+def _est_la_valeur(noeud: ast.expr | None, attendue: object, *, absent_ok: bool = False) -> bool:
+    if noeud is None:
+        return absent_ok
+    return isinstance(noeud, ast.Constant) and noeud.value == attendue and type(noeud.value) is type(attendue)
+
+
+@pytest.mark.parametrize("chemin", fichiers_source(), ids=lambda c: str(c.relative_to(SRC)))
+def test_aucun_outil_ne_capture_les_variables_locales_des_cadres(chemin: Path) -> None:
+    assert captures_de_variables_locales(chemin.read_text()) == []
+
+
+SENTRY_SUR = "include_local_variables=False, send_default_pii=False, max_request_body_size='never'"
+SENTRY = "import sentry_sdk\nsentry_sdk.init(dsn='x', "
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import sentry_sdk\nsentry_sdk.init(dsn='x')",
+        SENTRY + SENTRY_SUR.replace("include_local_variables=False", "include_local_variables=True") + ")",
+        SENTRY + SENTRY_SUR.replace("include_local_variables=False, ", "") + ")",
+        SENTRY + SENTRY_SUR.replace("send_default_pii=False, ", "") + ")",
+        SENTRY + SENTRY_SUR.replace("'never'", "'always'") + ")",
+        SENTRY + SENTRY_SUR.replace(", max_request_body_size='never'", "") + ")",
+        "from sentry_sdk import init\ninit()",
+        "import traceback\ntraceback.TracebackException(a, b, c, capture_locals=True)",
+        "from rich.traceback import install",
+        "import rich.traceback",
+        "console.print_exception(show_locals=True)",
+        "opts = Options(); opts.show_locals",
+    ],
+)
+def test_le_controle_attrape_une_capture_de_variables_locales(source: str) -> None:
+    assert captures_de_variables_locales(source) != []
+
+
+def test_le_controle_laisse_passer_la_configuration_sure_de_sentry() -> None:
+    source = SENTRY + SENTRY_SUR + ")\nimport traceback\ntraceback.TracebackException(a, b, c)"
+    assert captures_de_variables_locales(source) == []
