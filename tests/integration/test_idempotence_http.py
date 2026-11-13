@@ -545,7 +545,7 @@ def routeur_a_secret() -> APIRouter:
     @routeur.post("/avec", status_code=201)
     async def avec(personne: PersonneDeLaSession) -> dict[str, str]:
         await personne.curseur.execute(BASCULE, ("choisir_les_repas",))
-        return {"id": "x", "token": "JETON-SECRET-0123"}
+        return {"id": "x", "token": "valeur-a-ne-pas-garder"}
 
     @routeur.post("/sans-le-champ", status_code=201)
     async def sans_le_champ(personne: PersonneDeLaSession) -> dict[str, str]:
@@ -565,9 +565,9 @@ async def test_un_champ_secret_est_retire_avant_stockage_et_le_rejeu_ne_l_a_pas(
     personne = fabrique.personne(fabrique.foyer())
     premiere = await client.post("/api/v1/secret/avec", headers=en_tetes(fabrique, personne.id))
     assert premiere.status_code == 201
-    assert premiere.json() == {"id": "x", "token": "JETON-SECRET-0123"}
+    assert premiere.json() == {"id": "x", "token": "valeur-a-ne-pas-garder"}
     ((_, _, _, _, _, corps),) = gardees(fabrique, personne.id)
-    assert b"JETON-SECRET" not in bytes(corps)
+    assert b"valeur-a-ne-pas-garder" not in bytes(corps)
     assert json.loads(bytes(corps)) == {"id": "x", "token": None}
     rejeu = await client.post("/api/v1/secret/avec", headers=en_tetes(fabrique, personne.id))
     assert (rejeu.status_code, rejeu.json()) == (201, {"id": "x", "token": None})
