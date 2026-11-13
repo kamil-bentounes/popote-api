@@ -40,10 +40,11 @@ restant. Le plan n'écrit donc pas S13 sur une hypothèse.
   (bcrypt `2a`, coût 10, lu dans `auth.users` par la base de l'essai), l'e-mail est confirmé, aucun mail n'est parti
   (`confirmation_sent_at` vide).
 - Connexion publique (`/auth/v1/token?grant_type=password`) avec un mot de passe vide, puis deviné : `400
-  invalid_credentials`.
+  invalid_credentials` (le script exige ce code : un `401` ou un `429` n'est pas un refus du compte).
 - `updateUserById` avec un mot de passe aléatoire de 64 caractères (minuscules, majuscules, chiffres, symboles) :
-  accepté, le hachage change (la **reprise** de S13 fonctionne). Contrôle positif : avec ce mot de passe, la connexion
-  publique répond `200` (la connexion par mot de passe est encore ouverte sur l'essai : sa coupure est 0.7).
+  accepté, le hachage change (la **reprise** de S13 fonctionne). Contrôle positif (vérifié par le script) : avec ce mot
+  de passe, la connexion publique répond `200` avec une session, donc le refus précédent tenait bien au mot de passe
+  (la connexion par mot de passe est encore ouverte sur l'essai : sa coupure est 0.7).
 - Une deuxième création de la même adresse, puis de sa variante en majuscules : `422 email_exists` les deux fois ; un seul
   compte porte l'adresse.
 - Le script supprime son compte dans un `finally` et balaie d'abord ceux d'une exécution interrompue ; il s'arrête au

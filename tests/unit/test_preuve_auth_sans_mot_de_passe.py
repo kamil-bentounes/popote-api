@@ -1,5 +1,6 @@
 """Tests de ops/preuve_auth_sans_mot_de_passe.py contre un faux Supabase (transport httpx, aucun réseau)."""
 
+import hashlib
 import json
 import re
 import secrets
@@ -31,6 +32,7 @@ class Utilisateur:
     hachage: str
     marque: str | None
     mail_parti: bool = False
+    mot_de_passe: str | None = None
 
 
 @dataclass
@@ -45,6 +47,11 @@ class FauxSupabase:
     non_confirme: bool = False
     hachage_fige: bool = False
     connexion_ouverte: bool = False
+    connexion_cle_refusee: bool = False
+    connexion_refusee_pour_autre_chose: bool = False
+    bon_mot_de_passe_refuse: bool = False
+    projet_d_une_autre_reference: bool = False
+    reponse_perdue_a_la_creation: bool = False
     connexion_limitee: bool = False
     doublon_de_casse_accepte: bool = False
     suppression_refusee: bool = False
@@ -54,6 +61,7 @@ class FauxSupabase:
     base_illisible_avec_des_comptes: bool = False
     redirige_le_projet: bool = False
     appels: list[tuple[str, str]] = field(default_factory=list)
+    requetes_sql: list[str] = field(default_factory=list)
     corps_de_creation: list[dict[str, Any]] = field(default_factory=list)
     mots_de_passe_vus: list[str] = field(default_factory=list)
     hachages_vus: list[str] = field(default_factory=list)
@@ -79,7 +87,8 @@ class FauxSupabase:
         if chemin == f"/v1/projects/{REF}":
             if self.redirige_le_projet:
                 return httpx.Response(302, headers={"Location": "https://autre.example/v1/projects"})
-            return httpx.Response(200, json={"name": self.nom, "ref": REF})
+            reference = "zzzzzzzzzzzzzzzzzzzz" if self.projet_d_une_autre_reference else REF
+            return httpx.Response(200, json={"name": self.nom, "ref": reference})
         if chemin.endswith("/api-keys"):
             if self.cles_illisibles:
                 return httpx.Response(403, json={"message": "droit manquant"})
@@ -93,7 +102,9 @@ class FauxSupabase:
         if chemin.endswith("/database/query"):
             if self.base_illisible_avec_des_comptes and self.utilisateurs:
                 return httpx.Response(500, json={"message": "base indisponible"})
-            return httpx.Response(201, json=self._sql(json.loads(requete.content)["query"]))
+            sql = json.loads(requete.content)["query"]
+            self.requetes_sql.append(sql)
+            return httpx.Response(201, json=self._sql(sql))
         return httpx.Response(404)
 
     def _sql(self, requete: str) -> list[dict[str, Any]]:
@@ -103,7 +114,7 @@ class FauxSupabase:
             return [
                 {"n": sum(u.email.lower() == adresse.group(1).lower() for u in self.utilisateurs.values())}
             ]
-        if "encrypted_password" in requete:
+        if "prefixe" in requete:
             identifiant = re.search(r"id = '([0-9a-f-]{36})'", requete)
             assert identifiant is not None
             utilisateur = self.utilisateurs.get(identifiant.group(1))
@@ -111,17 +122,18 @@ class FauxSupabase:
                 return []
             return [
                 {
-                    "encrypted_password": utilisateur.hachage,
+                    "prefixe": utilisateur.hachage[:7],
+                    "empreinte": hashlib.md5(utilisateur.hachage.encode()).hexdigest(),  # noqa: S324 - comme la base
                     "confirme": not self.non_confirme,
                     "mail_parti": utilisateur.mail_parti,
                 }
             ]
-        assert "select id from auth.users" in requete
+        assert "select id, email from auth.users" in requete
+        # Plus large que la requête réelle : la défense qui compte est le filtre d'adresse du script.
         return [
-            {"id": identifiant}
+            {"id": identifiant, "email": u.email}
             for identifiant, u in self.utilisateurs.items()
-            if re.fullmatch(r"preuve-auth-.*@example\.com", u.email.lower())
-            and (u.marque == MARQUE or "cree_par" not in requete)
+            if u.marque == MARQUE or "cree_par" not in requete
         ]
 
     # --- Auth ---------------------------------------------------------------------------------------
@@ -168,6 +180,8 @@ class FauxSupabase:
         self.utilisateurs[identifiant] = Utilisateur(
             adresse, hachage, corps["app_metadata"]["cree_par"], self.mail_parti
         )
+        if self.reponse_perdue_a_la_creation:
+            raise httpx.ReadTimeout("réponse perdue")
         return httpx.Response(200, json={"id": identifiant, "email": adresse})
 
     def _remplace(self, identifiant: str, corps: dict[str, Any]) -> httpx.Response:
@@ -175,6 +189,7 @@ class FauxSupabase:
         if utilisateur is None:
             return httpx.Response(404, json={"error_code": "user_not_found"})
         self.mots_de_passe_vus.append(corps["password"])
+        utilisateur.mot_de_passe = corps["password"]
         if not self.hachage_fige:
             utilisateur.hachage = self._nouveau_hachage()
         return httpx.Response(200, json={"id": identifiant})
@@ -193,11 +208,26 @@ class FauxSupabase:
             return httpx.Response(500, json={"error_code": "unexpected_failure"})
         if self.connexion_limitee:
             return httpx.Response(429, json={"error_code": "over_request_rate_limit"})
+        if self.connexion_cle_refusee:
+            return httpx.Response(401, json={"error_code": "invalid_api_key"})
+        if self.connexion_refusee_pour_autre_chose:
+            return httpx.Response(400, json={"error_code": "bad_json"})
         if self.connexion_ouverte:
+            return httpx.Response(200, json={"access_token": "jeton-de-session"})
+        corps = json.loads(requete.content)
+        bon_mot_de_passe = any(
+            u.email.lower() == corps["email"].lower() and u.mot_de_passe == corps["password"]
+            for u in self.utilisateurs.values()
+        )
+        if bon_mot_de_passe and not self.bon_mot_de_passe_refuse:
             return httpx.Response(200, json={"access_token": "jeton-de-session"})
         return httpx.Response(
             400, json={"error_code": "invalid_credentials", "msg": "Invalid login credentials"}
         )
+
+
+COMPTE_RESTANT = "11111111-1111-4111-8111-111111111111"
+CLES = {"ESSAI_SUPABASE_SECRET_KEY": CLE_SECRETE, "ESSAI_SUPABASE_PUBLISHABLE_KEY": CLE_PUBLIABLE}
 
 
 def lance(
@@ -291,8 +321,9 @@ class TestPreuveReussie:
             compte_marque(marque=None),
             compte_marque(marque="popote-api"),
             compte_marque(adresse="lea.martin@example.com"),
+            compte_marque(adresse="preuve-auth-zz@example.com"),
         ],
-        ids=["sans marque", "autre marque", "autre adresse"],
+        ids=["sans marque", "autre marque", "autre adresse", "forme voisine"],
     )
     def test_accounts_that_are_not_ours_are_never_deleted(
         self, autre: Utilisateur, capsys: pytest.CaptureFixture[str]
@@ -317,6 +348,9 @@ class TestEcarts:
             ({"connexion_ouverte": True}, "a ouvert une session"),
             ({"connexion_limitee": True}, "à reprendre plus tard"),
             ({"connexion_en_erreur": True}, "ne refuse pas comme attendu"),
+            ({"connexion_cle_refusee": True}, "ne refuse pas comme attendu"),
+            ({"connexion_refusee_pour_autre_chose": True}, "ne refuse pas comme attendu"),
+            ({"bon_mot_de_passe_refuse": True}, "mot de passe posé n'est pas acceptée"),
             ({"hachage_fige": True}, "Le hachage n'a pas changé"),
             ({"doublon_de_casse_accepte": True}, "autre casse"),
         ],
@@ -328,6 +362,9 @@ class TestEcarts:
             "connexion ouverte",
             "429",
             "connexion en 500",
+            "clé publiable refusée",
+            "refus pour autre chose",
+            "bon mot de passe refusé",
             "hachage fixe",
             "doublon",
         ],
@@ -395,6 +432,42 @@ class TestEcarts:
         assert "suppression d'un compte de test refusée" in sortie
         assert len(faux.utilisateurs) == 1
 
+    def test_response_lost_after_creation_still_removes_the_account(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        faux = FauxSupabase(reponse_perdue_a_la_creation=True)
+
+        code, sortie = lance(faux, capsys)
+
+        assert code == 2
+        assert "ReadTimeout" in sortie
+        assert faux.utilisateurs == {}
+
+    def test_keyboard_interrupt_still_removes_the_account(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        faux = FauxSupabase()
+
+        def interrompt(*_: object) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(preuve, "etape_connexion_publique_refusee", interrompt)
+        with httpx.Client(transport=httpx.MockTransport(faux)) as http:
+            essai = preuve.Essai(preuve.Acces(REF, JETON), http, {**ENVIRONNEMENT, **CLES})
+            with pytest.raises(KeyboardInterrupt):
+                preuve.joue_la_preuve(essai, lambda _: None)
+
+        assert faux.utilisateurs == {}
+
+    def test_sweep_query_names_the_marker_and_the_address_pattern(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        faux = FauxSupabase()
+
+        lance(faux, capsys)
+
+        balayages = [sql for sql in faux.requetes_sql if sql.startswith("select id, email")]
+        assert balayages
+        assert all(f"'{MARQUE}'" in sql and preuve.MOTIF_D_ADRESSE_EN_SQL in sql for sql in balayages)
+
 
 class TestGardeFous:
     def test_prod_reference_is_refused_before_any_call(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -433,16 +506,46 @@ class TestGardeFous:
         assert faux.appels == []
 
     @pytest.mark.parametrize("arguments", [(), ("--a-blanc",)])
-    def test_project_with_another_name_is_refused_without_writing(
+    def test_project_with_another_name_is_refused_without_any_write_or_cleanup(
         self, arguments: tuple[str, ...], capsys: pytest.CaptureFixture[str]
     ) -> None:
-        faux = FauxSupabase(nom="popote-prod")
+        faux = FauxSupabase(nom="popote-prod", utilisateurs={COMPTE_RESTANT: compte_marque()})
+        environnement = {**ENVIRONNEMENT, **CLES}
 
-        code, sortie = lance(faux, capsys, *arguments)
+        code, sortie = lance(faux, capsys, *arguments, environnement=environnement)
 
         assert code == 2
         assert "ne s'appelle pas" in sortie
-        assert faux.ecritures_d_auth() == []
+        assert [methode for methode, _ in faux.appels] == ["GET"]
+        assert list(faux.utilisateurs) == [COMPTE_RESTANT]
+
+    def test_project_answered_for_another_reference_is_refused(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        faux = FauxSupabase(projet_d_une_autre_reference=True, utilisateurs={COMPTE_RESTANT: compte_marque()})
+
+        code, sortie = lance(faux, capsys, environnement={**ENVIRONNEMENT, **CLES})
+
+        assert code == 2
+        assert "autre projet" in sortie
+        assert list(faux.utilisateurs) == [COMPTE_RESTANT]
+
+    @pytest.mark.parametrize(
+        "nom", ["SUPABASE_ESSAI_TOKEN", "ESSAI_SUPABASE_SECRET_KEY", "ESSAI_SUPABASE_PUBLISHABLE_KEY"]
+    )
+    @pytest.mark.parametrize("valeur", ["sbp_é" + "x" * 30, "sbp_ " + "x" * 30, "sbp_" + "x" * 30 + "\n"])
+    def test_secret_that_a_header_cannot_carry_is_refused_without_echoing_it(
+        self, nom: str, valeur: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        faux = FauxSupabase()
+        environnement = {**ENVIRONNEMENT, **CLES, nom: valeur}
+
+        code, sortie = lance(faux, capsys, environnement=environnement)
+
+        assert code == 2
+        assert nom in sortie
+        assert valeur.strip() not in sortie
+        assert faux.appels == []
 
     def test_redirection_is_not_followed(self, capsys: pytest.CaptureFixture[str]) -> None:
         faux = FauxSupabase(redirige_le_projet=True)
@@ -459,6 +562,7 @@ class TestGardeFous:
 
         assert code == 2
         assert "ESSAI_SUPABASE_SECRET_KEY" in sortie
+        assert faux.requetes_sql == []
         assert faux.ecritures_d_auth() == []
 
     def test_keys_from_the_environment_skip_the_api_keys_call(
@@ -610,6 +714,26 @@ class TestOutils:
 
             with pytest.raises(preuve.EcartError):
                 essai.etat_du_compte(preuve.UUID(int=1))
+
+    def test_call_that_drips_past_the_total_deadline_is_cut(self) -> None:
+        def goutte_a_goutte(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=iter([b"{", b'"a"', b":1}"]))
+
+        instants = iter(range(0, 1000, 20))
+        with httpx.Client(transport=httpx.MockTransport(goutte_a_goutte)) as http:
+            essai = preuve.Essai(
+                preuve.Acces(REF, JETON), http, ENVIRONNEMENT, horloge=lambda: next(instants)
+            )
+
+            with pytest.raises(preuve.AccesError, match="trop lente"):
+                essai.exige_le_projet_d_essai()
+
+    def test_repr_of_a_response_and_a_state_hides_body_and_digest(self) -> None:
+        reponse = preuve.Reponse(200, b"adresse lea@example.com")
+        etat = preuve.EtatDuCompte("e" * 32, "2a", 10, True, False)
+
+        assert "lea" not in repr(reponse)
+        assert "e" * 32 not in repr(etat)
 
     def test_oversized_response_is_refused(self) -> None:
         def enorme(_: httpx.Request) -> httpx.Response:
