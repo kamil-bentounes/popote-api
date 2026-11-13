@@ -25,14 +25,17 @@
 -- COMPATIBLE avec l'appli en ligne : `login_session` n'est lue par aucun code actuel ; colonnes ajoutées avec défaut ;
 -- `session_personne` garde sa signature et son résultat.
 --
--- Retour arrière (sans perte : les sessions se rouvrent par une reconnexion) :
+-- Retour arrière (sans perte : les sessions se rouvrent par une reconnexion). Dans CET ordre : `session_personne`
+-- reprend d'abord son corps de 0133 (elle appelle `private.session_valide`, que la base ne suit pas) ;
 --   select cron.unschedule('login-session-purge');   -- si pg_cron est là
+--   create or replace function public.session_personne(p_hash bytea) ... -- corps de la migration 0133
 --   drop function public.marque_reauth(uuid, uuid), public.ferme_session(bytea),
 --     public.fait_tourner_session(bytea, bytea), public.session_courante(bytea),
 --     public.cree_session(uuid, bytea, text, text, bytea);
---   drop function private.purge_login_session(timestamptz, integer), private.cree_session(uuid, bytea, text, text,
---     bytea, timestamptz), private.session_valide(bytea, timestamptz);
---   -- puis redonner à public.session_personne le corps de la migration 0133 ;
+--   drop function private.purge_login_session(timestamptz, integer), private.fait_tourner_session(bytea, bytea,
+--     timestamptz), private.cree_session(uuid, bytea, text, text, bytea, timestamptz),
+--     private.session_valide(bytea, timestamptz);
+--   drop index public.login_session_expires_at_idx, public.login_session_revoked_at_idx;
 --   alter table public.login_session drop column reauth_at, drop column os, drop column browser;
 -- ═══════════════════════════════════════════════════════════════════════════
 set local lock_timeout = '5s';
@@ -140,6 +143,12 @@ begin
   -- Sérialise les créations d'une même personne : sans cela deux connexions simultanées compteraient 9 sessions
   -- chacune et en laisseraient 11.
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_person::text, 0));
+
+  -- Pas de session pour une personne bannie ou supprimée : elle mourrait à la première lecture, autant refuser ici.
+  if exists (select 1 from auth.users u
+              where u.id = p_person and (u.deleted_at is not null or u.banned_until > p_now)) then
+    raise exception 'Cette personne ne peut pas ouvrir de session.' using errcode = 'invalid_authorization_specification';
+  end if;
 
   -- La session présentée (B22) : révoquée, journalisée ; une empreinte inconnue ou déjà morte est ignorée.
   if p_old_hash is not null then
@@ -253,6 +262,7 @@ as $$
   with m as (
     update public.login_session set reauth_at = pg_catalog.now()
      where id = p_session and person_id = p_person and revoked_at is null
+       and expires_at > pg_catalog.now() and absolute_expires_at > pg_catalog.now()
     returning 1)
   select exists (select 1 from m);
 $$;

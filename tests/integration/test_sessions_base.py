@@ -105,6 +105,22 @@ def test_une_empreinte_de_mauvaise_longueur_est_refusee(
         admin.execute(CREE, (personne, token_bytes(longueur), None, T0))
 
 
+@pytest.mark.parametrize("cas", ["bannie", "supprimee"])
+def test_une_personne_bannie_ou_supprimee_n_ouvre_pas_de_session(
+    cas: str, admin: psycopg.Connection[Ligne], personne: UUID
+) -> None:
+    colonne_ = "banned_until" if cas == "bannie" else "deleted_at"
+    admin.execute(f"update auth.users set {colonne_} = %s where id = %s", (T0 + 10 * MIN, personne))  # noqa: S608
+    with pytest.raises(errors.InvalidAuthorizationSpecification):
+        admin.execute(CREE, (personne, token_bytes(32), None, T0 + MIN if cas == "bannie" else T0))
+    assert actives(admin, personne) == 0
+
+
+def test_un_ban_echu_n_empeche_pas_la_session(admin: psycopg.Connection[Ligne], personne: UUID) -> None:
+    admin.execute("update auth.users set banned_until = %s where id = %s", (T0, personne))
+    cree(admin, personne, T0)  # banned_until = maintenant : le ban est fini
+
+
 def test_une_personne_inconnue_est_refusee(admin: psycopg.Connection[Ligne]) -> None:
     with pytest.raises(errors.ForeignKeyViolation):
         admin.execute(CREE, (UUID(int=7), token_bytes(32), None, T0))
@@ -371,6 +387,16 @@ def test_marque_reauth_sur_une_session_fermee_ne_fait_rien(
     admin.execute("select public.ferme_session(%s)", (empreinte,))
     assert admin.execute("select public.marque_reauth(%s, %s)", (session, personne)).fetchone() == (False,)
     assert colonne(admin, session, "reauth_at") == T0 - JOUR
+
+
+def test_marque_reauth_sur_une_session_echue_ne_fait_rien(
+    admin: psycopg.Connection[Ligne], personne: UUID
+) -> None:
+    # La fonction publique lit l'horloge de la base : la session est ouverte en 2020, échue depuis longtemps.
+    ancien = datetime.fromisoformat("2020-01-01T00:00:00+00:00")
+    session, _ = cree(admin, personne, ancien)
+    assert admin.execute("select public.marque_reauth(%s, %s)", (session, personne)).fetchone() == (False,)
+    assert colonne(admin, session, "reauth_at") == ancien
 
 
 def test_ferme_session_est_idempotente(admin: psycopg.Connection[Ligne], personne: UUID) -> None:

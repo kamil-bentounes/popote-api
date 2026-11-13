@@ -192,7 +192,7 @@ refusent de démarrer avec autre chose que `hibp`.
   l'identifiant de session et `reauth_at`).
 - **Créer.** `public.cree_session` : au plus 10 sessions actives par personne (la 11e ferme la plus ancienne par
   dernière activité ; les créations d'une même personne se sérialisent par verrou consultatif). Une connexion réussie
-  **révoque la session présentée** si elle est valide (événement `session_fermee`) ; un cookie invalide est ignoré.
+  **révoque la session présentée** si elle est valide (événement `session_fermee`) ; un cookie invalide est ignoré. Une personne bannie ou supprimée n'ouvre pas de session.
 - **Faire tourner, fermer.** `fait_tourner_session` change l'empreinte (l'ancienne meurt aussitôt ; une session morte
   ne tourne pas) ; `ferme_session` est idempotente ; `marque_reauth` exige la session ET la personne.
 - **Appareil.** `browser` et `os` : des familles courtes bornées par CHECK, résumées de l'en-tête `User-Agent` par
