@@ -62,7 +62,7 @@ async def test_avec_l_adresse_interne_le_demarrage_n_avertit_pas(caplog: pytest.
             internal_secret="i" * 32,
             supabase_url="https://p.supabase.co",
             supabase_secret_key="sb_secret_" + "k" * 30,
-            public_base_url="https://popote.example",
+            public_base_url="https://essai.notre-popote.fr",
         )
     )
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
@@ -138,7 +138,7 @@ async def test_avec_le_poivre_le_demarrage_n_avertit_pas_et_ne_le_journalise_pas
             internal_secret="i" * 32,
             supabase_url="https://p.supabase.co",
             supabase_secret_key="sb_secret_" + "k" * 30,
-            public_base_url="https://popote.example",
+            public_base_url="https://essai.notre-popote.fr",
         )
     )
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):

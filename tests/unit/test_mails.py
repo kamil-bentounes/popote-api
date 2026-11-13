@@ -1,11 +1,12 @@
 """L'interface d'envoi (0.4bis S3) : messages, textes, prénom affiché, boîte de test, route retirée."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, tzinfo
+from pathlib import Path
 
-import httpx
 import pytest
-from _commun import ECRITURE_LOCALE, reglages
+from _commun import reglages
 
 from popote_api.infra import mails_textes as textes
 from popote_api.infra.mails import (
@@ -14,6 +15,7 @@ from popote_api.infra.mails import (
     MailIndisponible,
     MessageCode,
     MessageInvitation,
+    TypeDeMail,
     cree_envoi_mail,
     envoie_sans_remonter,
 )
@@ -25,7 +27,7 @@ EXPIRE_LE = datetime(2026, 11, 20, 10, 30, tzinfo=UTC)
 
 
 def code(valeur: str = "123456") -> MessageCode:
-    return MessageCode(ADRESSE, valeur, 10)
+    return MessageCode(ADRESSE, valeur, 10, EXPIRE_LE)
 
 
 def invitation(prenom_invite: str = "Claire", prenom_hote: str = "Marc") -> MessageInvitation:
@@ -57,7 +59,10 @@ def test_la_date_de_l_invitation_est_celle_de_paris() -> None:
     assert "jusqu'au 21/11/2026 à 00 h 30" in textes.texte_de_l_invitation(message)
 
 
-@pytest.mark.parametrize("objet", [textes.OBJET_DU_CODE, textes.OBJET_DE_L_INVITATION])
+@pytest.mark.parametrize(
+    "objet",
+    [textes.OBJET_DU_CODE, textes.OBJET_DE_L_INVITATION_DE_REPLI, textes.objet_de_l_invitation("Marc")],
+)
 def test_un_objet_fait_au_moins_dix_caracteres_et_ne_porte_aucun_secret(objet: str) -> None:
     assert len(objet) >= 10
     assert "123456" not in objet
@@ -128,6 +133,18 @@ def test_un_prenom_invisible_ou_aux_marques_abusives_donne_le_repli(prenom: str)
     assert textes.prenom_affichable(prenom) == textes.REPLI_DU_PRENOM
 
 
+def test_les_blancs_de_bord_d_un_prenom_sont_retires() -> None:
+    assert textes.prenom_affichable("  Marc \t") == "Marc"
+    assert textes.prenom_valide("\u00a0Marc ") == "Marc"
+
+
+@pytest.mark.parametrize(("marques", "attendu"), [(3, True), (4, False)])
+def test_trois_marques_combinantes_de_suite_passent_la_quatrieme_non(marques: int, attendu: bool) -> None:
+    prenom = "x" + "\u0301" * marques  # « x » n'a pas de forme précomposée : NFC ne retire aucune marque
+    assert (textes.prenom_valide(prenom) is not None) is attendu
+    assert textes.MARQUES_DE_SUITE_MAX == 3
+
+
 def test_un_prenom_decompose_est_recompose() -> None:
     assert textes.prenom_affichable("E\u0301loi") == "\u00c9loi"  # « E » + accent combinant devient « É »
 
@@ -147,23 +164,23 @@ def test_un_prenom_non_presentable_n_entre_pas_dans_l_invitation() -> None:
 )
 def test_un_code_qui_n_est_pas_fait_de_six_chiffres_est_refuse(valeur: object) -> None:
     with pytest.raises(ValueError, match="six chiffres"):
-        MessageCode(ADRESSE, valeur, 10)  # type: ignore[arg-type]
+        MessageCode(ADRESSE, valeur, 10, EXPIRE_LE)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("validite", [0, -1, True, 1.5, "10"])
 def test_une_validite_qui_n_est_pas_un_entier_positif_est_refusee(validite: object) -> None:
     with pytest.raises(ValueError, match="validite_min"):
-        MessageCode(ADRESSE, "123456", validite)  # type: ignore[arg-type]
+        MessageCode(ADRESSE, "123456", validite, EXPIRE_LE)  # type: ignore[arg-type]
 
 
 def test_une_validite_d_une_minute_s_ecrit_au_singulier() -> None:
-    assert "valable 1 minute." in textes.texte_du_code(MessageCode(ADRESSE, "123456", 1))
+    assert "valable 1 minute." in textes.texte_du_code(MessageCode(ADRESSE, "123456", 1, EXPIRE_LE))
 
 
 @pytest.mark.parametrize("destinataire", ["", "a@b.fr\r\nBcc: x@y.fr", "a b@c.fr", 3])
 def test_un_destinataire_vide_ou_avec_un_blanc_est_refuse(destinataire: object) -> None:
     with pytest.raises(ValueError, match="destinataire"):
-        MessageCode(destinataire, "123456", 10)  # type: ignore[arg-type]
+        MessageCode(destinataire, "123456", 10, EXPIRE_LE)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="destinataire"):
         MessageInvitation(destinataire, "Claire", "Marc", LIEN, EXPIRE_LE)  # type: ignore[arg-type]
 
@@ -223,7 +240,7 @@ async def test_la_boite_de_test_en_panne_leve_mail_indisponible() -> None:
 
 async def test_envoie_sans_remonter_rend_vrai_quand_le_message_part() -> None:
     boite = BoiteDeTest()
-    assert await envoie_sans_remonter(boite.envoie_le_code, code(), "code") is True
+    assert await envoie_sans_remonter(boite.envoie_le_code, code(), TypeDeMail.code) is True
     assert len(boite.codes) == 1
 
 
@@ -234,7 +251,7 @@ async def test_envoie_sans_remonter_journalise_le_type_seul_et_ne_remonte_pas(
     async def tombe(message: MessageCode) -> None:
         raise erreur
 
-    assert await envoie_sans_remonter(tombe, code(), "code") is False
+    assert await envoie_sans_remonter(tombe, code(), TypeDeMail.code) is False
     assert f"Mail (code) non envoyé : {type(erreur).__name__}" in caplog.text
     assert ADRESSE not in caplog.text and "123456" not in caplog.text and "a@b.fr" not in caplog.text
 
@@ -246,8 +263,9 @@ async def test_envoie_sans_remonter_journalise_l_annulation_puis_la_laisse_remon
         raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
-        await envoie_sans_remonter(annule, invitation(), "invitation")
-    assert "Mail (invitation) non envoyé : annulé (délai dépassé)" in caplog.text
+        await envoie_sans_remonter(annule, invitation(), TypeDeMail.invitation)
+    assert "Mail (invitation) : annulé pendant l'envoi, issue inconnue" in caplog.text
+    assert "non envoyé" not in caplog.text
     assert ADRESSE not in caplog.text and LIEN not in caplog.text
 
 
@@ -268,12 +286,17 @@ def test_le_fournisseur_choisit_la_realisation(fournisseur: str, attendu: type) 
 
 # --- La route retirée ---------------------------------------------------------------------------------
 
+CHEMIN_RETIRE = "/api/v1/password-resets"
 
-async def test_la_demande_de_reinitialisation_n_existe_plus_et_rend_401() -> None:
-    app = create_app(reglages("local"))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        reponse = await client.post(
-            "/api/v1/password-resets", json={"email": ADRESSE}, headers=ECRITURE_LOCALE
-        )
-    assert reponse.status_code == 401
-    assert reponse.json()["code"] == "pas_de_session"
+
+def test_la_demande_de_reinitialisation_n_est_plus_dans_le_registre_des_routes() -> None:
+    chemins = {getattr(route, "path", "") for route in create_app(reglages("local")).routes}
+    assert not [c for c in chemins if "password-reset" in c or "reinitialisation" in c]
+    assert CHEMIN_RETIRE not in chemins
+
+
+def test_la_demande_de_reinitialisation_n_est_plus_dans_le_contrat() -> None:
+    contrat = json.loads((Path(__file__).parents[2] / "openapi.json").read_text())
+    assert CHEMIN_RETIRE not in contrat["paths"]
+    assert not [c for c in contrat["paths"] if "password-reset" in c]
+    assert CHEMIN_RETIRE not in create_app(reglages("local")).openapi()["paths"]

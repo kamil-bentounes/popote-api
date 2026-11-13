@@ -6,7 +6,7 @@ import json
 import logging
 import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -24,9 +24,11 @@ from popote_api.infra.mail_scaleway import (
 )
 from popote_api.infra.mails import (
     EnvoiMail,
+    EnvoiParEnveloppe,
     MailIndisponible,
     MessageCode,
     MessageInvitation,
+    TypeDeMail,
     cree_envoi_mail,
     envoie_sans_remonter,
 )
@@ -39,7 +41,11 @@ EXPEDITEUR = Expediteur("bonjour@notre-popote.fr", "Popote")
 ADRESSE = "claire@example.org"
 CODE = "482916"
 LIEN = "https://essai.notre-popote.fr/invitation#jeton-secret"
+# La demande du code a lieu à MAINTENANT et fixe son échéance une fois pour toutes ; l'envoi se fait quelques
+# secondes plus tard (HORLOGE) : si `send_before` suivait l'horloge d'envoi, il dériverait.
 MAINTENANT = datetime(2026, 11, 13, 9, 30, 15, 987654, tzinfo=UTC)
+HORLOGE = MAINTENANT + timedelta(seconds=3)
+ORIGINES = reglages("essai").origines
 # Ce que TEM recopie dans ses réponses : l'adresse du destinataire. Elle ne doit sortir nulle part.
 ACCEPTE = {"emails": [{"id": "e1", "status": "new", "mail_rcpt": ADRESSE, "status_details": ADRESSE}]}
 
@@ -47,7 +53,7 @@ Reponse = Callable[[httpx.Request], httpx.Response]
 
 
 def message_code(validite_min: int = 10) -> MessageCode:
-    return MessageCode(ADRESSE, CODE, validite_min)
+    return MessageCode(ADRESSE, CODE, validite_min, MAINTENANT + timedelta(minutes=validite_min))
 
 
 def message_invitation() -> MessageInvitation:
@@ -77,8 +83,9 @@ def envoi(
             SecretStr(cle),
             PROJET,
             EXPEDITEUR,
+            ORIGINES,
             transport=httpx.MockTransport(gestionnaire),
-            maintenant=lambda: MAINTENANT,
+            maintenant=lambda: HORLOGE,
             pause=pause,
         ),
         vues,
@@ -142,30 +149,98 @@ async def test_l_invitation_part_avec_la_charge_utile_exacte_et_sans_send_before
     assert corps(requete) == {
         "from": {"email": "bonjour@notre-popote.fr", "name": "Popote"},
         "to": [{"email": ADRESSE}],
-        "subject": "Invitation à rejoindre un foyer sur Popote",
+        "subject": "Marc t'a gardé une place en cuisine",
         "text": mails_textes.texte_de_l_invitation(message_invitation()),
         "project_id": str(PROJET),
     }
 
 
 @pytest.mark.parametrize(("minutes", "attendu"), [(10, "09:40:15"), (7, "09:37:15"), (1, "09:31:15")])
-async def test_send_before_vaut_l_heure_d_envoi_plus_la_validite_du_code(minutes: int, attendu: str) -> None:
+async def test_send_before_est_l_echeance_du_message_jamais_recalculee_a_l_envoi(
+    minutes: int, attendu: str
+) -> None:
     boite, vues = envoi(lambda _: ok())
     await boite.envoie_le_code(message_code(minutes))
+    # L'horloge d'envoi (HORLOGE) a trois secondes d'avance sur la demande : l'échéance ne bouge pas.
     assert corps(vues[0])["send_before"] == f"2026-11-13T{attendu}Z"
 
 
 async def test_send_before_est_tronque_a_la_seconde_jamais_arrondi_vers_le_haut() -> None:
     boite, vues = envoi(lambda _: ok())
     await boite.envoie_le_code(message_code())
-    # 09:30:15,987654 + 10 min : la seconde entamée n'est pas comptée, le code n'est jamais livré trop tard.
+    # 09:40:15,987654 : la seconde entamée n'est pas comptée, le code n'est jamais livré trop tard.
     assert corps(vues[0])["send_before"].endswith("09:40:15Z")
+
+
+async def test_send_before_garde_le_fuseau_de_l_echeance_et_s_ecrit_en_utc() -> None:
+    paris = timezone(timedelta(hours=1))
+    message = MessageCode(ADRESSE, CODE, 10, (MAINTENANT + timedelta(minutes=10)).astimezone(paris))
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message)
+    assert corps(vues[0])["send_before"] == "2026-11-13T09:40:15Z"
+
+
+@pytest.mark.parametrize("decalage_s", [0, -1, -600])
+async def test_un_code_deja_expire_n_est_pas_envoye(decalage_s: int) -> None:
+    echeance = HORLOGE + timedelta(seconds=decalage_s)
+    boite, vues = envoi(lambda _: ok())
+    with pytest.raises(MailIndisponible, match="expiré") as erreur:
+        await boite.envoie_le_code(MessageCode(ADRESSE, CODE, 10, echeance))
+    assert vues == []
+    assert erreur.value.issue_inconnue is False
+
+
+async def test_un_code_qui_expire_dans_une_seconde_part_encore() -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(MessageCode(ADRESSE, CODE, 10, HORLOGE + timedelta(seconds=1)))
+    assert len(vues) == 1
+
+
+async def test_le_sujet_envoye_est_celui_de_l_enveloppe(monkeypatch: pytest.MonkeyPatch) -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message_code())
+    await boite.envoie_l_invitation(message_invitation())
+    assert [corps(v)["subject"] for v in vues] == [
+        mails_textes.OBJET_DU_CODE,
+        "Marc t'a gardé une place en cuisine",
+    ]
+    assert CODE not in corps(vues[0])["subject"] and "Claire" not in corps(vues[1])["subject"]
+
+
+async def test_le_prenom_refuse_de_l_hote_donne_l_objet_de_repli_dans_la_charge_utile() -> None:
+    message = MessageInvitation(
+        ADRESSE, "Claire", "Marc<b>", LIEN, datetime(2026, 11, 20, 10, 30, tzinfo=UTC)
+    )
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_l_invitation(message)
+    assert corps(vues[0])["subject"] == "Une place t'attend en cuisine"
+
+
+async def test_un_lien_hors_des_origines_de_l_environnement_n_est_pas_envoye() -> None:
+    boite, vues = envoi(lambda _: ok())
+    prod = EnvoiScaleway(
+        SecretStr(CLE),
+        PROJET,
+        EXPEDITEUR,
+        reglages("prod").origines,
+        transport=httpx.MockTransport(lambda r: vues.append(r) or ok()),  # type: ignore[func-returns-value]
+    )
+    with pytest.raises(ValueError, match="origine"):
+        await prod.envoie_l_invitation(message_invitation())  # un lien de l'essai, un envoi de la prod
+    assert vues == []
+    assert boite is not None
+
+
+def test_l_envoi_scaleway_est_une_realisation_par_enveloppe() -> None:
+    assert issubclass(EnvoiScaleway, EnvoiParEnveloppe)
 
 
 async def test_un_objet_de_moins_de_dix_caracteres_est_refuse_avant_l_appel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Hors des gabarits, aucune enveloppe ne se fabrique : on élargit l'ensemble pour atteindre TEM.
     monkeypatch.setattr(mails_textes, "OBJET_DU_CODE", "Code")
+    monkeypatch.setattr(mails_textes, "OBJETS_FIXES", frozenset({"Code"}))
     boite, vues = envoi(lambda _: ok())
     with pytest.raises(ValueError, match="objet"):
         await boite.envoie_le_code(message_code())
@@ -382,6 +457,73 @@ async def test_chaque_etape_a_un_delai_fini() -> None:
     assert vues[0].extensions["timeout"] == {"connect": 3.0, "read": 5.0, "write": 5.0, "pool": 3.0}
 
 
+# --- Ce que le journal peut dire : « issue inconnue » quand le mail a pu partir ---------------------------
+
+
+def une_panne(reponse: Reponse) -> MailIndisponible:
+    async def envoyer() -> MailIndisponible:
+        boite, _ = envoi(reponse)
+        with pytest.raises(MailIndisponible) as erreur:
+            await boite.envoie_le_code(message_code())
+        return erreur.value
+
+    return asyncio.run(envoyer())
+
+
+@pytest.mark.parametrize(
+    ("reponse", "inconnue"),
+    [
+        (coupure, True),
+        (delai, True),
+        (lambda _: httpx.Response(503), False),
+        (lambda _: httpx.Response(400), False),
+        (lambda _: httpx.Response(429), False),
+        (lambda _: httpx.Response(200, json={"emails": [{"status": "failed"}]}), False),
+        (lambda _: httpx.Response(200, json={"emails": [{"status": "canceled"}]}), False),
+        (lambda _: httpx.Response(200, content=b"<html>portail</html>"), True),
+        (lambda _: httpx.Response(200, json={"emails": []}), True),
+        (lambda _: httpx.Response(200, json={"emails": [{"id": "x"}]}), True),
+        (lambda _: httpx.Response(200, stream=CorpsQuiCasse(httpx.ReadError("coupé"))), True),
+        (lambda _: httpx.Response(200, content=b"x" * (mail_scaleway.OCTETS_MAX_REPONSE * 2)), True),
+    ],
+)
+def test_l_erreur_dit_si_le_mail_a_pu_partir(reponse: Reponse, inconnue: bool) -> None:
+    assert une_panne(reponse).issue_inconnue is inconnue
+
+
+def test_un_delai_total_depasse_laisse_l_issue_inconnue(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
+
+    class Muet(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            await asyncio.Event().wait()
+            raise AssertionError("jamais atteint")
+
+    async def envoyer() -> MailIndisponible:
+        boite = EnvoiScaleway(SecretStr(CLE), PROJET, EXPEDITEUR, ORIGINES, transport=Muet())
+        with pytest.raises(MailIndisponible) as erreur:
+            await boite.envoie_le_code(
+                MessageCode(ADRESSE, CODE, 10, datetime.now(UTC) + timedelta(minutes=10))
+            )
+        return erreur.value
+
+    assert asyncio.run(envoyer()).issue_inconnue is True
+
+
+@pytest.mark.parametrize(
+    ("reponse", "attendu"),
+    [(coupure, "issue inconnue"), (lambda _: httpx.Response(400), "non envoyé")],
+)
+async def test_le_journal_distingue_issue_inconnue_et_non_envoye(
+    reponse: Reponse, attendu: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    boite, _ = envoi(reponse)
+    with caplog.at_level(logging.DEBUG, logger="popote_api.infra.mails"):
+        assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), TypeDeMail.code) is False
+    assert attendu in caplog.text
+    assert ("non envoyé" in caplog.text) is (attendu == "non envoyé")
+
+
 # --- Le délai total et l'annulation ----------------------------------------------------------------------
 
 
@@ -400,8 +542,9 @@ async def test_le_delai_total_borne_l_envoi_pause_comprise(monkeypatch: pytest.M
         SecretStr(CLE),
         PROJET,
         EXPEDITEUR,
+        ORIGINES,
         transport=httpx.MockTransport(lent),
-        maintenant=lambda: MAINTENANT,
+        maintenant=lambda: HORLOGE,
         pause=pause_sans_fin,
     )
     with pytest.raises(MailIndisponible):
@@ -419,7 +562,9 @@ async def test_une_reponse_qui_ne_vient_pas_est_coupee_par_le_delai_total(
             await asyncio.Event().wait()
             raise AssertionError("jamais atteint")
 
-    boite = EnvoiScaleway(SecretStr(CLE), PROJET, EXPEDITEUR, transport=Muet(), maintenant=lambda: MAINTENANT)
+    boite = EnvoiScaleway(
+        SecretStr(CLE), PROJET, EXPEDITEUR, ORIGINES, transport=Muet(), maintenant=lambda: HORLOGE
+    )
     with pytest.raises(MailIndisponible):
         await boite.envoie_le_code(message_code())
 
@@ -437,7 +582,7 @@ async def test_l_annulation_de_la_tache_n_est_ni_avalee_ni_reprise() -> None:
             raise AssertionError("jamais atteint")
 
     boite = EnvoiScaleway(
-        SecretStr(CLE), PROJET, EXPEDITEUR, transport=Bloque(), maintenant=lambda: MAINTENANT
+        SecretStr(CLE), PROJET, EXPEDITEUR, ORIGINES, transport=Bloque(), maintenant=lambda: HORLOGE
     )
     tache = asyncio.create_task(boite.envoie_le_code(message_code()))
     await entre.wait()
@@ -450,9 +595,9 @@ async def test_l_annulation_de_la_tache_n_est_ni_avalee_ni_reprise() -> None:
 
 async def test_envoie_sans_remonter_rend_faux_sur_un_echec_de_tem_et_vrai_sur_un_succes() -> None:
     boite, _ = envoi(lambda _: httpx.Response(400))
-    assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), "code") is False
+    assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), TypeDeMail.code) is False
     boite, _ = envoi(lambda _: ok())
-    assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), "code") is True
+    assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), TypeDeMail.code) is True
 
 
 # --- Le secret, l'adresse, le code : nulle part ----------------------------------------------------------
@@ -492,8 +637,8 @@ async def test_ni_la_cle_ni_l_adresse_ni_le_code_ne_sortent_ni_en_journal_ni_en_
     boite, _ = envoi(PANNES[panne])
     sortie = ""
     with caplog.at_level(logging.DEBUG):
-        await envoie_sans_remonter(boite.envoie_le_code, message_code(), "code")
-        await envoie_sans_remonter(boite.envoie_l_invitation, message_invitation(), "invitation")
+        await envoie_sans_remonter(boite.envoie_le_code, message_code(), TypeDeMail.code)
+        await envoie_sans_remonter(boite.envoie_l_invitation, message_invitation(), TypeDeMail.invitation)
         for appel in (boite.envoie_le_code(message_code()), boite.envoie_l_invitation(message_invitation())):
             try:
                 await appel
@@ -561,7 +706,7 @@ def test_la_cle_n_est_ni_dans_le_repr_de_l_envoi_ni_dans_celui_des_reglages() ->
 )
 def test_une_cle_non_transmissible_dans_un_en_tete_est_refusee_sans_etre_recopiee(cle: str) -> None:
     with pytest.raises(ValueError, match="Clé") as erreur:
-        EnvoiScaleway(SecretStr(cle), PROJET, EXPEDITEUR)
+        EnvoiScaleway(SecretStr(cle), PROJET, EXPEDITEUR, ORIGINES)
     assert not cle or cle not in tout_ce_qui_sort(erreur.value)
 
 

@@ -3,6 +3,7 @@ from enum import StrEnum
 from functools import lru_cache
 from ipaddress import ip_address
 from typing import Self
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationInfo, field_validator, model_validator
@@ -39,6 +40,19 @@ ORIGINES_PAR_ENV: dict[str, frozenset[str]] = {
     "essai": frozenset({"https://essai.notre-popote.fr"}),
     "local": frozenset({"http://localhost:5173", "http://127.0.0.1:5173"}),
 }
+# Clés d'accès (WebAuthn) : le RP ID et les origines d'où le navigateur appelle `navigator.credentials`, par
+# environnement. Aucun aperçu `*.workers.dev` : leur hôte ne peut pas avoir pour suffixe le RP ID de l'essai.
+# `127.0.0.1` n'y figure pas non plus : une adresse IP n'est pas un RP ID valide (W3C WebAuthn § 5.1.3).
+WEBAUTHN_PAR_ENV: dict[str, tuple[str, frozenset[str]]] = {
+    "prod": ("notre-popote.fr", frozenset({"https://notre-popote.fr"})),
+    "essai": ("essai.notre-popote.fr", frozenset({"https://essai.notre-popote.fr"})),
+    "local": ("localhost", frozenset({"http://localhost:5173"})),
+}
+HOTE_LOCAL_DES_CLES = "localhost"
+# Hors local, le RP ID est ce domaine ou un sous-domaine : ni un suffixe public (`workers.dev`) ni le
+# domaine de quelqu'un d'autre ne peuvent être posés par erreur.
+DOMAINE_DES_CLES = "notre-popote.fr"
+PORTS_PAR_DEFAUT = {"http": 80, "https": 443}
 # Le Worker du front d'essai (`name` de `popote-web/wrangler.jsonc`) : seul son nom entre dans le motif.
 WORKER_DU_FRONT = "popote-web-essai"
 # Un sous-domaine `workers.dev` est une étiquette DNS : minuscules, chiffres, tirets, 63 au plus.
@@ -76,6 +90,47 @@ class MailProvider(StrEnum):
 class BreachCheck(StrEnum):
     hibp = "hibp"  # Pwned Passwords (API « range »)
     off = "off"  # aucune vérification : local seulement
+
+
+def _est_une_adresse_ip(hote: str) -> bool:
+    try:
+        ip_address(hote.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+def _est_local(hote: str) -> bool:
+    return hote == HOTE_LOCAL_DES_CLES or hote.endswith(f".{HOTE_LOCAL_DES_CLES}")
+
+
+def hote_de_l_origine_de_cle(origine: str, env: Env) -> str:
+    """L'hôte d'une origine de clé d'accès, ou `ValueError` si ce n'est pas l'origine que le navigateur écrit.
+
+    Le navigateur écrit `schéma://hôte[:port]` en minuscules, sans barre finale ni port par défaut : la
+    bibliothèque compare cette chaîne telle quelle, une origine qui s'en écarte ne servirait jamais.
+    Hors local : https seulement, sans port, jamais `localhost` ni une adresse IP. En local : http n'est admis
+    que pour `localhost`.
+    """
+    try:
+        morceaux = urlsplit(origine)
+        hote, port = morceaux.hostname, morceaux.port
+    except ValueError as erreur:
+        raise ValueError("une origine mal formée") from erreur
+    if hote is None or morceaux.scheme not in PORTS_PAR_DEFAUT or _est_une_adresse_ip(hote):
+        raise ValueError("une origine http(s) avec un nom d'hôte, jamais une adresse IP")
+    if port == PORTS_PAR_DEFAUT[morceaux.scheme] or port == 0:
+        raise ValueError("un port par défaut ou nul ne s'écrit pas dans une origine")
+    ecrite = f"{morceaux.scheme}://{hote}" + (f":{port}" if port is not None else "")
+    if ecrite != origine or FORME_D_UN_NOM_D_HOTE.fullmatch(hote) is None:
+        raise ValueError(
+            "l'origine telle que le navigateur l'écrit : schéma://hôte[:port], minuscules, sans chemin"
+        )
+    if env is not Env.local and (morceaux.scheme != "https" or port is not None or _est_local(hote)):
+        raise ValueError("hors local : https, sans port, jamais localhost")
+    if env is Env.local and morceaux.scheme == "http" and not _est_local(hote):
+        raise ValueError("en local, http ne passe que pour localhost")
+    return hote
 
 
 def _est_un_hote(hote: str) -> bool:
@@ -117,6 +172,16 @@ class Settings(BaseSettings):
     invitation_essais_par_lien: int = Field(default=10, ge=1, le=10000)
     invitation_fenetre_s: int = Field(default=900, ge=1, le=86400)
     connexion_attente_max_s: int = Field(default=3600, ge=1, le=86400)
+    # La demande de code par mail (`security/code_de_connexion.py`, migration 0147) : 10 demandes par IP et
+    # 3 par (adresse, IP) par fenêtre de 15 min, 6 par adresse par heure ; sans escalade (le créneau de trop
+    # attend la fin de la fenêtre). Le coupe-circuit global compte les mails envoyés, jamais les demandes.
+    code_demandes_par_ip: int = Field(default=10, ge=1, le=10000)
+    code_demandes_par_paire: int = Field(default=3, ge=1, le=10000)
+    code_demandes_par_compte: int = Field(default=6, ge=1, le=10000)
+    code_fenetre_s: int = Field(default=900, ge=1, le=86400)
+    code_fenetre_compte_s: int = Field(default=3600, ge=1, le=86400)
+    mail_global_par_fenetre: int = Field(default=60, ge=1, le=10000)
+    mail_global_fenetre_s: int = Field(default=3600, ge=1, le=86400)
     reinitialisation_essais: int = Field(default=3, ge=1, le=100)
     reinitialisation_fenetre_s: int = Field(default=3600, ge=1, le=86400)
     # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans
@@ -144,6 +209,14 @@ class Settings(BaseSettings):
     mail_from_name: str = "Popote"
     # L'origine publique du front, où pointent les liens : `<public_base_url>/invitation#<jeton>`.
     public_base_url: AnyHttpUrl | None = None
+
+    # Clés d'accès (`infra/webauthn.py`). Sans valeur, le RP ID et les origines viennent de
+    # `WEBAUTHN_PAR_ENV` (`rp_id_webauthn`, `origines_webauthn`) ; les poser sert une adresse d'essai
+    # différente, et le démarrage refuse tout ce qui n'est pas une origine https dont le RP ID est un
+    # suffixe. `webauthn_origins` : une liste séparée par des virgules.
+    webauthn_rp_name: str = Field("Popote", min_length=1, max_length=64)
+    webauthn_rp_id: str | None = None
+    webauthn_origins: str | None = None
 
     # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.
     version: str = Field("inconnue", pattern=r"^[A-Za-z0-9._-]{1,64}$")
@@ -234,6 +307,11 @@ class Settings(BaseSettings):
                 raise ValueError(f"{nom} est obligatoire avec mail_provider=scaleway.")
         return self
 
+    @field_validator("webauthn_rp_id", "webauthn_origins", mode="before")
+    @classmethod
+    def _valeur_de_cle_vide_vaut_absente(cls, valeur: object) -> object:
+        return None if valeur == "" else valeur
+
     @field_validator("public_base_url", mode="before")
     @classmethod
     def _adresse_publique_vide_vaut_absente(cls, valeur: object) -> object:
@@ -279,6 +357,40 @@ class Settings(BaseSettings):
         if len(propre) < LONGUEUR_MINIMALE_DU_POIVRE:
             raise ValueError(f"identity_pepper : {LONGUEUR_MINIMALE_DU_POIVRE} caractères au moins.")
         return SecretStr(propre)
+
+    @property
+    def rp_id_webauthn(self) -> str:
+        """Le RP ID des clés d'accès : celui qui est posé, sinon celui de l'environnement."""
+        return self.webauthn_rp_id or WEBAUTHN_PAR_ENV[self.env.value][0]
+
+    @property
+    def origines_webauthn(self) -> frozenset[str]:
+        """Les origines d'où une réponse de clé est admise : exactes, jamais déduites de la requête."""
+        if self.webauthn_origins is None:
+            return WEBAUTHN_PAR_ENV[self.env.value][1]
+        return frozenset(origine.strip() for origine in self.webauthn_origins.split(","))
+
+    @model_validator(mode="after")
+    def _regle_les_cles_d_acces(self) -> Self:
+        rp_id = self.rp_id_webauthn
+        # Le RP ID est le suffixe de l'hôte de chaque origine (plus bas) : une adresse IP, `localhost` hors
+        # local ou une écriture non canonique ne passent donc pas. Reste le nom sans point (`com`).
+        if "." not in rp_id and rp_id != HOTE_LOCAL_DES_CLES:
+            raise ValueError("webauthn_rp_id : un nom de domaine (localhost en local seulement).")
+        if (
+            self.env is not Env.local
+            and rp_id != DOMAINE_DES_CLES
+            and not rp_id.endswith(f".{DOMAINE_DES_CLES}")
+        ):
+            raise ValueError(f"webauthn_rp_id : {DOMAINE_DES_CLES} ou l'un de ses sous-domaines hors local.")
+        for origine in self.origines_webauthn:
+            try:
+                hote = hote_de_l_origine_de_cle(origine, self.env)
+            except ValueError as erreur:
+                raise ValueError(f"webauthn_origins : {erreur}.") from erreur
+            if hote != rp_id and not hote.endswith(f".{rp_id}"):
+                raise ValueError("webauthn_rp_id : l'hôte de chaque origine, ou un domaine parent.")
+        return self
 
     @property
     def emetteur_des_jetons(self) -> str | None:

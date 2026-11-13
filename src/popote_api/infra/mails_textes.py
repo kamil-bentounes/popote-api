@@ -5,17 +5,25 @@ propres phrases. Deux règles : le code n'est JAMAIS dans l'objet (le fournisseu
 prénom n'entre jamais dans un texte sans passer par `prenom_affichable`.
 """
 
+import re
 import unicodedata
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
+
+from popote_api.config import HOTES_LOCAUX
+from popote_api.infra.comptes import adresse_valide
 
 if TYPE_CHECKING:  # `mails` importe ce module : l'import ne se fait que pour le typage
     from popote_api.infra.mails import MessageCode, MessageInvitation
 
 # TEM exige un objet d'au moins 10 caractères.
 OBJET_DU_CODE: Final = "Ton code de connexion Popote"
-OBJET_DE_L_INVITATION: Final = "Invitation à rejoindre un foyer sur Popote"
+OBJET_DE_L_INVITATION_DE_REPLI: Final = "Une place t'attend en cuisine"
+# Le seul objet qui porte une variable : le prénom de l'HÔTE (jamais celui de l'invité), par `prenom_valide`.
+SUITE_DE_L_OBJET_DE_L_INVITATION: Final = " t'a gardé une place en cuisine"
 REPLI_DU_PRENOM: Final = "Quelqu'un"
 LONGUEUR_MAX_DU_PRENOM: Final = 30
 _SEPARATEURS_DU_PRENOM: Final = frozenset(" -'\u2019")  # espace, tiret, apostrophes droite et typographique
@@ -24,6 +32,21 @@ MARQUES_DE_SUITE_MAX: Final = (
 )
 # Catégorie Lo mais invisibles : un prénom fait de ces seuls caractères s'afficherait vide.
 _REMPLISSAGES_INVISIBLES: Final = frozenset("\u115f\u1160\u3164\uffa0")
+# Invisibles ou sans largeur, de toute catégorie : un prénom qui en porte un, où que ce soit, est refusé (un
+# « Marc\u3164Support » s'afficherait « Marc Support » : il imiterait un nom officiel).
+_INVISIBLES: Final = _REMPLISSAGES_INVISIBLES | frozenset(
+    "\u2800\u2060\u2061\u2062\u2063\u2064\ufeff" + "".join(chr(c) for c in range(0x200B, 0x2010))
+)
+# Marques combinantes qui ne dessinent rien (sélecteurs de variante, jonction de graphèmes, voyelles khmères
+# inhérentes, sélecteurs mongols) : elles passeraient la règle des marques et s'afficheraient comme du vide.
+_MARQUES_INVISIBLES: Final = frozenset(
+    "".join(chr(c) for c in (0x034F, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180F, *range(0xFE00, 0xFE10)))
+)
+# Un prénom n'a qu'UNE écriture (latin, grec, cyrillique, devanagari...) : un « Popote » aux omicrons grecs,
+# des lettres pleine chasse ou mathématiques (leur nom ne commence pas par LATIN) ou un titlo cyrillique sur
+# une lettre latine passeraient pour un prénom officiel. Une marque « COMBINING <ÉCRITURE> … » compte pour
+# son écriture.
+_ECRITURES_DES_MARQUES: Final = frozenset({"LATIN", "GREEK", "CYRILLIC"})
 _FUSEAU: Final = ZoneInfo("Europe/Paris")
 
 
@@ -37,9 +60,13 @@ def prenom_valide(texte: str) -> str | None:
     prenom = unicodedata.normalize("NFC", texte).strip()
     if not prenom or len(prenom) > LONGUEUR_MAX_DU_PRENOM:
         return None
+    if unicodedata.normalize("NFKC", prenom) != prenom:  # pleine chasse, mathématiques, ligatures...
+        return None
     marques = 0
     sur_une_lettre = False  # une marque combinante suit une lettre, jamais le début ni un séparateur
     for caractere in prenom:
+        if caractere in _INVISIBLES or caractere in _MARQUES_INVISIBLES:
+            return None
         if unicodedata.category(caractere) in ("Mn", "Mc"):
             marques += 1
             if not sur_une_lettre or marques > MARQUES_DE_SUITE_MAX:
@@ -49,7 +76,22 @@ def prenom_valide(texte: str) -> str | None:
             sur_une_lettre = caractere.isalpha()
         else:
             return None
-    return prenom if _a_une_lettre_visible(prenom) else None
+    if not _a_une_lettre_visible(prenom) or len(_ecritures(prenom)) > 1:
+        return None
+    return prenom
+
+
+def _ecritures(prenom: str) -> set[str]:
+    """Les écritures du prénom : le premier mot du nom Unicode de chaque lettre ou marque d'une écriture."""
+    ecritures: set[str] = set()
+    for caractere in prenom:
+        if not (caractere.isalpha() or unicodedata.category(caractere) in ("Mn", "Mc")):
+            continue
+        mots = unicodedata.name(caractere, "").split(" ")
+        if mots[0] == "COMBINING":
+            mots = mots[1:2] if mots[1:2] and mots[1] in _ECRITURES_DES_MARQUES else []
+        ecritures.update(mots[:1])
+    return ecritures
 
 
 def _a_une_lettre_visible(prenom: str) -> bool:
@@ -85,3 +127,109 @@ def texte_de_l_invitation(message: "MessageInvitation") -> str:
             "celui-ci le remplace. Si tu ne connais pas cette personne, ignore ce message.",
         ]
     )
+
+
+# --- L'enveloppe rendue : la seule chose que les réalisations envoient ---------------------------------
+
+OBJETS_FIXES: Final = frozenset({OBJET_DU_CODE, OBJET_DE_L_INVITATION_DE_REPLI})
+_CACHET: Final = object()  # seul ce module le détient : une enveloppe ne se fabrique pas ailleurs
+FORME_DU_JETON_DE_LIEN: Final = re.compile(r"[A-Za-z0-9_-]{1,128}")
+CHEMIN_DU_LIEN: Final = "/invitation"
+
+
+LONGUEUR_MAX_DE_LA_PARTIE_LOCALE: Final = 64
+
+
+def objet_de_l_invitation(prenom_hote: str) -> str:
+    """« {Hôte} t'a gardé une place en cuisine » ; le prénom de l'hôte est refusé : l'objet de repli."""
+    hote = prenom_valide(prenom_hote)
+    return f"{hote}{SUITE_DE_L_OBJET_DE_L_INVITATION}" if hote else OBJET_DE_L_INVITATION_DE_REPLI
+
+
+def objet_admis(objet: str) -> bool:
+    """Un objet fixe, ou le gabarit de l'invitation avec un prénom présentable (30 caractères au plus)."""
+    if objet in OBJETS_FIXES:
+        return True
+    prenom, suite, reste = objet.partition(SUITE_DE_L_OBJET_DE_L_INVITATION)
+    return bool(suite) and not reste and prenom_valide(prenom) == prenom
+
+
+def destinataire_valide(valeur: object) -> bool:
+    """Une seule adresse : ASCII, sans virgule ni caractère de contrôle ou de direction, 254 au plus, un
+    domaine à point (`infra.comptes.adresse_valide`, plus le point : aucun domaine sans point n'est admis)."""
+    if not isinstance(valeur, str) or not adresse_valide(valeur):
+        return False
+    local, _, domaine = valeur.rpartition("@")
+    return len(local) <= LONGUEUR_MAX_DE_LA_PARTIE_LOCALE and "." in domaine
+
+
+@dataclass(frozen=True, slots=True)
+class Enveloppe:
+    """Ce qu'une réalisation d'`EnvoiMail` transmet au fournisseur : destinataire, objet, texte, rien d'autre.
+
+    Seules `enveloppe_du_code` et `enveloppe_de_l_invitation` la fabriquent (le cachet est privé à ce module,
+    un test d'architecture cherche tout autre appel) : l'objet est donc l'un des objets autorisés, constants,
+    sans code ni prénom ni lien. Le `repr` masque tout : adresse, code et lien s'y trouveraient.
+    """
+
+    destinataire: str
+    objet: str
+    texte: str
+    cachet: object = field(repr=False, compare=False)
+    # Un code : l'heure après laquelle il est refusé ; le fournisseur ne le livre pas après (`send_before`).
+    expire_le: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.cachet is not _CACHET:
+            raise TypeError("Enveloppe : fabriquée par les fonctions de mails_textes, pas autrement.")
+        if type(self.objet) is not str or not objet_admis(self.objet):  # pas une sous-classe de str
+            raise ValueError("Enveloppe : objet hors des gabarits autorisés (fixes, sans code).")
+        if not destinataire_valide(self.destinataire) or not self.texte:
+            raise ValueError("Enveloppe : destinataire invalide ou texte vide.")
+        if self.expire_le is not None and self.expire_le.utcoffset() is None:
+            raise ValueError("Enveloppe : expire_le doit porter un fuseau horaire.")
+
+    def __repr__(self) -> str:
+        return "Enveloppe(destinataire=…, objet=…, texte=…)"
+
+
+def enveloppe_du_code(message: "MessageCode") -> Enveloppe:
+    """L'échéance est celle du message (fixée à la demande) : elle n'est jamais recalculée à l'envoi."""
+    return Enveloppe(message.destinataire, OBJET_DU_CODE, texte_du_code(message), _CACHET, message.expire_le)
+
+
+def lien_d_invitation_admis(lien: str, origines: frozenset[str]) -> bool:
+    """Vrai si le lien est `<origine du front>/invitation#<jeton>` : une origine de la liste, rien d'autre.
+
+    Refuse une partie utilisateur (`https://notre-popote.fr@evil.example/…` : l'hôte suit l'`@`), un port non
+    admis, un autre chemin, une requête, et `http` ailleurs que vers l'hôte local.
+    """
+    if not isinstance(lien, str):
+        return False
+    try:
+        parties = urlsplit(lien)
+        parties.port  # noqa: B018 (une lecture qui lève `ValueError` si le port est invalide)
+    except ValueError:
+        return False
+    # `urlsplit` retire en silence tabulations, sauts de ligne et blancs de tête, et une requête vide (`?#`) :
+    # la forme rendue doit être celle reçue.
+    if parties.geturl() != lien:
+        return False
+    if "@" in parties.netloc or parties.scheme not in ("https", "http"):
+        return False
+    if parties.scheme == "http" and (parties.hostname or "") not in HOTES_LOCAUX:
+        return False
+    return (
+        f"{parties.scheme}://{parties.netloc.lower()}" in origines
+        and parties.path == CHEMIN_DU_LIEN
+        and not parties.query
+        and FORME_DU_JETON_DE_LIEN.fullmatch(parties.fragment) is not None
+    )
+
+
+def enveloppe_de_l_invitation(message: "MessageInvitation", origines: frozenset[str]) -> Enveloppe:
+    """`origines` : celles du front de l'environnement (`Settings.origines`)."""
+    if not lien_d_invitation_admis(message.lien, origines):
+        raise ValueError("Invitation : le lien n'est pas celui d'une origine du front.")
+    objet = objet_de_l_invitation(message.prenom_hote)
+    return Enveloppe(message.destinataire, objet, texte_de_l_invitation(message), _CACHET)
