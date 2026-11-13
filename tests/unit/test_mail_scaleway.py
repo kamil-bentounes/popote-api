@@ -231,6 +231,14 @@ async def test_un_lien_hors_des_origines_de_l_environnement_n_est_pas_envoye() -
     assert boite is not None
 
 
+@pytest.mark.parametrize("env", ["local", "essai", "prod"])
+def test_la_fabrique_donne_les_origines_du_front_de_l_environnement(env: str) -> None:
+    config = reglages(env, **COMPLET)
+    envoi_reel = cree_envoi_mail(config)
+    assert isinstance(envoi_reel, EnvoiScaleway)
+    assert envoi_reel._origines == config.origines
+
+
 def test_l_envoi_scaleway_est_une_realisation_par_enveloppe() -> None:
     assert issubclass(EnvoiScaleway, EnvoiParEnveloppe)
 
