@@ -488,9 +488,7 @@ l'administration exige les deux : sinon l'application démarre avec un avertisse
   - dépendances qu'elle fait venir (versions de `uv.lock`) : `cryptography` 50.0.2 (Apache-2.0 OR BSD-3-Clause, option
     BSD-3-Clause), `pyOpenSSL` 26.4.0 (Apache-2.0), `cbor2` 6.1.5 (MIT), `pyasn1` 0.6.5 (BSD-2-Clause), `pyasn1-modules` 0.4.2
     (BSD-2-Clause d'après son fichier de licence ; PyPI écrit « BSD »), `cffi` 2.1.1 (**MIT-0**, venu avec `cryptography`),
-    `pycparser` 3.12 (BSD-3-Clause). **MIT-0** (MIT sans obligation d'attribution, approuvée par l'OSI) n'est pas dans la liste
-    des licences admises de la politique : classée « à relire », acceptée ici par le propriétaire du dépôt, à confirmer dans la
-    demande de fusion.
+    `pycparser` 3.12 (BSD-3-Clause). MIT-0 admise le 13/11/2026 : permissive, sans obligation.
 
 ### 7.6 Vérification : OWASP ASVS niveau 2
 
@@ -708,6 +706,9 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9)
   note qu'un attaquant qui connaît un identifiant et une clé publique pourrait les enregistrer comme siens ; la parade est la base :
   **identifiant de clé unique pour tout le monde** (`409 cle_deja_enregistree`, S8b). (2) Le défi n'est vérifié qu'égal à celui qu'on
   donne : le rejeu d'un défi est refusé par la base, pas par ce module. (3) L'AAGUID est gardé, jamais interprété.
+- **À tenir en S8b et S9.** (1) Seul `type_de_la_cause` va aux journaux, jamais le texte de la cause : il recopie la réponse du
+  navigateur. (2) L'identifiant de clé est unique en base pour tout le monde (`409 cle_deja_enregistree`) : l'attestation `none` ne prouve
+  pas la possession de la clé privée.
 - **Authentificateur de test** : `tests/unit/_authentificateur.py` (ES256, EdDSA, RS256 ; UP, UV, BE, BS, compteur, `userHandle`,
   origine, RP ID, défi, signature, cadre, attestation réglables) ; il sert à tous les tests de S8b à S16.
 - Tests : `tests/unit/test_webauthn.py` (refus d'origine, RP ID, défi, UV, UP, `userHandle`, BE, compteur, signature, cadre, attestation,
