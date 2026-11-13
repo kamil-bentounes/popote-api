@@ -15,7 +15,7 @@ import cbor2
 import pytest
 from _authentificateur import Algorithme, Authentificateur
 from _commun import reglages
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 from popote_api.infra.webauthn import (
@@ -809,7 +809,9 @@ def _cose_ec2(alg: int, crv: int = 1, x: bytes | None = None, y: bytes | None = 
 
 
 def _cose_rsa(alg: int, bits: int, e: int = 65537) -> bytes:
-    n = rsa.generate_private_key(public_exponent=e, key_size=bits).public_key().public_numbers().n
+    # Un module impair de `bits` bits suffit : aucune clé n'est créée, la bibliothèque ne vérifie pas la
+    # factorisation. (Générer ici une vraie clé de 1024 bits ferait lever l'alerte « clé faible » de CodeQL.)
+    n = random.Random(bits).getrandbits(bits) | (1 << (bits - 1)) | 1
     return cbor2.dumps({1: 3, 3: alg, -1: n.to_bytes((bits + 7) // 8, "big"), -2: e.to_bytes(3, "big")})
 
 
