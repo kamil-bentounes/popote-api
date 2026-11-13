@@ -17,7 +17,7 @@
 --  - `public.termine_invitation(p_id, p_person)` : pose `accepted_by` sur un lien consommé (la table n'a aucun droit
 --    pour `service_role` : tout passe par une fonction). `service_role` seul.
 --  - `public.compte_pour_email(p_email)` : le compte de cette adresse (égalité sur la casse basse, paramétrée,
---    jamais un motif) : `existe`, `orphelin` (B10 : sans profil, sans hachage de mot de passe, ni banni ni
+--    jamais un motif) : `id`, `orphelin` (B10 : sans profil, sans hachage de mot de passe, ni banni ni
 --    supprimé). `service_role` seul.
 --  - `public.reprise_en_cours` + `reserve_reprise` / `libere_reprise` : la réservation de 60 s qui sérialise deux
 --    liens visant la même adresse (B10). `service_role` seul.
@@ -29,7 +29,7 @@
 -- `invitation` et les fonctions Edge `invite` / `accept-invite` ne sont pas touchées (coexistence).
 --
 -- Retour arrière (sans perte : tout se reconstitue ; les liens déjà consommés restent consommés) :
---   drop function public.libere_reprise(bytea);
+--   drop function public.libere_reprise(bytea, uuid);
 --   drop function public.reserve_reprise(bytea);
 --   drop table public.reprise_en_cours;
 --   drop function public.compte_pour_email(text);
@@ -170,19 +170,29 @@ grant execute on function public.termine_invitation(uuid, uuid) to service_role;
 
 -- ── 4. Le compte d'une adresse ──────────────────────────────────────────────
 create or replace function public.compte_pour_email(p_email text)
-returns table (id uuid, orphelin boolean)
+returns table (id uuid, orphelin boolean, a_un_profil boolean)
 language sql
 stable
 security definer
 set search_path = ''
 as $$
-  select u.id,
-         (    u.deleted_at is null
-          and (u.banned_until is null or u.banned_until <= pg_catalog.now())
-          and coalesce(u.encrypted_password, '') = ''
-          and not exists (select 1 from public.user_profile p where p.id = u.id))
-    from auth.users u
-   where pg_catalog.lower(u.email) = p_email
+  -- Un orphelin n'a RIEN à prendre : ni profil, ni hachage, ni identité d'un autre fournisseur (Google...), ni
+  -- compte SSO ; il n'est ni banni ni supprimé. Plusieurs comptes pour une adresse : le non-orphelin d'abord, donc
+  -- l'adresse reste « connue » et le résultat est déterministe.
+  select t.id, t.orphelin, t.a_un_profil
+    from (
+      select u.id,
+             exists (select 1 from public.user_profile p where p.id = u.id) as a_un_profil,
+             (    u.deleted_at is null
+              and (u.banned_until is null or u.banned_until <= pg_catalog.now())
+              and coalesce(u.encrypted_password, '') = ''
+              and not coalesce(u.is_sso_user, false)
+              and not exists (select 1 from auth.identities i where i.user_id = u.id and i.provider <> 'email')
+              and not exists (select 1 from public.user_profile p where p.id = u.id)) as orphelin
+        from auth.users u
+       where pg_catalog.lower(u.email) = p_email
+    ) t
+   order by t.orphelin, t.id
    limit 1;
 $$;
 comment on function public.compte_pour_email(text) is
@@ -194,6 +204,7 @@ grant execute on function public.compte_pour_email(text) to service_role;
 -- ── 5. La réservation d'une reprise ─────────────────────────────────────────
 create table public.reprise_en_cours (
   key        bytea primary key check (octet_length(key) = 32),
+  owner      uuid not null,
   expires_at timestamptz not null
 );
 comment on table public.reprise_en_cours is
@@ -202,33 +213,32 @@ alter table public.reprise_en_cours enable row level security;
 alter table public.reprise_en_cours force row level security;
 revoke all on table public.reprise_en_cours from public, anon, authenticated, service_role, popote_api, popote_internal;
 
-create or replace function public.reserve_reprise(p_key bytea) returns boolean
+create or replace function public.reserve_reprise(p_key bytea) returns uuid
 language sql
 volatile
 security definer
 set search_path = ''
 as $$
-  -- Rend vrai si la clé est libre ou si sa réservation est échue ; faux si un autre lien la tient.
-  with prise as (
-    insert into public.reprise_en_cours as r (key, expires_at)
-    values (p_key, pg_catalog.now() + interval '60 seconds')
-    on conflict (key) do update set expires_at = excluded.expires_at
-      where r.expires_at <= pg_catalog.now()
-    returning 1
-  )
-  select exists (select 1 from prise);
+  -- Rend le propriétaire (un uuid aléatoire) si la clé est libre ou si sa réservation est échue ; `null` si un
+  -- autre lien la tient. Seul le propriétaire libère : une réservation échue puis reprise n'est pas défaite par
+  -- l'ancien porteur.
+  insert into public.reprise_en_cours as r (key, owner, expires_at)
+  values (p_key, gen_random_uuid(), pg_catalog.now() + interval '60 seconds')
+  on conflict (key) do update set owner = excluded.owner, expires_at = excluded.expires_at
+    where r.expires_at <= pg_catalog.now()
+  returning owner;
 $$;
-create or replace function public.libere_reprise(p_key bytea) returns void
+create or replace function public.libere_reprise(p_key bytea, p_owner uuid) returns void
 language sql
 volatile
 security definer
 set search_path = ''
 as $$
-  delete from public.reprise_en_cours where key = p_key;
+  delete from public.reprise_en_cours where key = p_key and owner = p_owner;
 $$;
 revoke all on function public.reserve_reprise(bytea)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
-revoke all on function public.libere_reprise(bytea)
+revoke all on function public.libere_reprise(bytea, uuid)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 grant execute on function public.reserve_reprise(bytea) to service_role;
-grant execute on function public.libere_reprise(bytea) to service_role;
+grant execute on function public.libere_reprise(bytea, uuid) to service_role;

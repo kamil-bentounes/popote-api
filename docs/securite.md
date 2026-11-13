@@ -558,12 +558,15 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   profil supprime le compte créé ; si cette compensation échoue aussi, l'erreur `compte_orphelin_a_nettoyer`
   (identifiant de personne, jamais d'adresse) est journalisée et la réponse est `503`.
 - **Reprise d'un compte (B10)** : seulement un compte **sans profil, sans foyer et sans hachage de mot de passe**
-  (reste d'un ancien lien magique : rien à prendre), non banni, non supprimé. Tout autre compte existant (profil ou
+  (reste d'un ancien lien magique : rien à prendre), sans identité d'un autre fournisseur (Google...), non SSO, non banni, non supprimé ; l'état est relu après la consommation du lien, et rien n'est posé si le compte a changé entre-temps. Tout autre compte existant (profil ou
   hachage) : `409`, lien non consommé. L'adresse est **réservée 60 s** (`reprise_en_cours`, clé = HMAC de l'adresse)
   pour toute création ou reprise : deux liens visant la même adresse ne s'exécutent jamais ensemble, le perdant a `409`
   sans appeler Auth. Reprise : `updateUserById` (mot de passe, e-mail confirmé), profil, session, événement
   `compte_repris`. Si le profil échoue après le mot de passe, le compte (qui existait avant) n'est pas supprimé : il
-  est signalé `compte_orphelin_a_nettoyer`.
+  est signalé `compte_orphelin_a_nettoyer` (réparation : `docs/exploitation.md`). La réservation a un propriétaire :
+  seul lui la libère. Si Auth crée un compte puis répond mal, le compte sans profil est retiré (adresse libérée).
+  Risque accepté : une requête annulée (arrêt du processus) entre la création et le profil laisse un compte à
+  nettoyer par la requête de `docs/exploitation.md`.
 - **Liste de fuites hors service (B23)** : le mot de passe est accepté, l'événement `verification_fuites_indisponible`
   est écrit (aucune valeur).
 - **Énumération d'adresses** : le `409` n'est rendu qu'à qui détient un lien valide, au plus 10 essais par lien et 30

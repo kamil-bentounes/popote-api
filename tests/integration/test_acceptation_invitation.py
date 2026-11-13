@@ -61,6 +61,7 @@ class EspionAuth(AuthAdmin):
         self.panne_creation = False
         self.course_adresse = False
         self.panne_suppression = False
+        self.panne_apres_creation = False
 
     async def cree_compte(self, email: str, mot_de_passe: str) -> UUID:
         self.creations.append(email)
@@ -68,7 +69,10 @@ class EspionAuth(AuthAdmin):
             raise AuthIndisponible("panne simulée")
         if self.course_adresse:
             raise CompteDejaExistant("course simulée")
-        return await super().cree_compte(email, mot_de_passe)
+        identifiant = await super().cree_compte(email, mot_de_passe)
+        if self.panne_apres_creation:  # le compte existe, la réponse s'est perdue
+            raise AuthIndisponible("réponse perdue")
+        return identifiant
 
     async def change_mot_de_passe(self, identifiant: UUID, mot_de_passe: str, **plus: Any) -> None:
         self.changements.append(identifiant)
@@ -546,6 +550,7 @@ async def test_deux_liens_pour_le_meme_orphelin_un_seul_gagne(cadre: Cadre) -> N
         "select public.rend_invitation(gen_random_uuid())",
         "select * from public.compte_pour_email('a@b.c')",
         "select public.reserve_reprise(decode(repeat('00', 32), 'hex'))",
+        "select public.libere_reprise(decode(repeat('00', 32), 'hex'), gen_random_uuid())",
     ],
 )
 def test_fonctions_de_service_refusees_aux_roles_publics(cadre: Cadre, role: str, appel: str) -> None:
@@ -556,3 +561,74 @@ def test_fonctions_de_service_refusees_aux_roles_publics(cadre: Cadre, role: str
         with adm.transaction(force_rollback=True):
             adm.execute(f"set local role {role}")
             adm.execute(appel)  # type: ignore[call-overload]
+
+
+# ── Constats de la revue adverse ────────────────────────────────────────────
+async def test_orphelin_avec_identite_d_un_autre_fournisseur_n_est_pas_repris(cadre: Cadre) -> None:
+    jeton, lien = cadre.lien()
+    personne, adresse = cadre.compte()
+    cadre.fabrique.admin.execute(
+        "insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at) "
+        "values (%s, %s, '{}'::jsonb, 'google', now(), now())",
+        (str(personne), personne),
+    )
+    reponse = await cadre.accepte(jeton, adresse)
+    assert (reponse.status_code, reponse.json()["code"]) == (409, "compte_existant")
+    assert cadre.etat(lien) == "valide" and cadre.auth.changements == []
+
+
+async def test_orphelin_sso_n_est_pas_repris(cadre: Cadre) -> None:
+    jeton, _ = cadre.lien()
+    personne, adresse = cadre.compte()
+    cadre.fabrique.admin.execute("update auth.users set is_sso_user = true where id = %s", (personne,))
+    assert (await cadre.accepte(jeton, adresse)).status_code == 409
+
+
+async def test_le_compte_qui_cesse_d_etre_orphelin_apres_la_consommation_n_est_pas_touche(
+    cadre: Cadre, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jeton, lien = cadre.lien()
+    personne, adresse = cadre.compte()
+    origine = modele._consomme
+
+    async def consomme_puis_donne_un_mot_de_passe(base: Base, empreinte: bytes) -> Any:
+        resultat = await origine(base, empreinte)
+        cadre.fabrique.admin.execute(
+            "update auth.users set encrypted_password = '$2a$10$TomZERTB2nLik39KZPllf.Hj5WyG1pEvK9axxrIM7a3IdbHay1/Q2' "
+            "where id = %s",
+            (personne,),
+        )
+        return resultat
+
+    monkeypatch.setattr(modele, "_consomme", consomme_puis_donne_un_mot_de_passe)
+    assert (await cadre.accepte(jeton, adresse)).status_code == 409
+    assert cadre.auth.changements == [] and cadre.etat(lien) == "valide"
+
+
+async def test_creation_dont_la_reponse_se_perd_ne_laisse_pas_de_compte(cadre: Cadre) -> None:
+    jeton, lien = cadre.lien()
+    adresse = cadre.adresse()
+    cadre.auth.panne_apres_creation = True
+    assert (await cadre.accepte(jeton, adresse)).status_code == 503
+    assert len(cadre.auth.suppressions) == 1 and not cadre.comptes_de(adresse)
+    assert cadre.etat(lien) == "utilisee"
+
+
+def test_seul_le_proprietaire_libere_la_reservation(cadre: Cadre) -> None:
+    adm, cle = cadre.fabrique.admin, b"\x07" * 32
+    premier = adm.execute("select public.reserve_reprise(%s)", (cle,)).fetchone()
+    assert premier is not None and premier[0] is not None
+    assert adm.execute("select public.reserve_reprise(%s)", (cle,)).fetchone() == (None,)
+    adm.execute(
+        "update public.reprise_en_cours set expires_at = now() - interval '1 second' where key = %s", (cle,)
+    )
+    second = adm.execute("select public.reserve_reprise(%s)", (cle,)).fetchone()
+    assert second is not None and second[0] not in (None, premier[0])
+    adm.execute("select public.libere_reprise(%s, %s)", (cle, premier[0]))  # l'ancien porteur : sans effet
+    assert adm.execute("select count(*) from public.reprise_en_cours where key = %s", (cle,)).fetchone() == (
+        1,
+    )
+    adm.execute("select public.libere_reprise(%s, %s)", (cle, second[0]))
+    assert adm.execute("select count(*) from public.reprise_en_cours where key = %s", (cle,)).fetchone() == (
+        0,
+    )

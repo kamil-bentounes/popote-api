@@ -24,7 +24,7 @@ from typing import Final, LiteralString
 from uuid import UUID
 
 from popote_api.config import Settings
-from popote_api.infra.auth_admin import AuthAdmin, CompteDejaExistant
+from popote_api.infra.auth_admin import AuthAdmin, AuthIndisponible, CompteDejaExistant
 from popote_api.infra.auth_admin import MotDePasseRefuseParAuth as RefusDAuth
 from popote_api.infra.comptes import adresse_valide
 from popote_api.infra.db import Base, Curseur
@@ -225,9 +225,10 @@ async def accepte(
     # adresse (compte neuf ou reprise) ne s'exécutent jamais ensemble, et le perdant n'appelle pas Auth.
     cle = empreintes.cle_compte_requise(adresse)
     async with base.service() as curseur:
-        await curseur.execute("select public.reserve_reprise(%s) as prise", (cle,))
+        await curseur.execute("select public.reserve_reprise(%s) as proprietaire", (cle,))
         ligne = await curseur.fetchone()
-    if ligne is None or not ligne["prise"]:
+    proprietaire: UUID | None = None if ligne is None else ligne["proprietaire"]
+    if proprietaire is None:
         return CompteExistant()  # un autre lien vise la même adresse : le sien n'est pas consommé
     try:
         async with base.service() as curseur:
@@ -251,13 +252,14 @@ async def accepte(
             auth,
             empreinte,
             compte["id"],
+            adresse,
             forme,
             fuites_indisponibles,
             agent=agent,
             request_id=request_id,
         )
     finally:
-        await _libere(base, cle)
+        await _libere(base, cle, proprietaire)
 
 
 MOT_DE_PASSE_FUITE: Final = (
@@ -300,7 +302,12 @@ async def _cree(
         return CompteExistant()
     except RefusDAuth:
         return MotDePasseRefuse()
-    # Les autres échecs (Auth en panne, mot de passe refusé) brûlent le lien : l'exception remonte.
+    except AuthIndisponible:
+        # Auth a pu créer le compte puis répondre mal (délai, réponse illisible) : l'adresse n'avait aucun
+        # compte à l'étape (5) et nous tenons sa réservation : un compte SANS profil est le nôtre. Le retirer,
+        # sinon l'adresse resterait refusée (hachage posé, pas de profil). Le lien reste brûlé.
+        await _retire_le_compte_cree(base, auth, adresse)
+        raise
     try:
         return await _termine(
             base,
@@ -321,11 +328,25 @@ async def _cree(
         raise
 
 
+async def _retire_le_compte_cree(base: Base, auth: AuthAdmin, adresse: str) -> None:
+    async with base.service() as curseur:
+        await curseur.execute("select id, a_un_profil from public.compte_pour_email(%s)", (adresse,))
+        compte = await curseur.fetchone()
+    if compte is None or compte["a_un_profil"]:
+        return
+    try:
+        await auth.supprime_compte(compte["id"])
+    except Exception as echec:
+        journal.error("Compensation impossible : %s", type(echec).__name__)
+        raise CompteOrphelinANettoyer(compte["id"]) from echec
+
+
 async def _reprend(
     base: Base,
     auth: AuthAdmin,
     empreinte: bytes,
     personne: UUID,
+    adresse: str,
     forme: str,
     fuites_indisponibles: bool,
     *,
@@ -337,6 +358,14 @@ async def _reprend(
     if isinstance(consomme, LienRefuse | Inconnue):
         return consomme
     lien, foyer = consomme
+    # Le compte a pu recevoir un profil ou un mot de passe depuis le contrôle : on ne pose rien sur un compte
+    # qui n'est plus un orphelin (le lien est rouvert, rien n'a été fait).
+    async with base.service() as curseur:
+        await curseur.execute("select id, orphelin from public.compte_pour_email(%s)", (adresse,))
+        compte = await curseur.fetchone()
+    if compte is None or compte["id"] != personne or not compte["orphelin"]:
+        await _rouvre(base, lien)
+        return CompteExistant()
     try:
         await auth.change_mot_de_passe(personne, forme, confirme_l_email=True)
     except RefusDAuth:
@@ -397,9 +426,9 @@ async def _rouvre(base: Base, lien: UUID) -> None:
         await curseur.execute("select public.rend_invitation(%s)", (lien,))
 
 
-async def _libere(base: Base, cle: bytes) -> None:
+async def _libere(base: Base, cle: bytes, proprietaire: UUID) -> None:
     try:
         async with base.service() as curseur:
-            await curseur.execute("select public.libere_reprise(%s)", (cle,))
+            await curseur.execute("select public.libere_reprise(%s, %s)", (cle, proprietaire))
     except Exception as echec:  # la réservation expire seule en 60 s
         journal.warning("Réservation de reprise non libérée : %s", type(echec).__name__)
