@@ -9,12 +9,14 @@ from typing import Final
 CONNEXION: Final = "/api/v1/sessions"
 INSPECTION: Final = "/api/v1/invitations/inspections"
 ACCEPTATION: Final = "/api/v1/invitations/acceptances"
+REINITIALISATION: Final = "/api/v1/password-resets"
 
 ROUTES_PUBLIQUES: Final[dict[str, str]] = {
     "/api/healthz": "le processus répond, sans donnée",
     "/api/readyz": "la base répond, sans donnée ; sert au réveil quotidien du projet",
     CONNEXION: "la connexion : sans session, par définition ; limitée en base avant tout bcrypt",
     INSPECTION: "lire un lien d'invitation : sans compte encore ; sans effet, limitée par IP",
+    REINITIALISATION: "demander un lien de réinit. : sans session ; toujours 202 ; limitée par (e-mail, IP)",
     ACCEPTATION: "accepter un lien : crée le compte ; limitée par IP et par lien avant tout appel externe",
 }
 # Sous `/api/v1/`, tant qu'aucune session n'est validée, un `404`, `405` ou `422` se rend `401` (la route

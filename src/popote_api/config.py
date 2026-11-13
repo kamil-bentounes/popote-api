@@ -60,6 +60,11 @@ class Env(StrEnum):
     prod = "prod"
 
 
+class MailProvider(StrEnum):
+    aucun = "aucun"  # aucun envoi : la réinitialisation est inopérante (le défaut)
+    local = "local"  # une boîte en mémoire (`BoiteDeTest`) : local seulement
+
+
 class BreachCheck(StrEnum):
     hibp = "hibp"  # Pwned Passwords (API « range »)
     off = "off"  # aucune vérification : local seulement
@@ -119,6 +124,11 @@ class Settings(BaseSettings):
     # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
     breach_check: BreachCheck = BreachCheck.hibp
 
+    # L'envoi des mails (`infra/mails.py`). `local` ne se pose qu'en local ; l'envoi réel vient avec T16.
+    mail_provider: MailProvider = MailProvider.aucun
+    # L'origine publique du front, où pointent les liens : `<public_base_url>/reinitialisation#<jeton>`.
+    public_base_url: AnyHttpUrl | None = None
+
     # Le SHA du commit, posé dans l'image au build : le déploiement s'assure que c'est bien elle qui répond.
     version: str = Field("inconnue", pattern=r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -166,6 +176,36 @@ class Settings(BaseSettings):
         # La clé secrète voyage vers cette adresse : jamais en clair, sauf vers la pile locale.
         if adresse.scheme == "http" and not (info.data.get("env") is Env.local and hote in HOTES_LOCAUX):
             raise ValueError("supabase_url : https obligatoire (http seulement vers l'hôte local, en local).")
+        return adresse
+
+    @field_validator("public_base_url", mode="before")
+    @classmethod
+    def _adresse_publique_vide_vaut_absente(cls, valeur: object) -> object:
+        return None if valeur == "" else valeur
+
+    @field_validator("public_base_url")
+    @classmethod
+    def _origine_du_front_seulement(
+        cls, adresse: AnyHttpUrl | None, info: ValidationInfo
+    ) -> AnyHttpUrl | None:
+        """L'origine, rien d'autre : un chemin, une requête ou un fragment fausseraient le lien du mail."""
+        if adresse is None:
+            return None
+        hote = (adresse.host or "").strip("[]")
+        if (
+            adresse.path not in ("", "/")
+            or adresse.query
+            or adresse.fragment
+            or adresse.username
+            or adresse.password
+            or not _est_un_hote(hote)
+            or adresse.port == 0
+        ):
+            raise ValueError("public_base_url : l'origine du front seulement, sans chemin ni requête.")
+        if adresse.scheme == "http" and not (info.data.get("env") is Env.local and hote in HOTES_LOCAUX):
+            raise ValueError(
+                "public_base_url : https obligatoire (http seulement vers l'hôte local, en local)."
+            )
         return adresse
 
     @field_validator("identity_pepper", mode="before")
@@ -295,6 +335,12 @@ class Settings(BaseSettings):
             )
         if self.database_url is None:
             raise ValueError("database_url est obligatoire hors local.")
+        return self
+
+    @model_validator(mode="after")
+    def _la_boite_locale_reste_locale(self) -> Self:
+        if self.relais_exige and self.mail_provider is MailProvider.local:
+            raise ValueError("mail_provider : « local » n'est permis qu'en local.")
         return self
 
     @model_validator(mode="after")

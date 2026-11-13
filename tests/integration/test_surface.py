@@ -18,7 +18,13 @@ ROLES = [*EMPRUNTABLES, "popote_api", "popote_internal"]
 PRIVILEGES_DE_TABLE = ["select", "insert", "update", "delete", "truncate", "references", "trigger"]
 
 # Les tables de 0.4 : aucun droit aux rôles applicatifs, RLS forcée, sans politique. Une migration en ajoute.
-TABLES = ["public.security_event", "public.login_throttle", "public.invite_link", "public.reprise_en_cours"]
+TABLES = [
+    "public.security_event",
+    "public.login_throttle",
+    "public.invite_link",
+    "public.reprise_en_cours",
+    "public.password_reset",
+]
 
 # Les fonctions de 0.4 et les rôles qui peuvent les exécuter (rôle COURANT). Une migration en ajoute.
 EXECUTABLES_PAR: dict[str, set[str]] = {
@@ -56,11 +62,13 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.fait_tourner_et_ferme_les_autres(bytea, bytea, timestamptz)": set(),
     "private.ferme_les_sessions_auth(uuid)": set(),
     "private.ferme_les_autres_sessions(uuid, uuid, timestamptz)": set(),
+    "public.cree_reinitialisation(text, bytea)": {"popote_api", "service_role"},
     "public.cree_invitation(bytea)": {"authenticated"},
     "public.mes_invitations(integer, timestamptz, uuid)": {"authenticated"},
     "public.revoque_invitation(uuid)": {"authenticated"},
     "private.cree_invitation(uuid, bytea, timestamptz)": set(),
     "private.purge_invite_link(timestamptz, integer)": set(),
+    "private.purge_password_reset(timestamptz, integer)": set(),
     "public.prend_un_creneau_invitation(text, bytea, integer, integer)": {"popote_api", "service_role"},
     "public.etat_invitation(bytea)": {"popote_api", "service_role"},
     "public.consomme_invitation(bytea)": {"service_role"},

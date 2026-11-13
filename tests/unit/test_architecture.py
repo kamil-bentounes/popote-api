@@ -19,7 +19,11 @@ SRC = Path(__file__).parents[2] / "src" / "popote_api"
 # À venir : les routes internes (T10), l'acceptation d'une invitation et les purges.
 APPELANTS_DU_SERVICE: set[str] = {"security/acceptation_invitation.py"}
 # Idem pour `connexion()` : la connexion, les limites, les sessions et la vérification du mot de passe.
-APPELANTS_DE_LA_CONNEXION: set[str] = {"security/connexion.py", "security/acceptation_invitation.py"}
+APPELANTS_DE_LA_CONNEXION: set[str] = {
+    "security/connexion.py",
+    "security/acceptation_invitation.py",
+    "security/reinitialisation.py",
+}
 
 SET_DE_SESSION = re.compile(r"(?is)^\s*set\s+(?!local\b)")  # `set x = …` sans `local`, en tête d'instruction
 CHANGEMENT_DE_ROLE = re.compile(

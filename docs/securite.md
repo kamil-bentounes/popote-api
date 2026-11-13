@@ -615,3 +615,37 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   violée à l'enregistrement de la réponse) ; un second `DELETE` avec le même cookie rend `401`. Tests :
   `tests/integration/test_suppression_route.py` ; mutations rejouées : sans garde de réauth, sans effacement, sans appel à
   Auth, et effacement dans la transaction de session (le `503` annule alors l'effacement) font chacun échouer un test.
+
+### 4.12 Demander la réinitialisation du mot de passe (0.4 T15a, migration 0146 ; code : `api/reinitialisation.py`, `security/reinitialisation.py`, `infra/mails.py`)
+
+- **`POST /api/v1/password-resets` `{email}`** : publique, toujours `202` et le même corps (`{message}`) et les mêmes en-têtes
+  pour une adresse connue, inconnue, bannie, supprimée ou sans profil ; la réponse ne dit rien du compte. UNE transaction de
+  contexte connexion : le créneau `reset` (3 par heure, clé HMAC du **couple (adresse normalisée, IP)** : B5, un tiers
+  n'épuise que ses propres demandes ; pris même pour une adresse inconnue, donc `429` pour tous), `cree_reinitialisation` et
+  l'événement `reinitialisation_demandee` **pour un compte qui reçoit un lien seulement** (clés HMAC ; une adresse inconnue
+  n'écrit qu'un compteur, purgé en 24 h : sinon une IP remplirait la base de lignes gardées 90 jours). Le refus de limite
+  est rendu, puis levé hors de la transaction : le compteur reste. Sans poivre : `503` (rien ne se compte sans clé).
+- **Le lien** : jeton de 32 octets (43 caractères base64url), tiré avant la base dans tous les cas ; seule l'empreinte SHA-256
+  est écrite. 30 minutes au plus (`CHECK`), usage unique, un seul lien actif par personne (une nouvelle demande révoque la
+  précédente ; verrou consultatif par personne). `<public_base_url>/reinitialisation#<jeton>` : le jeton après `#`, que le
+  navigateur n'envoie à personne. Un compte **sans profil** ne reçoit pas de lien (B10 : il repasse par une invitation) ; B24 :
+  une seule forme d'adresse (`email_normalise`).
+- **L'envoi** : après la réponse (`BackgroundTasks`), derrière `EnvoiMail`. `POPOTE_MAIL_PROVIDER` : `aucun` (défaut ; chaque
+  envoi échoue proprement, `MailAbsent`) ou `local` (boîte en mémoire `BoiteDeTest`, **local seulement** : refusé ailleurs).
+  Un échec se journalise par son type seul (ni adresse ni lien, ni jeton) et laisse la réponse `202`. Hors local, `aucun`
+  et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage : la réinitialisation est inopérante. L'envoi réel
+  attend D6 (T16).
+- **Risques acceptés** (foyer de deux personnes, offre gratuite) : (a) **mail-bombing** : la clé est le couple (adresse, IP) ;
+  une IP peut écrire à autant d'adresses que la limite par adresse IP le laisse passer (`Debit`, 120 écritures par minute) et
+  une adresse reçoit au plus 3 mails par heure et par IP, donc davantage depuis plusieurs IP ; (b) **révocation par un tiers** :
+  toute demande pour une adresse révoque le lien actif de la personne (le lien reçu avant meurt) ; elle redemande ; (c) un
+  compteur par adresse inconnue : une ligne `login_throttle` par couple, purgée à 24 h ; (d) fenêtre fixe : 3 demandes à
+  00:59 et 3 à 01:00 passent ; (e) le temps de réponse d'un compte connu (verrou, mise à jour, insertion) diffère de
+  quelques ms de celui d'un inconnu : l'envoi différé cache le seul écart important ; (f) un envoi plus long que le délai de
+  la requête est annulé : le lien est écrit, le mail non, et le journal le dit (`annulé (délai dépassé)`). À reprendre avec
+  T16 (envoi réel) et 0.7.
+- **Risque accepté (B5)** : un tiers qui connaît l'adresse peut ralentir la connexion de cette personne en épuisant ses essais
+  (blocage de 60 minutes au plus ; « mot de passe oublié » reste ouvert). Foyer de deux personnes : accepté.
+- **Sessions de GoTrue (B9)** : l'usage du lien (T15b) les fermera par `private.ferme_les_sessions_auth` ; la force brute par
+  `/auth/v1/token` n'est couverte qu'après 0.7. Tests : `tests/integration/test_reinitialisation.py`. Mutations rejouées : ne
+  pas révoquer le lien précédent, envoyer pour une adresse inconnue, ne pas prendre le créneau, une clé sans l'IP.

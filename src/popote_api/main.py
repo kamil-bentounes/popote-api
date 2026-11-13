@@ -10,12 +10,13 @@ from fastapi import Depends, FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, limites, relais
-from popote_api.api import connexion, health, internes, invitations_publiques, v1
-from popote_api.config import Env, Settings
+from popote_api.api import connexion, health, internes, invitations_publiques, reinitialisation, v1
+from popote_api.config import Env, MailProvider, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import Base, SondeBase
 from popote_api.infra.fuites import fuites_pour
+from popote_api.infra.mails import cree_envoi_mail
 from popote_api.routes_publiques import ROUTES_PUBLIQUES
 from popote_api.security.debit import Debit, LimiteParAdresse
 from popote_api.security.empreintes import Empreintes
@@ -44,6 +45,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
 
     empreintes = Empreintes.depuis(settings)
     auth_admin = cree_auth_admin(settings)
+    mails = cree_envoi_mail(settings)
 
     @asynccontextmanager
     async def cycle_de_vie(_app: FastAPI) -> AsyncIterator[None]:
@@ -60,6 +62,15 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
             avertissements.warning(
                 "POPOTE_SUPABASE_URL ou POPOTE_SUPABASE_SECRET_KEY absente : l'administration d'Auth est "
                 "indisponible (503)."
+            )
+        if settings.mail_provider is MailProvider.aucun and settings.relais_exige:
+            avertissements.warning(
+                "POPOTE_MAIL_PROVIDER=aucun : aucun mail ne part, la réinitialisation du mot de passe est "
+                "inopérante."
+            )
+        if settings.public_base_url is None and settings.relais_exige:
+            avertissements.warning(
+                "POPOTE_PUBLIC_BASE_URL absente : les liens des mails ne peuvent pas être écrits."
             )
         if not settings.secrets_internes:
             avertissements.warning(
@@ -96,6 +107,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.state.horloge_unix = time.time  # l'instant de la signature interne ; les tests la remplacent
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
     app.state.auth_admin = auth_admin
+    app.state.mails = mails
     app.state.fuites = fuites_pour(settings)  # les tests le remplacent par un faux
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
@@ -119,6 +131,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.include_router(internes.router)
     app.include_router(connexion.router)
     app.include_router(invitations_publiques.router)
+    app.include_router(reinitialisation.router)
     app.include_router(v1.cree_routeur())
     errors.installe(app)
     erreurs_base.installe(app)
