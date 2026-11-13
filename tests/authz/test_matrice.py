@@ -116,6 +116,17 @@ def _mot_de_passe_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> 
     assert str(monde.moi.id) not in reponse.text
 
 
+def _suppression_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 204
+    assert "max-age=0" in reponse.headers["set-cookie"].lower()
+
+
+def _suppression_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Route « de soi » : l'autre foyer supprime SON compte ; rien de `moi` n'est nommé ni touché.
+    assert reponse.status_code == 204
+    assert str(monde.moi.id) not in reponse.text
+
+
 def _reauth_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
     assert reponse.status_code == 204
 
@@ -167,6 +178,9 @@ def _revoque_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
 
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
+    ("DELETE", "/api/v1/me"): Cas(
+        lambda _: "/api/v1/me", _suppression_chez_moi, _suppression_chez_un_autre_foyer
+    ),
     ("GET", "/api/v1/me/sessions"): Cas(
         lambda _: "/api/v1/me/sessions", _sessions_chez_moi, _sessions_chez_un_autre_foyer
     ),
@@ -249,6 +263,9 @@ class FuitesSaines:
 
 class AuthSansEffet:
     async def change_mot_de_passe(self, identifiant: UUID, mot_de_passe: str) -> None:
+        return None
+
+    async def supprime_compte(self, identifiant: UUID) -> None:
         return None
 
 

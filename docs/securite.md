@@ -576,7 +576,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   `service_role`. `authenticated` et `anon` : rien. Le contexte service n'est ouvert que par
   `security/acceptation_invitation.py` (liste fermée de `base.service()`).
 
-### 4.11 Effacer ses données (0.4 T14a, migration 0145 ; la route `DELETE /me` est T14b)
+### 4.11 Effacer ses données et supprimer son compte (0.4 T14a, migration 0145 ; route T14b : `api/moi.py`)
 
 - **`public.efface_mes_donnees()`** : le corps de l'ancienne `delete_my_account()` sans la suppression de
   `auth.users` (foyer verrouillé d'abord, charges propres retirées, saisies, comptes perso, profil, foyer du dernier
@@ -601,5 +601,17 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   `depense_part`, `cloture_choix` et `versement_epargne` (uuid sans clé étrangère) tant que le foyer existe ; les événements
   écrits après l'effacement (reconnexion avant la suppression d'`auth.users`) gardent leurs clés. Les objets de Storage ne
   sont pas touchés ici.
-- **Pour T14b** : `idempotency_key.person_id` référence le profil ; la route `DELETE /me` ne doit pas enregistrer sa
-  réponse idempotente après `efface_mes_donnees()` (clé étrangère violée) : exclure la route de l'idempotence.
+- **`DELETE /api/v1/me`** (T14b) : session + réauthentification de moins de 5 minutes (`403 reauthentification_requise`
+  sinon, rien n'est touché). Deux transactions, dans cet ordre : (1) `efface_mes_donnees()` sous la RLS de la personne, dans
+  SA transaction, validée AVANT (2) `supprime_compte` (client d'administration d'Auth) ; `204` + cookie vidé (`Max-Age=0`,
+  mêmes attributs que la pose). Pourquoi deux : Auth supprime `auth.users`, que le profil référence ; tant que l'effacement
+  n'est pas validé, cette suppression l'attendrait, et lui attendrait Auth. Écart assumé à B4 (une transaction par
+  requête quand c'est possible : ici ce ne l'est pas). Auth ne répond pas : `503 suppression_incomplete` AVEC le cookie vidé
+  (la session n'existe plus) ; données et sessions sont parties, le compte Auth reste ; la personne se reconnecte et recommence
+  (l'effacement se rejoue sans erreur et n'écrit pas un second `compte_supprime`). `deleteUser` sur `404 user_not_found` vaut
+  succès ; un `404` d'une autre origine, non. L'événement `compte_supprime` est écrit par `efface_mes_donnees`, pas par la
+  route ; sa `person_id` passe à null quand `auth.users` disparaît. Un journal ne reçoit jamais mot de passe ni jeton.
+  Pas d'`Idempotency-Key` : `idempotency_key.person_id` référence le profil, que la route vient d'effacer (clé étrangère
+  violée à l'enregistrement de la réponse) ; un second `DELETE` avec le même cookie rend `401`. Tests :
+  `tests/integration/test_suppression_route.py` ; mutations rejouées : sans garde de réauth, sans effacement, sans appel à
+  Auth, et effacement dans la transaction de session (le `503` annule alors l'effacement) font chacun échouer un test.
