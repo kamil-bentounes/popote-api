@@ -300,7 +300,7 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
   que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
   (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte
-  SHA-256 des 32 octets du jeton et appelle `session_personne` ; elle rend la personne **et** le curseur de sa
+  SHA-256 des 32 octets du jeton et appelle `session_courante` (0.4 T8 : elle refuse aussi un compte banni ou supprimé) ; elle rend la personne **et** le curseur de sa
   transaction (un seul emprunt au pool par requête, session et contexte personne dans la même transaction).
   Un cookie absent, mal formé, inconnu, échu, révoqué, au bout des 90 jours, d'une personne bannie ou
   supprimée rend le même `401 pas_de_session`, pour qu'on n'apprenne rien sur les jetons.

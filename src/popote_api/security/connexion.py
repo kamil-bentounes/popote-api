@@ -22,7 +22,7 @@ from popote_api.security.appareil import resume_agent
 from popote_api.security.empreintes import Empreintes, email_normalise
 from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton, jeton_neuf
 from popote_api.security.journal_securite import Evenement, journalise
-from popote_api.security.limites_base import liberer_le_compte, prendre_les_creneaux
+from popote_api.security.limites_base import CleBloquee, liberer_le_compte, prendre_les_creneaux
 from popote_api.security.mots_de_passe import candidats_de_connexion
 from popote_api.security.sessions_base import cree_session
 
@@ -88,8 +88,14 @@ async def tente_la_connexion(
         if not creneaux.passe:
             # Un seul événement par fenêtre de blocage (B21) : 100 essais refusés n'en écrivent qu'un.
             if creneaux.nouveau_blocage is not None:
+                # La clé qui vient de bloquer, et elle seule : un blocage d'IP ne marque pas le compte visé.
+                par_ip = creneaux.nouveau_blocage is CleBloquee.ip
                 await journalise(
-                    curseur, Evenement.connexion_bloquee, cle_compte=cle_compte, request_id=request_id
+                    curseur,
+                    Evenement.connexion_bloquee,
+                    cle_compte=None if par_ip else cle_compte,
+                    cle_ip=cle_ip if par_ip else None,
+                    request_id=request_id,
                 )
             return Bloquee(creneaux.attente_s)
         personne = await _verifie(curseur, email_normalise(email), mot_de_passe)

@@ -290,6 +290,7 @@ async def test_un_mot_de_passe_de_73_octets_est_refuse_sans_appel_a_la_base(
         {"email": "a@test.local", "password": MOT_DE_PASSE, "role": "admin"},
         {"email": "a" * 250 + "@x.fr", "password": MOT_DE_PASSE},
         {"email": "a@test.local", "password": "x" * 257},
+        {"email": "a\x00@test.local", "password": MOT_DE_PASSE},
     ],
 )
 async def test_un_corps_invalide_donne_422_sans_rien_recopier(banc: Banc, corps: dict[str, str]) -> None:
@@ -425,3 +426,30 @@ async def test_sans_poivre_la_connexion_refuse_plutot_que_de_compter(banc_avec: 
     )
     assert reponse.status_code == 503
     assert "set-cookie" not in reponse.headers
+
+
+async def test_un_blocage_d_ip_marque_l_ip_et_pas_le_compte_vise(banc_avec: Callable[..., Banc]) -> None:
+    banc = banc_avec(connexion_essais_par_compte=1000)  # seule l'IP bloque
+    _, email = banc.compte()
+    for _ in range(25):
+        await banc.connecte(email, "mauvais-mot-de-passe-long")
+    cle_ip = banc.empreintes.cle_ip(banc.ip)
+    lignes = banc.lignes("select account_key, ip_hash from public.security_event where ip_hash = %s", cle_ip)
+    assert [(ligne[0], bytes(ligne[1])) for ligne in lignes] == [(None, cle_ip)]
+    cle_compte = banc.empreintes.cle_compte(email)
+    assert (
+        banc.lignes(
+            "select 1 from public.security_event where kind = 'connexion_bloquee' and account_key = %s",
+            cle_compte,
+        )
+        == []
+    )
+    banc.fabrique.admin.execute("delete from public.security_event where ip_hash = %s", (cle_ip,))
+
+
+async def test_un_substitut_isole_dans_l_adresse_donne_422_et_non_500(banc: Banc) -> None:
+    corps = b'{"email": "a\\ud800@test.local", "password": "un-mot-de-passe-assez-long"}'  # échappement JSON
+    reponse = await banc.client().post(
+        "/api/v1/sessions", content=corps, headers=ECRITURE | {"Content-Type": "application/json"}
+    )
+    assert reponse.status_code == 422
