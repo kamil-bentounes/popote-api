@@ -523,6 +523,10 @@ fermeture retirera ce droit : il faudra alors retirer le `xfail`.
   fermée à `authenticated` : une personne ne choisit pas sa date (B19).
 - **Droits** : table sans aucun droit, RLS forcée sans politique ; `public.cree_invitation(bytea)` exécutable par
   `authenticated` seul (jamais `anon`, `service_role`, `popote_api`). Une personne sans profil (donc sans foyer) : `403`.
+- **Limite assumée (B3)** : `public.cree_invitation(bytea)` est une fonction de `public` exécutable par `authenticated` :
+  un membre du foyer qui l'appellerait directement (PostgREST, si exposé) créerait un lien dont il choisit l'empreinte,
+  donc dont il connaît le jeton. Il n'en tire rien qu'il n'ait déjà (invitation de SON foyer, quota inchangé, événement
+  écrit) ; la voie normale reste la route, qui tire le jeton.
 - **Personnes** : un compte supprimé laisse le lien (`created_by`, `accepted_by` passent à `null`) ; ses lignes
   d'idempotence partent avec lui (cascade). Purge : fin de vie + 30 jours, par lots, `pg_cron` `invite-link-purge`.
 - **Compatibilité avec l'appli en ligne** : table et fonctions neuves ; `invitation`, `invite` et `accept-invite` intacts.

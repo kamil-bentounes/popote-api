@@ -11,7 +11,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
-import psycopg
 import pytest
 from _client import application_de_test, client_de, cookie
 from _fabrique import Fabrique, Personne
@@ -267,14 +266,12 @@ class TestQuota:
         assert refus is not None
         assert refus[0] == "quota"
         assert refus[4] == 3600  # le premier (12:00) sort à 12:00 le lendemain : dans 1 h
-        # Passé 24 h, le plus ancien sort de la fenêtre : une place.
-        libre = fabrique.admin.execute(
-            CREE_A, (moi.id, empreinte(), debut + timedelta(hours=24, seconds=1))
-        ).fetchone()
+        # Pile à 24 h, la première ligne ne compte plus (fenêtre ouverte) : une place se libère.
+        libre = fabrique.admin.execute(CREE_A, (moi.id, empreinte(), debut + timedelta(hours=24))).fetchone()
         assert libre is not None
         assert libre[0] == "creee"
         encore = fabrique.admin.execute(
-            CREE_A, (moi.id, empreinte(), debut + timedelta(hours=24, seconds=2))
+            CREE_A, (moi.id, empreinte(), debut + timedelta(hours=24, seconds=1))
         ).fetchone()
         assert encore is not None
         assert encore[0] == "quota"
@@ -302,7 +299,7 @@ class TestDroits:
             fabrique.admin.execute("select * from public.cree_invitation(%s)", (empreinte(),))
 
     def test_authenticated_sans_personne_est_refuse(self, fabrique: Fabrique) -> None:
-        with fabrique.admin.transaction(), pytest.raises(psycopg.Error):
+        with fabrique.admin.transaction(), pytest.raises(errors.InvalidAuthorizationSpecification):
             fabrique.admin.execute("set local role authenticated")
             fabrique.admin.execute("select * from public.cree_invitation(%s)", (empreinte(),))
 
@@ -361,8 +358,16 @@ class TestPurge:
             (maintenant - timedelta(days=31), revoque[1]),
         )
         attente = cree_en_base(fabrique, moi, maintenant - timedelta(days=1))
+        # Acceptés : la fin de vie est l'acceptation, avant l'échéance (31 jours : effacé ; 29 jours : gardé).
+        accepte_vieux = cree_en_base(fabrique, moi, maintenant - timedelta(days=33))
+        accepte_recent = cree_en_base(fabrique, moi, maintenant - timedelta(days=33))
+        for ligne, jours in ((accepte_vieux, 31), (accepte_recent, 29)):
+            fabrique.admin.execute(
+                "update public.invite_link set accepted_at = %s where id = %s",
+                (maintenant - timedelta(days=jours), ligne[1]),
+            )
         efface = fabrique.admin.execute("select private.purge_invite_link(%s, 1)", (maintenant,)).fetchone()
-        assert efface == (2,)
+        assert efface == (3,)
         restants = {r[0] for r in lignes(fabrique, moi.foyer_id)}
-        assert restants == {recent[1], attente[1]}
-        assert vieux[1] not in restants
+        assert restants == {recent[1], attente[1], accepte_recent[1]}
+        assert {vieux[1], revoque[1], accepte_vieux[1]}.isdisjoint(restants)
