@@ -377,6 +377,20 @@ en écrit un neuf pour un compte ni banni ni supprimé, avec profil et foyer ; s
 efface la fin de vie + 7 jours (`pg_cron` `password-reset-purge`, 03 h 37 UTC, gardé comme 0142). L'usage du lien est T15b.
 Table neuve, aucun appelant dans l'appli en ligne. Retour arrière : en tête de la migration.
 
+### `login_code` : les codes de connexion par mail (0147, étape 0.4bis S5)
+
+`id` (l'identifiant de demande `code_request_id`, tiré par l'API : **pas un secret**), `account_key` (HMAC de l'adresse, 32
+octets), `person_id` (`auth.users`, cascade, indexée ; **nul pour une ligne factice**, écrite pour une adresse inconnue,
+bannie, supprimée ou sans profil), `code_hash` (HMAC du code, jamais le code), `attempts` (0 à 5), `created_at`, `expires_at`
+(`CHECK` : 10 minutes au plus), `used_at`, `revoked_at`. Un index unique partiel : **un seul code actif par clé de compte**.
+Aucun droit, RLS forcée, sans politique. Fonctions, toutes `popote_api` seul : `demande_un_code` (le même travail pour une
+adresse connue et inconnue ; un code de moins de 60 s n'est pas remplacé), `prend_les_creneaux_de_demande` (IP, puis
+(adresse, IP), puis adresse ; un refus n'use pas les suivants), `prend_un_envoi` (coupe-circuit global de 60 mails par
+heure). `private.purge_login_code` : échéance + 1 jour (`pg_cron` `login-code-purge`, 03 h 43 UTC). `login_throttle.scope`
+gagne `code_ip`, `code_paire`, `code_compte`, `mail_global` ; `security_event.kind` gagne `code_demande` (90 jours). La
+vérification et la session sont S7. Objets neufs, deux `CHECK` élargis : compatible avec l'appli en ligne. Retour arrière :
+en tête de la migration. Voir `docs/securite.md` § 4.13.
+
 ### `invite_link` : les invitations par lien (0142 et 0143, étape 0.4 T12)
 
 `id`, `household_id` (cascade), `created_by` et `accepted_by` (`on delete set null`, indexées : un compte supprimé laisse

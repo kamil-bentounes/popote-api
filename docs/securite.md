@@ -160,7 +160,7 @@ refusent de démarrer avec autre chose que `hibp`.
   `connexion_ratee`, `connexion_bloquee`, `deconnexion`, `reauthentification_reussie`, `reauthentification_ratee`,
   `session_fermee`, `mot_de_passe_change`, `reinitialisation_demandee`, `reinitialisation_utilisee`,
   `invitation_creee`, `invitation_acceptee`, `invitation_revoquee`, `compte_supprime`, `compte_repris`,
-  `verification_fuites_indisponible` ; un test compare cette liste à l'énumération `Evenement`), `person_id`
+  `verification_fuites_indisponible`, `code_demande` ; un test compare cette liste à l'énumération `Evenement`), `person_id`
   (`on delete set null`), `session_id` et `invitation_id` (sans clé étrangère : la session ou le lien peut être
   purgé avant l'événement), `account_key` et `ip_hash` (32 octets), `request_id` (32 caractères hexadécimaux, celui
   de l'API). **Rien d'autre** : ni e-mail, ni IP, ni agent utilisateur, ni champ libre. RLS activée et forcée, aucune
@@ -174,7 +174,7 @@ refusent de démarrer avec autre chose que `hibp`.
   l'événement s'écrit **sans clés** (on perd le lien entre événements, pas l'événement) et un avertissement part au
   démarrage. Un appelant qui compte par clé (les limites de connexion) refuse au lieu de compter sans clé. En local
   le poivre est tiré au hasard par processus.
-- **Conservation.** `connexion_ratee` et `connexion_bloquee`, liées à une clé de compte et non à une personne :
+- **Conservation.** `connexion_ratee`, `connexion_bloquee` et `code_demande` (0147), liées à une clé de compte et non à une personne :
   **90 jours** ; tout le reste **1 an**. Purge par lots de 5 000, idempotente, qui rend un nombre de lignes et jamais
   une valeur ; tâche `pg_cron` quotidienne (`journal-securite-purge`, 03 h 41 UTC) en SQL pur, gardée comme celle des
   rappels (sans l'extension, la migration passe et avertit).
@@ -329,6 +329,25 @@ Limite connue (B9) : la force brute par le point `/auth/v1/token` de Supabase Au
 **couverte qu'après 0.7** (verrouillage de Supabase Auth) ; d'ici là elle n'est comptée par aucune de nos limites.
 Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à une session réauthentifiée depuis moins de
 5 minutes, donc vue depuis moins de 5 minutes, et `session_courante` ne verrouille la ligne que passé ce délai.
+
+### 4.13 Code par mail : la demande, côté base (0.4bis S5a, migration 0147 ; la route `POST /api/v1/login-codes` est S5b)
+
+- **Table `public.login_code`** : le HMAC du code (jamais le code), 10 minutes au plus (`CHECK`), 5 essais, usage unique,
+  révocable ; **un seul code actif par clé de compte** (index unique partiel : une demande révoque la précédente).
+  `id` est l'identifiant de demande (`code_request_id`) : pas un secret, le code est protégé par le poivre. `person_id` est
+  nul pour une **ligne factice** (adresse inconnue, bannie, supprimée ou sans profil) : même insertion, même durée, aucun mail.
+  RLS forcée, aucun droit. Purge à l'échéance + 1 jour (`login-code-purge`, 03 h 43 UTC).
+- **`demande_un_code`** (`popote_api` seul) : le même travail pour une adresse connue et inconnue (verrou sur la clé du
+  compte, puis sur la personne pour un compte réel : la même clé que `cree_session`). **Un code de moins de 60 s n'est pas
+  remplacé** (même identifiant rendu, `nouveau` faux, donc pas de mail : un double clic ne tue pas le code déjà parti) ;
+  un code mort (5 essais) se remplace. `code_demande` ne s'écrit que pour un compte réel : une IP ne remplit pas le journal.
+- **Créneaux** (`prend_les_creneaux_de_demande`) : IP (10), (adresse, IP) (3), adresse (6 par heure), dans cet ordre ;
+  **un refus n'use pas les suivants** ; sans escalade (le créneau de trop attend la fin de la fenêtre, ne compte pas, ne
+  prolonge rien). **Aucun créneau global à la demande** : dix adresses bidon depuis une IP l'auraient épuisé pour tous.
+  Le **coupe-circuit global** (`prend_un_envoi`, 60 mails par heure) se prend à l'envoi réel, après la réponse, pour un compte
+  réel seulement : il protège le quota du fournisseur sans qu'un anonyme puisse l'épuiser.
+- Tests : `tests/integration/test_demande_de_code_base.py` (dont 50 demandes simultanées par adresse connue et inconnue, un
+  test de dérive entre les portées du `CHECK` et celles que les fonctions emploient) et `test_surface.py`.
 
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
