@@ -420,13 +420,17 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   seul chemin de succès, jusqu'à S7 qui retire le mot de passe (S7 et S9 relisent leur preuve sous le verrou par construction).
 - **Deux personnes, un navigateur.** `cree_session` révoque la session PRÉSENTÉE (B22), qui peut être celle d'une autre personne : les deux
   personnes se verrouillent toujours dans le même ordre (l'identifiant le plus petit d'abord), donc deux connexions croisées ne
-  s'attendent jamais en cercle (tests : ordre, et croisement avec dix sessions chacune).
+  s'attendent jamais en cercle. C'est `verrouille_la_personne(personne, session_présentée)` qui ordonne, que l'appelant soit `cree_session` ou
+  la connexion qui prend le verrou avant de refaire sa preuve (tests : ordre par `cree_session` et par la connexion, croisement avec dix
+  sessions chacune).
 - **Fenêtre de déploiement.** Les migrations passent avant le code : l'ancien code tourne quelques minutes sur cette base. Au lieu de
   deux migrations, `session_valide` (que `session_courante` et `session_personne` appellent) est devenue une lecture : l'ancien code ne
   tient plus de ligne de session, donc aucun cycle avec les fermetures qui prennent la personne d'abord (testé : l'ancien chemin, une
   reconnexion et une fermeture en parallèle). Prix : pendant la fenêtre, l'ancien code ne repousse plus l'activité (30 jours glissants).
-- **L'activité est au mieux** : si le verrou ne lâche pas en 5 s ou en cas d'interblocage, la requête (session valide) continue sans
-  écrire l'activité, journalisée par le type ; la suivante réessaie.
+- **L'activité est au mieux** : si le verrou ne lâche pas en 1 s, en cas d'interblocage ou de délai de requête, la requête (session
+  valide) continue sans écrire l'activité, journalisée par le type ; la suivante réessaie. `tente_la_connexion` prend les créneaux (des
+  compteurs) avant le verrou de la personne : l'ordre limites, puis personne est celui de toutes les routes publiques (`demande_un_code`
+  aussi), sans cycle ; le second `crypt()` se fait sous le verrou.
 - **Courses déterministes** (`tests/integration/_course.py`) : A prend le verrou sans valider, B démarre, le test attend B dans
   `pg_stat_activity` (le backend que le pid exact de A fait attendre, pas un autre), A valide, on lit le sort de B ; jamais un `sleep` comme preuve. Les entrelacements (200 opérations de création et
   de fermeture, 100 requêtes à activité périmée contre reconnexions et fermetures, connexions croisées de deux personnes) ne donnent aucun `40P01`. Un `40P01` reste traduit en

@@ -3,9 +3,8 @@
 --
 -- Une connexion en vol survit à la fermeture de toutes les sessions quand la preuve et la session qu'elle ouvre sont
 -- deux instructions sans verrou commun (relevé de la revue de T15b ; même défaut dans le changement de mot de passe,
--- 0141). On pose le verrou UNE fois ; S7, S9, S10 et S14 s'en servent. CE QUI RESTE OUVERT jusqu'à S7 : la connexion par
--- mot de passe (0.4) vérifie le mot de passe AVANT de prendre le verrou, donc une fermeture qui passe entre les deux laisse
--- survivre la session qu'elle ouvre ; S7 (code) et S9 (clé) relisent leur preuve SOUS le verrou, et S15 retire le mot de passe.
+-- 0141). On pose le verrou UNE fois ; S7, S9, S10 et S14 s'en servent. La connexion par
+-- mot de passe (0.4) prend le verrou puis REFAIT sa vérification avant `cree_session` ; S7 (code) et S9 (clé) feront de même.
 --
 --  - `private.verrouille_la_personne` : le verrou de transaction de `cree_session` (0139), même clé
 --    `hashtextextended(personne::text, 0)`, nommé ; `public.verrouille_la_personne` : le chemin Python des preuves
@@ -35,7 +34,9 @@
 -- sa session pendant que `ferme_les_autres_appareils`, qui prend maintenant la personne d'abord, attendrait la personne
 -- que tient une reconnexion elle-même en attente de cette ligne : un cycle. Choix retenu plutôt que deux migrations.
 --
--- RETOUR ARRIÈRE (sans perte : aucune donnée ne change de forme). Retirer d'abord le code de l'API qui appelle
+-- RETOUR ARRIÈRE (sans perte : aucune donnée ne change de forme), dans le sens « code d'abord, base ensuite » : revenir au
+-- code d'avant en laissant cette base ferait que plus rien n'écrirait l'activité des sessions (`session_valide` ne l'écrit
+-- plus ; elles expireraient 30 jours après la dernière écriture). Retirer d'abord le code de l'API qui appelle
 -- `lit_la_session` et `note_l_activite_de_la_session` (sinon toute requête authentifiée échoue), puis recréer les six
 -- fonctions comme les migrations 0139, 0140 et 0141 les définissent (leur `create or replace`, recopiés ci-dessous),
 -- PUIS retirer les six fonctions neuves :
@@ -240,12 +241,12 @@
 --   end;
 --   $$;
 --
---   drop function public.verrouille_la_personne(uuid);
+--   drop function public.verrouille_la_personne(uuid, bytea);
 --   drop function public.lit_la_session(bytea);
 --   drop function public.note_l_activite_de_la_session(bytea);
 --   drop function private.note_l_activite_de_la_session(bytea, timestamptz);
 --   drop function private.lit_la_session(bytea, timestamptz);
---   drop function private.verrouille_la_personne(uuid);
+--   drop function private.verrouille_la_personne(uuid, bytea, timestamptz);
 -- ═══════════════════════════════════════════════════════════════════════════
 set local lock_timeout = '5s';
 set local statement_timeout = '30s';
@@ -253,40 +254,61 @@ set local statement_timeout = '30s';
 -- ── 1. Le verrou de personne ────────────────────────────────────────────────
 /* La clé est celle que `cree_session` posait en ligne (0139) : le même verrou consultatif de transaction, donc
    une seule file par personne pour tout ce qui ouvre ou ferme ses sessions. Une personne nulle ne verrouillerait
-   RIEN (`hashtextextended(null)` est nul) : refusée. */
-create or replace function private.verrouille_la_personne(p_person uuid)
+   RIEN (`hashtextextended(null)` est nul) : refusée.
+   Une connexion peut PRÉSENTER la session d'une autre personne (deux personnes, un navigateur : B22) et la révoquer.
+   Dans ce cas les deux personnes se verrouillent dans un ordre total (l'identifiant le plus petit d'abord), quelle que
+   soit la connexion qui les prend : deux connexions croisées ne s'attendent jamais en cercle. Un appelant qui prend le
+   verrou avant `cree_session` (pour refaire sa preuve sous lui) passe donc la session présentée ici. La session
+   présentée se lit sans verrou : sa personne ne change jamais. */
+create or replace function private.verrouille_la_personne(
+  p_person uuid, p_presentee bytea default null, p_now timestamptz default pg_catalog.now()
+)
 returns void
 language plpgsql
 volatile
-security invoker
+security definer
 set search_path = ''
 as $$
+declare
+  v_autre uuid;
 begin
   if p_person is null then
     raise exception 'Une personne est obligatoire pour la verrouiller.' using errcode = 'invalid_parameter_value';
   end if;
+  if p_presentee is not null then
+    select s.person_id into v_autre
+      from public.login_session s
+     where s.token_hash = p_presentee and s.revoked_at is null
+       and s.expires_at > p_now and s.absolute_expires_at > p_now;
+  end if;
+  if v_autre is not null and v_autre <> p_person and v_autre::text < p_person::text then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_autre::text, 0));
+  end if;
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_person::text, 0));
+  if v_autre is not null and v_autre <> p_person and v_autre::text > p_person::text then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_autre::text, 0));
+  end if;
 end;
 $$;
-comment on function private.verrouille_la_personne(uuid) is
-  'Le verrou de transaction d''une personne : ouvrir une session, en fermer plusieurs, révoquer ou consommer un code, ajouter ou retirer une clé, supprimer le compte. Ordre des verrous : foyer, puis invitation du foyer, puis personne, puis lignes. Interne.';
-revoke all on function private.verrouille_la_personne(uuid)
+comment on function private.verrouille_la_personne(uuid, bytea, timestamptz) is
+  'Le verrou de transaction d''une personne (et de celle de la session présentée, dans l''ordre des identifiants) : ouvrir une session, en fermer plusieurs, révoquer ou consommer un code, ajouter ou retirer une clé, supprimer le compte. Ordre des verrous : foyer, puis invitation du foyer, puis personne, puis lignes. Interne.';
+revoke all on function private.verrouille_la_personne(uuid, bytea, timestamptz)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 
-create or replace function public.verrouille_la_personne(p_person uuid)
+create or replace function public.verrouille_la_personne(p_person uuid, p_session_presentee bytea default null)
 returns void
 language sql
 volatile
 security definer
 set search_path = ''
 as $$
-  select private.verrouille_la_personne(p_person);
+  select private.verrouille_la_personne(p_person, p_session_presentee, pg_catalog.now());
 $$;
-comment on function public.verrouille_la_personne(uuid) is
-  'Prend le verrou de transaction d''une personne (le chemin Python des preuves). popote_api et service_role seulement.';
-revoke all on function public.verrouille_la_personne(uuid)
+comment on function public.verrouille_la_personne(uuid, bytea) is
+  'Prend le verrou de transaction d''une personne, et de la personne de la session présentée s''il y en a une, dans l''ordre des identifiants (le chemin Python des preuves). popote_api et service_role seulement.';
+revoke all on function public.verrouille_la_personne(uuid, bytea)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
-grant execute on function public.verrouille_la_personne(uuid) to popote_api, service_role;
+grant execute on function public.verrouille_la_personne(uuid, bytea) to popote_api, service_role;
 
 -- ── 2. L'activité d'une session : lue sans écrire, écrite en sa propre transaction ──────────────
 /* Pourquoi deux fonctions. Lire une session ne doit tenir AUCUN verrou de ligne : `session_valide` (0139) met
@@ -410,10 +432,8 @@ end;
 $$;
 
 -- ── 3. Tout ce qui ferme des sessions prend la personne en premier ──────────────────────────────
-/* `cree_session` : le corps de 0139, la clé posée en ligne devient l'appel nommé. La session PRÉSENTÉE (B22) peut être
-   celle d'une AUTRE personne (deux personnes, un navigateur) : on la lit sans verrou pour connaître sa personne, et les
-   deux personnes se verrouillent alors TOUJOURS dans le même ordre (la plus petite d'abord) : deux connexions croisées
-   (A présente la session de B, B celle de A) ne s'attendent jamais en cercle. */
+/* `cree_session` : le corps de 0139, la clé posée en ligne devient l'appel nommé, qui prend aussi la personne de la
+   session PRÉSENTÉE (B22) dans l'ordre des identifiants. */
 create or replace function private.cree_session(
   p_person uuid, p_hash bytea, p_browser text, p_os text, p_old_hash bytea, p_now timestamptz
 ) returns uuid
@@ -425,21 +445,8 @@ as $$
 declare
   v_id uuid;
   v_ancienne public.login_session%rowtype;
-  v_autre uuid;
 begin
-  if p_old_hash is not null then
-    select s.person_id into v_autre
-      from public.login_session s
-     where s.token_hash = p_old_hash and s.revoked_at is null
-       and s.expires_at > p_now and s.absolute_expires_at > p_now;
-  end if;
-  if v_autre is not null and v_autre <> p_person and v_autre::text < p_person::text then
-    perform private.verrouille_la_personne(v_autre);
-  end if;
-  perform private.verrouille_la_personne(p_person);
-  if v_autre is not null and v_autre <> p_person and v_autre::text > p_person::text then
-    perform private.verrouille_la_personne(v_autre);
-  end if;
+  perform private.verrouille_la_personne(p_person, p_old_hash, p_now);
 
   if exists (select 1 from auth.users u
               where u.id = p_person and (u.deleted_at is not null or u.banned_until > p_now)) then

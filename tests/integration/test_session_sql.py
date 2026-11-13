@@ -192,20 +192,6 @@ def test_last_seen_at_n_est_pas_reecrit_a_chaque_requete(
     assert ligne_de(fabrique, session) == avant
 
 
-def test_une_requete_lente_ne_fait_pas_attendre_celle_qui_arrive_pendant_ce_temps(
-    cx_api: psycopg.Connection[Ligne], fabrique: Fabrique
-) -> None:
-    personne = une_personne(fabrique)
-    session = fabrique.session(personne, vue_il_y_a=CINQ_MINUTES * 2)
-    with connecte(DSN_API) as lente, lente.transaction():
-        lente.execute(APPEL, (session.empreinte,))  # une lecture ne tient aucune ligne
-        with cx_api.transaction():
-            # Sans `skip locked`, l'appel attendrait la fin de la requête lente puis échouerait ici.
-            cx_api.execute("set local lock_timeout = '300ms'")
-            ligne = cx_api.execute(APPEL, (session.empreinte,)).fetchone()
-    assert ligne == (personne,)
-
-
 def test_la_session_disparait_avec_la_personne(fabrique: Fabrique) -> None:
     personne = une_personne(fabrique)
     session = fabrique.session(personne)

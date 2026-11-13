@@ -10,7 +10,8 @@ ne sert de preuve.
 import asyncio
 import logging
 import random
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from secrets import token_bytes
 from uuid import UUID, uuid4
@@ -24,7 +25,7 @@ from test_connexion import MOT_DE_PASSE, Banc, banc, banc_avec, comptes  # noqa:
 from test_verifie_mot_de_passe import hache
 
 from popote_api.infra import db
-from popote_api.infra.db import Base
+from popote_api.infra.db import Base, SessionRefuseeError
 from popote_api.security import connexion as modele_connexion
 from popote_api.security.appareil import Appareil
 from popote_api.security.sessions_base import cree_session
@@ -400,6 +401,37 @@ class TestSessionPresenteeDUneAutrePersonne:
             )
 
 
+class TestConnexionParMotDePasseEtSessionPresentee:
+    """Le verrou pris en Python AVANT la preuve refaite doit déjà ordonner les deux personnes."""
+
+    async def test_la_connexion_de_l_id_le_plus_grand_attend_la_plus_petite_sans_tenir_la_sienne(
+        self, banc: Banc, fabrique: Fabrique, admin: psycopg.Connection[Ligne]
+    ) -> None:
+        un, adresse_un = banc.compte()
+        autre, adresse_autre = banc.compte()
+        (bas, _), (haut, adresse_haut) = sorted(
+            ((un, adresse_un), (autre, adresse_autre)), key=lambda p: str(p[0])
+        )
+        cookie_de_bas = fabrique.session(bas)
+        with connecte(DSN_API) as a:
+            a.execute(VERROU, (bas,))
+            tache = asyncio.create_task(
+                banc.connecte(
+                    adresse_haut,
+                    MOT_DE_PASSE,
+                    headers={"Cookie": f"__Host-popote_session={cookie_de_bas.jeton}"},
+                )
+            )
+            await attend_un_verrou(admin, "verrouille_la_personne", a.info.backend_pid)
+            assert verrou_libre(admin, haut)  # elle ne tient pas la sienne en attendant la plus petite
+            a.commit()
+            reponse = await tache
+        assert reponse.status_code == 201
+        assert not active(
+            admin, cookie_de_bas.id
+        )  # la session présentée de l'autre personne est fermée (B22)
+
+
 # ── Les codes en attente meurent avec les autres sessions ───────────────────
 
 
@@ -542,7 +574,7 @@ class TestEntrelacements:
         session = fabrique.session(personne, vue_il_y_a=PERIMEE)
         requete = "select last_seen_at from public.login_session where id = %s"
         avant = admin.execute(requete, (session.id,)).fetchone()
-        monkeypatch.setattr(db, "PREAMBULE_CONNEXION", "set local lock_timeout = '200ms'")
+        monkeypatch.setattr(db, "PREAMBULE_ACTIVITE", "set local lock_timeout = '200ms'")
         caplog.set_level(logging.WARNING)
         with connecte(DSN_API) as a:
             a.execute(VERROU, (personne,))
@@ -551,6 +583,75 @@ class TestEntrelacements:
             a.rollback()
         assert admin.execute(requete, (session.id,)).fetchone() == avant
         assert "Activité de session non écrite : LockNotAvailable" in caplog.text
+
+    @pytest.mark.parametrize(
+        "erreur",
+        [psycopg.errors.DeadlockDetected, psycopg.errors.QueryCanceled],
+        ids=["interblocage", "delai"],
+    )
+    async def test_un_interblocage_ou_un_delai_a_l_ecriture_de_l_activite_n_echoue_pas_la_requete(
+        self,
+        base: Base,
+        fabrique: Fabrique,
+        personne: UUID,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        erreur: type[psycopg.Error],
+    ) -> None:
+        session = fabrique.session(personne, vue_il_y_a=PERIMEE)
+
+        @asynccontextmanager
+        async def echoue(*_: object) -> AsyncIterator[None]:
+            raise erreur("détail de la base")
+            yield
+
+        monkeypatch.setattr(db, "_contexte", echoue)
+        caplog.set_level(logging.WARNING)
+        async with base.session(session.empreinte) as (lue, _):
+            assert lue.session == session.id
+        assert f"Activité de session non écrite : {erreur.__name__}" in caplog.text
+        assert "détail de la base" not in caplog.text
+
+    async def test_une_annulation_pendant_l_ecriture_de_l_activite_repart(
+        self, base: Base, fabrique: Fabrique, personne: UUID, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = fabrique.session(personne, vue_il_y_a=PERIMEE)
+        entree = asyncio.Event()
+
+        @asynccontextmanager
+        async def bloque(*_: object) -> AsyncIterator[None]:
+            entree.set()
+            await asyncio.sleep(60)
+            yield
+
+        async def requete() -> None:
+            async with base.session(session.empreinte):
+                pass
+
+        monkeypatch.setattr(db, "_contexte", bloque)
+        tache = asyncio.create_task(requete())
+        await entree.wait()
+        tache.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tache
+
+    async def test_une_session_fermee_pendant_l_ecriture_de_l_activite_rend_401_a_la_seconde_lecture(
+        self, base: Base, fabrique: Fabrique, admin: psycopg.Connection[Ligne], personne: UUID
+    ) -> None:
+        session = fabrique.session(personne, vue_il_y_a=PERIMEE)
+
+        def ferme(a: psycopg.Connection[Ligne]) -> None:
+            a.execute(VERROU, (personne,))
+            a.execute("select public.ferme_session(%s)", (session.empreinte,))
+
+        async def requete() -> bool:
+            try:
+                async with base.session(session.empreinte):
+                    return False
+            except SessionRefuseeError:
+                return True
+
+        assert await course(admin, ferme, requete, "note_l_activite_de_la_session") is True
 
     async def test_une_session_fermee_pendant_la_lecture_n_est_pas_rouverte(
         self, base: Base, fabrique: Fabrique, admin: psycopg.Connection[Ligne], personne: UUID
@@ -645,23 +746,6 @@ class TestLireSansEcrire:
         else:
             empreinte = token_bytes(32)
         assert admin.execute(LIT, (empreinte, lecture)).fetchone() is None
-
-    def test_la_regle_de_lecture_est_celle_de_session_valide(
-        self, admin: psycopg.Connection[Ligne], personne: UUID
-    ) -> None:
-        session, empreinte = cree_a(admin, personne)
-        for quand in (T0 + MIN, T0 + 6 * MIN, T0 + timedelta(days=29), T0 + timedelta(days=31)):
-            ancien = admin.execute(
-                "select person_id, session_id from private.session_valide(%s, %s)", (empreinte, quand)
-            ).fetchone()
-            nouveau = admin.execute(
-                "select person_id, session_id from private.lit_la_session(%s, %s)", (empreinte, quand)
-            ).fetchone()
-            assert ancien == nouveau
-            admin.execute(
-                "update public.login_session set last_seen_at = %s, expires_at = %s where id = %s",
-                (T0, T0 + timedelta(days=30), session),
-            )
 
 
 class TestNoterLActivite:

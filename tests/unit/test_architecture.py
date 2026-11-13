@@ -231,14 +231,17 @@ FONCTION = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 ECRIT_LES_SESSIONS = re.compile(
-    r"update\s+(?:only\s+)?public\.login_session\b[^;]*?\brevoked_at\s*="
-    r"|delete\s+from\s+(?:only\s+)?public\.login_session\b"
-    r"|truncate\s+(?:table\s+)?(?:only\s+)?public\.login_session\b"
-    r"|merge\s+into\s+public\.login_session\b",
+    r"update\s+(?:only\s+)?(?:public\.)?login_session\b[^;]*?\bset\b(?:(?!\bwhere\b)[^;])*?\brevoked_at\b"
+    r"|delete\s+from\s+(?:only\s+)?(?:public\.)?login_session\b"
+    r"|truncate\s+(?:table\s+)?(?:only\s+)?(?:public\.)?login_session\b"
+    r"|merge\s+into\s+(?:public\.)?login_session\b"
+    r"|delete\s+from\s+(?:only\s+)?auth\.users\b",  # les sessions partent en cascade avec la personne
     re.IGNORECASE,
 )
+# Le verrou au niveau racine du corps (deux espaces) : un appel dans un `if` ne verrouille pas toujours.
 LE_VERROU = re.compile(
-    r"\b(?:perform|select)\s+(?:private\.|public\.)?verrouille_la_personne\s*\(", re.IGNORECASE
+    r"^ {2}(?:perform|select)\s+(?:private\.|public\.)?verrouille_la_personne\s*\(",
+    re.IGNORECASE | re.MULTILINE,
 )
 UNE_ECRITURE = re.compile(r"\b(?:update|delete|insert|truncate|merge)\b", re.IGNORECASE)
 # Les fonctions qui ferment des sessions SANS la personne, chacune avec sa raison (une fonction ajoutée ici se
@@ -248,6 +251,7 @@ SANS_VERROU_DE_PERSONNE: dict[str, str] = {
     "public.ferme_un_appareil/2": "une seule session désignée par la personne : pas les autres",
     "private.purge_login_session/2": "la purge nocturne efface des lignes mortes depuis 30 jours",
     "public.efface_mes_donnees/0": "S14 (0156) la redéfinit avec les trois verrous",
+    "public.delete_my_account/0": "appelle efface_mes_donnees d'abord (S14 y pose les verrous)",
 }
 
 
@@ -366,6 +370,9 @@ FERMETURES_DEGUISEES = [
     "truncate public.login_session",
     "truncate table public.login_session",
     "merge into public.login_session s using x on true when matched then delete",
+    "update public.login_session set (revoked_at, expires_at) = (now(), now())",
+    "update login_session set revoked_at = now()",
+    "delete from auth.users where id = 1",
 ]
 
 
@@ -382,6 +389,23 @@ def test_le_controle_attrape_une_fonction_qui_ecrit_avant_de_verrouiller() -> No
 def test_le_controle_attrape_les_ecritures_deguisees(ecriture: str) -> None:
     source = f"create function public.f() returns void language sql as $$ {ecriture}; $$;"
     assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == ["public.f/0"]
+
+
+def test_un_verrou_pris_seulement_dans_un_if_ne_compte_pas() -> None:
+    source = (
+        "create function public.f(p uuid) returns void language plpgsql as $$\nbegin\n"
+        "  if p is not null then\n    perform private.verrouille_la_personne(p);\n  end if;\n"
+        "  delete from public.login_session;\nend $$;"
+    )
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == ["public.f/1"]
+
+
+def test_une_lecture_qui_nomme_revoked_at_dans_sa_condition_n_est_pas_une_fermeture() -> None:
+    source = (
+        "create function public.f() returns void language sql as $$\n"
+        "  update public.login_session set last_seen_at = now() where revoked_at is null;\n$$;"
+    )
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == []
 
 
 def test_un_verrou_cite_dans_une_chaine_ou_un_autre_nom_ne_compte_pas() -> None:

@@ -74,6 +74,8 @@ LIT_LA_SESSION: LiteralString = (
 # transaction à part que rien ne retient.
 NOTE_L_ACTIVITE: LiteralString = "select public.note_l_activite_de_la_session(%s)"
 PREAMBULE_CONNEXION: LiteralString = DELAIS_API  # pas de `set role` : la transaction reste `popote_api`
+# L'écriture de l'activité attend la personne 1 s au plus : elle est facultative.
+PREAMBULE_ACTIVITE: LiteralString = f"{DELAIS_API}; set local lock_timeout = '1s'"
 PREAMBULE_SERVICE: LiteralString = (
     f"set local role service_role; {DELAIS_INTERNE}; "
     f"set local statement_timeout = '{DELAI_DE_LA_BASE_DU_SERVICE}'"
@@ -319,13 +321,17 @@ async def _note_l_activite(pool: Pool | None, empreinte: bytes) -> None:
     """Écrit l'activité en sa propre transaction, validée tout de suite : rien n'est tenu pendant la route.
 
     Au mieux : l'activité ne fait pas échouer une requête dont la session est valide. Un verrou qui n'a pas
-    lâché en 5 s (une fermeture longue) ou un interblocage laissent l'activité périmée ; la requête suivante
-    réessaiera. Seuls ces deux cas sont avalés, et journalisés par leur type.
+    lâché en 1 s (une fermeture longue), un interblocage ou un délai de requête laissent l'activité périmée ;
+    la requête suivante réessaiera. Seuls ces trois cas sont avalés, et journalisés par leur type.
     """
     try:
-        async with _contexte(pool, PREAMBULE_CONNEXION, None, BaseIndisponibleError()) as curseur:
+        async with _contexte(pool, PREAMBULE_ACTIVITE, None, BaseIndisponibleError()) as curseur:
             await curseur.execute(NOTE_L_ACTIVITE, (empreinte,))
-    except (psycopg.errors.LockNotAvailable, psycopg.errors.DeadlockDetected) as erreur:
+    except (
+        psycopg.errors.LockNotAvailable,
+        psycopg.errors.DeadlockDetected,
+        psycopg.errors.QueryCanceled,
+    ) as erreur:
         journal.warning("Activité de session non écrite : %s", type(erreur).__name__)
 
 

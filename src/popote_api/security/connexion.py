@@ -108,7 +108,7 @@ async def tente_la_connexion(
             return Refusee()
         # Le verrou de la personne, puis la preuve REFAITE : un changement de mot de passe validé entre la
         # première vérification et ici l'a rendue fausse, et la session ouverte alors lui survivrait.
-        await verrouille_la_personne(curseur, personne)
+        await verrouille_la_personne(curseur, personne, _empreinte_presentee(jeton_presente))
         if not await _verifie_de(curseur, personne, mot_de_passe):
             await journalise(curseur, Evenement.connexion_ratee, cle_compte=cle_compte, request_id=request_id)
             return Refusee()
