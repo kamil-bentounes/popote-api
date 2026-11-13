@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from _connexions import DSN_API, connecte
+from _connexions import DSN_ADMIN, DSN_API, connecte
 from _fabrique import Fabrique, SessionDeTest
 from psycopg import sql
 
@@ -190,6 +190,20 @@ def test_last_seen_at_n_est_pas_reecrit_a_chaque_requete(
     personne_de(cx_api, session.empreinte)
     personne_de(cx_api, session.empreinte)
     assert ligne_de(fabrique, session) == avant
+
+
+def test_une_lecture_heritee_ne_verrouille_pas_la_ligne_de_la_session(
+    cx_api: psycopg.Connection[Ligne], fabrique: Fabrique
+) -> None:
+    """Une lecture héritée encore ouverte : une autre connexion verrouille la ligne sans attendre."""
+    session = fabrique.session(une_personne(fabrique), vue_il_y_a=CINQ_MINUTES * 2)
+    with cx_api.transaction(force_rollback=True):
+        cx_api.execute(APPEL, (session.empreinte,))
+        with psycopg.connect(DSN_ADMIN) as autre:
+            ligne = autre.execute(
+                "select id from public.login_session where id = %s for update nowait", (session.id,)
+            ).fetchone()
+    assert ligne == (session.id,)
 
 
 def test_la_session_disparait_avec_la_personne(fabrique: Fabrique) -> None:

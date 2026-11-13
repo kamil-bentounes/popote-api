@@ -243,7 +243,11 @@ LE_VERROU = re.compile(
     r"^ {2}(?:perform|select)\s+(?:private\.|public\.)?verrouille_la_personne\s*\(",
     re.IGNORECASE | re.MULTILINE,
 )
-UNE_ECRITURE = re.compile(r"\b(?:update|delete|insert|truncate|merge)\b", re.IGNORECASE)
+# Une écriture OU une lecture qui verrouille une ligne (`for update`, `for share`, `for key share`…).
+UNE_ECRITURE = re.compile(
+    r"\b(?:update|delete|insert|truncate|merge)\b|\bfor\s+(?:no\s+key\s+update|update|key\s+share|share)\b",
+    re.IGNORECASE,
+)
 # Les fonctions qui ferment des sessions SANS la personne, chacune avec sa raison (une fonction ajoutée ici se
 # justifie en relecture). `efface_mes_donnees` y reste jusqu'à S14, qui lui donne les trois verrous.
 SANS_VERROU_DE_PERSONNE: dict[str, str] = {
@@ -389,6 +393,15 @@ def test_le_controle_attrape_une_fonction_qui_ecrit_avant_de_verrouiller() -> No
 def test_le_controle_attrape_les_ecritures_deguisees(ecriture: str) -> None:
     source = f"create function public.f() returns void language sql as $$ {ecriture}; $$;"
     assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == ["public.f/0"]
+
+
+def test_le_controle_attrape_une_lecture_qui_verrouille_une_ligne_avant_le_verrou() -> None:
+    source = (
+        "create function public.f(p uuid) returns void language plpgsql as $$\nbegin\n"
+        "  perform 1 from public.login_session where person_id = p for update;\n"
+        "  perform private.verrouille_la_personne(p);\n  delete from public.login_session;\nend $$;"
+    )
+    assert ferment_des_sessions_sans_verrou(fonctions_sql([source])) == ["public.f/1"]
 
 
 def test_un_verrou_pris_seulement_dans_un_if_ne_compte_pas() -> None:

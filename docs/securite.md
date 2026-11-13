@@ -397,7 +397,11 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   `private.verrouille_la_personne(personne)` est le verrou consultatif de transaction que `cree_session` posait en ligne (même clé,
   `hashtextextended(personne::text, 0)`), nommé ; `public.verrouille_la_personne` est son chemin Python (`popote_api`, `service_role`).
   Une personne nulle est refusée (le verrou serait un « rien »).
-- **Ordre des verrous, partout : foyer, puis invitation du foyer, puis personne, puis lignes** (session, code, clé). Tout code qui ouvre une session, en ferme
+- **Ordre des verrous, partout : foyer, puis invitation du foyer, puis personne, puis lignes** (session, code, clé). Les routes publiques
+  prennent avant la personne leurs compteurs de limite (`login_throttle`) et, pour la demande de code, le verrou de la clé de compte ;
+  aucune fonction qui tient une personne ne touche ces lignes, donc aucun chemin inverse (hiérarchie : limites et clé de compte, foyer,
+  invitation, personne, lignes). `efface_mes_donnees` (prend le foyer, jamais la personne) et la cascade de `delete_my_account` restent
+  hors règle jusqu'à S14, qui leur donne les trois verrous et empêche une session après la suppression du profil. Tout code qui ouvre une session, en ferme
   plusieurs, révoque ou consomme un code, ajoute ou retire une clé ou supprime un compte prend d'abord la personne. `cree_session`,
   `ferme_les_autres_sessions`, `ferme_les_autres_appareils`, `fait_tourner_et_ferme_les_autres` et
   `confirme_le_changement_de_mot_de_passe` la prennent **avant toute écriture** (un test regarde, dans `pg_locks`, que B attend sans avoir
@@ -411,7 +415,9 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   l'activité a plus de 5 minutes) ; si elle est périmée, la transaction de lecture est abandonnée, l'activité s'écrit dans **sa propre
   transaction courte** (`note_l_activite_de_la_session` : la personne, puis la ligne, conditions relues sous le verrou), **validée avant**
   que la route ouvre la sienne, puis la requête recommence. Dans le cas courant (activité récente) il n'y a toujours qu'une transaction.
-  À l'entrée de la route, aucun verrou de personne ni aucune écriture ne sont tenus (testé). Conséquence : l'activité s'écrit même si
+  À l'entrée de la route, aucun verrou de personne ni aucune écriture ne sont tenus (testé). La validité de la session n'est pas relue
+  après : une fermeture validée entre la lecture et le premier effet de la route laisse finir une requête déjà authentifiée (écart accepté,
+  borné par les délais de 8 s). Conséquence : l'activité s'écrit même si
   la route échoue (la session a bien servi). `session_valide`, `session_courante` et `session_personne` ne sont pas touchées : l'API ne
   les appelle plus, elles ne servent qu'au code déjà déployé pendant la fenêtre de déploiement.
 - **La preuve et la session (leçon 1, chemin mot de passe).** `tente_la_connexion` vérifie le mot de passe, prend le verrou de la
