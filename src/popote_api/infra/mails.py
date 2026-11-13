@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, Protocol
+from typing import Literal, Protocol, assert_never
 
 from popote_api.config import MailProvider, Settings
 from popote_api.infra import mails_textes as textes
@@ -167,7 +167,18 @@ class EnvoiParEnveloppe(ABC):
 
 
 def cree_envoi_mail(reglages: Settings) -> EnvoiMail:
-    return BoiteDeTest() if reglages.mail_provider is MailProvider.local else MailAbsent()
+    match reglages.mail_provider:
+        case MailProvider.local:
+            return BoiteDeTest()
+        case MailProvider.scaleway:
+            # Import tardif : `mail_scaleway` importe ce module (base, exception).
+            from popote_api.infra.mail_scaleway import cree_envoi_scaleway
+
+            return cree_envoi_scaleway(reglages)
+        case MailProvider.aucun:
+            return MailAbsent()
+        case _:
+            assert_never(reglages.mail_provider)
 
 
 class TypeDeMail(StrEnum):

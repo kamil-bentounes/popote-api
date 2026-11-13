@@ -345,7 +345,9 @@ jobs:
     needs: [python, contrat, base, image, secrets, semgrep, migre-essai]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Chaque étape a son propre délai ; celui du job est leur somme (5 + 5 + 10 + 2 + 20 + 5 + 5 = 52) plus 5 minutes :
+    # une étape lente n'ôte jamais au rétablissement le temps qui lui est réservé.
+    timeout-minutes: 57
     environment: essai
     # Un déploiement en cours n'est jamais annulé : le suivant attend son tour.
     concurrency:
@@ -360,10 +362,12 @@ jobs:
       SCW_CONTAINER_ID: ${{ vars.SCW_CONTAINER_ID }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 5
         with:
           name: image-scannee
           path: ${{ runner.temp }}/image
       - name: Charger l'image scannée
+        timeout-minutes: 5
         env:
           IMAGE_SCANNEE: ${{ needs.image.outputs.id }}
         run: |
@@ -375,6 +379,7 @@ jobs:
           fi
       - name: Se connecter au registre, pousser l'image et lire son empreinte
         id: pousse
+        timeout-minutes: 10
         env:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
         run: |
@@ -393,23 +398,25 @@ jobs:
           echo "empreinte poussée : ${reference#*@}"
           echo "reference=$reference" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - name: Déployer l'empreinte, vérifier la version en ligne, sinon rétablir l'image précédente
-        env:
-          REFERENCE: ${{ steps.pousse.outputs.reference }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+      - name: Préparer les outils de déploiement (fonctions partagées avec le rétablissement)
+        timeout-minutes: 2
         run: |
           set -euo pipefail
-          # Le jeton passe par la configuration de curl lue sur l'entrée standard : jamais en argument.
+          mkdir -p "$RUNNER_TEMP/retablir"
+          # Écrit une fois, lu par le déploiement ET par le rétablissement : aucune copie à tenir à jour. Le jeton
+          # passe par la configuration de curl lue sur l'entrée standard : jamais en argument.
+          cat > "$RUNNER_TEMP/scw.sh" <<'FONCTIONS'
           scw() {
             printf 'header = "X-Auth-Token: %s"\n' "$SCW_SECRET_KEY" \
-              | curl --silent --show-error --fail-with-body --max-time 30 --config - "$@"
+              | curl --silent --show-error --fail-with-body --max-time 10 --config - "$@"
           }
           conteneur="$SCW_API/containers/v1beta1/regions/$SCW_REGION/containers/$SCW_CONTAINER_ID"
-
           # Dans ces fonctions, appelées sous `if`, `set -e` ne joue pas : chaque échec est un `return 1`.
+          # Attente bornée par $1 secondes (8 minutes par défaut), sondes de 10 s au plus (la sonde ne tient jamais le job).
           attendre_pret() {
-            local statut
-            for _ in $(seq 1 60); do
+            local statut fin=$((SECONDS + ${1:-480}))
+            # Une sonde (10 s) et un sommeil (5 s) ne commencent que s'il reste de quoi les finir : le budget est tenu.
+            while [ $((fin - SECONDS)) -gt 15 ]; do
               statut=$(scw "$conteneur" | jq -r '.status') || statut=inconnu
               echo "statut du conteneur : $statut"
               case "$statut" in
@@ -418,17 +425,58 @@ jobs:
               esac
               sleep 5
             done
-            echo "::error::le conteneur n'est pas prêt après 5 minutes"
+            echo "::error::le conteneur n'est pas prêt dans le délai"
             return 1
           }
-          deployer() {
+          # $1 : l'image ; $2 : la carte COMPLÈTE des variables non secrètes. Un PATCH de `environment_variables`
+          # remplace toute la carte (l'API ne fusionne pas) : on envoie donc l'existante, complétée. Les variables
+          # secrètes ne sont pas dans le corps : elles restent telles quelles.
+          patcher() {
             local corps
             # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
-            corps=$(jq -n --arg image "$1" '{registry_image: $image, redeploy: true}') || return 1
-            scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null || return 1
+            corps=$(jq -n --arg image "$1" --argjson variables "$2" \
+              '{registry_image: $image, environment_variables: $variables, redeploy: true}') || return 1
+            # Le marqueur du rétablissement naît ici, juste avant la requête : une annulation plus tôt ne déclenche rien.
+            : > "$RUNNER_TEMP/retablir/patch-envoye" || return 1 # sous `if`, `set -e` ne joue pas : pas de marqueur, pas de PATCH
+            scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
+          }
+          deployer() {
+            patcher "$1" "$2" || return 1
             sleep 10 # laisser le statut quitter `ready` avant de le lire
             attendre_pret
           }
+          # Prouve ce que le PATCH a laissé : l'image, la carte non secrète, et les NOMS des variables secrètes (leurs
+          # valeurs ne se relisent pas). $1 : l'image attendue ; $2 : la carte ; $3 : les noms secrets.
+          verifier_conteneur() {
+            local lu
+            lu=$(scw "$conteneur") || return 1
+            if [ "$(jq -r '.registry_image // empty' <<< "$lu")" != "$1" ]; then
+              echo "::error::l'image du conteneur n'est pas celle qu'on a posée"
+              return 1
+            fi
+            if ! jq -e --argjson attendu "$2" '.environment_variables == $attendu' <<< "$lu" > /dev/null; then
+              echo "::error::les variables non secrètes du conteneur ne sont pas celles qu'on a posées"
+              return 1
+            fi
+            if [ "$(jq -c '[.secret_environment_variables[]?.key] | sort' <<< "$lu")" != "$3" ]; then
+              echo "::error::les variables secrètes du conteneur ont changé"
+              return 1
+            fi
+            echo "conteneur vérifié (image, variables : $(jq -r '.environment_variables | keys | join(", ")' <<< "$lu"))"
+          }
+          FONCTIONS
+      - name: Déployer l'empreinte, vérifier la version en ligne
+        id: deploiement
+        # Sous le délai du job : le rétablissement, étape suivante, garde de quoi finir.
+        timeout-minutes: 20
+        env:
+          REFERENCE: ${{ steps.pousse.outputs.reference }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/scw.sh"
+
           # Seule la version rendue prouve que la nouvelle image répond : l'ancienne répond 200 aussi.
           attendre_version() {
             local version fin=$((SECONDS + 180))
@@ -446,19 +494,89 @@ jobs:
             done
           }
 
-          # Lue avant la mise à jour : c'est l'image à reposer si la nouvelle ne démarre pas.
-          precedente=$(scw "$conteneur" | jq -r '.registry_image // empty')
+          # Lu avant la mise à jour : l'image et les variables à reposer si la nouvelle ne démarre pas (une
+          # ancienne image ne connaît pas `POPOTE_MAIL_PROVIDER=scaleway` : elle refuserait de démarrer).
+          actuel=$(scw "$conteneur")
+          precedente=$(jq -r '.registry_image // empty' <<< "$actuel")
           if [ -z "$precedente" ]; then
             echo "::error::image en place illisible : rien à reposer en cas d'échec, on ne déploie pas"
             exit 1
           fi
-          if deployer "$REFERENCE" && attendre_version; then
-            echo "déploiement vérifié"
+          anciennes=$(jq -c '.environment_variables // {}' <<< "$actuel")
+          noms_secrets=$(jq -c '[.secret_environment_variables[]?.key] | sort' <<< "$actuel")
+          # L'envoi des mails : la clé est un secret du conteneur (posée à la main) ; sans elle, l'API refuserait de
+          # démarrer avec `scaleway`.
+          if ! jq -e 'any(.secret_environment_variables[]?; .key == "POPOTE_SCALEWAY_TEM_SECRET_KEY")' <<< "$actuel" > /dev/null; then
+            echo "::error::le secret POPOTE_SCALEWAY_TEM_SECRET_KEY manque au conteneur : on ne déploie pas"
+            exit 1
+          fi
+          # Le projet de l'envoi est celui du conteneur : conteneur, espace de noms, projet. Aucun identifiant n'est
+          # écrit dans le dépôt ni dans une variable de GitHub.
+          espace=$(jq -r '.namespace_id // empty' <<< "$actuel")
+          projet=$(scw "$SCW_API/containers/v1beta1/regions/$SCW_REGION/namespaces/$espace" | jq -r '.project_id // empty')
+          # `[[ =~ ]]` juge la chaîne entière ; `grep` jugerait chaque ligne et laisserait passer « uuid\nautre ».
+          if ! [[ $projet =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]]; then
+            echo "::error::projet du conteneur illisible"
+            exit 1
+          fi
+          echo "::add-mask::$projet"
+          nouvelles=$(jq -c --arg projet "$projet" \
+            '. + {POPOTE_MAIL_PROVIDER: "scaleway", POPOTE_SCALEWAY_TEM_PROJECT_ID: $projet, POPOTE_PUBLIC_BASE_URL: "https://essai.notre-popote.fr"}' \
+            <<< "$anciennes")
+          # Avant d'envoyer : aucune variable existante n'est perdue ni changée par la complétion, sauf les trois que
+          # ce job administre (une valeur posée à la main, `aucun` par exemple, doit pouvoir être remplacée).
+          administrees='POPOTE_MAIL_PROVIDER POPOTE_SCALEWAY_TEM_PROJECT_ID POPOTE_PUBLIC_BASE_URL'
+          if ! jq -e --argjson anciennes "$anciennes" --argjson nouvelles "$nouvelles" --arg administrees "$administrees" \
+            '($administrees | split(" ")) as $a
+             | $anciennes | to_entries | map(select(.key as $k | $a | index($k) | not))
+             | all(.value == $nouvelles[.key])' <<< "null" > /dev/null; then
+            echo "::error::la carte complétée perd ou change une variable existante (hors celles de l'envoi des mails)"
+            exit 1
+          fi
+          if [ "$(jq -r '[.POPOTE_MAIL_PROVIDER, .POPOTE_SCALEWAY_TEM_PROJECT_ID, .POPOTE_PUBLIC_BASE_URL] | join(" ")' <<< "$nouvelles")" != "scaleway $projet https://essai.notre-popote.fr" ]; then
+            echo "::error::les variables de l'envoi des mails ne sont pas celles voulues"
+            exit 1
+          fi
+          # Avant le PATCH : de quoi rétablir, même si le job est tué ensuite. Variables NON secrètes seulement (les
+          # secrets ne sont pas dans la carte ; ils ne sont jamais touchés).
+          printf '%s' "$precedente" > "$RUNNER_TEMP/retablir/image"
+          printf '%s' "$anciennes" > "$RUNNER_TEMP/retablir/variables.json"
+          printf '%s' "$noms_secrets" > "$RUNNER_TEMP/retablir/noms-secrets.json"
+          deployer "$REFERENCE" "$nouvelles"
+          verifier_conteneur "$REFERENCE" "$nouvelles" "$noms_secrets"
+          attendre_version
+          echo "déploiement vérifié"
+      - name: Rétablir l'image et les variables précédentes si le déploiement a échoué
+        # Étape à part : elle tourne même si l'étape de déploiement a dépassé son délai, et relit ce qu'elle a mis de côté.
+        # Elle tient en 4 minutes au plus : GitHub arrête un workflow annulé 5 minutes après l'annulation.
+        if: ${{ failure() || cancelled() }}
+        timeout-minutes: 5
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ ! -e "$RUNNER_TEMP/retablir/patch-envoye" ]; then
+            echo "aucune mise à jour envoyée au conteneur : rien à rétablir"
             exit 0
           fi
-          echo "::error::la nouvelle image ne tient pas : on repose l'image précédente"
-          if deployer "$precedente"; then
-            echo "image précédente reposée"
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/scw.sh"
+          precedente=$(cat "$RUNNER_TEMP/retablir/image")
+          anciennes=$(cat "$RUNNER_TEMP/retablir/variables.json")
+          noms_secrets=$(cat "$RUNNER_TEMP/retablir/noms-secrets.json")
+          echo "::error::le déploiement n'a pas abouti : on repose l'image et les variables précédentes"
+          # La carte relue doit être celle d'avant : sinon l'ancienne image (qui ne connaît pas `scaleway`) repartirait
+          # avec la nouvelle carte et refuserait de démarrer.
+          # Ordre : PATCH, puis la preuve par GET (image, carte, noms des secrets), puis l'attente de disponibilité, qui
+          # prend le reste des 4 minutes et jamais plus.
+          debut=$SECONDS
+          if patcher "$precedente" "$anciennes" && verifier_conteneur "$precedente" "$anciennes" "$noms_secrets"; then
+            echo "image et variables précédentes reposées et vérifiées"
+            reste=$((240 - (SECONDS - debut)))
+            if [ "$reste" -gt 10 ]; then
+              sleep 5
+              attendre_pret "$((reste - 5))" || echo "::warning::le conteneur n'est pas encore prêt ; la carte et l'image sont celles d'avant"
+            fi
           else
             echo "::error::l'image précédente n'a pas pu être reposée : l'essai est à rétablir à la main"
           fi
@@ -466,6 +584,7 @@ jobs:
       - name: Ne garder que les 5 images les plus récentes
         # Le déploiement est déjà vérifié : un nettoyage raté ne doit pas le rougir.
         continue-on-error: true
+        timeout-minutes: 5
         env:
           TAG_COURANT: ${{ steps.pousse.outputs.tag }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
