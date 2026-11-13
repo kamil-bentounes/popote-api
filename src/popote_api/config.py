@@ -93,6 +93,15 @@ class Settings(BaseSettings):
     # conteneur d'essai ne l'a pas : sans lui hors local, les clés manquent (journal sans clés, avertissement
     # au démarrage) ; en local il est tiré au hasard par processus. Posé, il fait 32 caractères au moins.
     identity_pepper: SecretStr | None = None
+    # Les limites de connexion, comptées en base (`security/limites_base.py`, migration 0138). Les défauts
+    # sont ceux de la spec § 3.6 : 5 essais par compte et 20 par IP en 15 min, blocage de 15 min qui double
+    # jusqu'à 60 min ; 3 demandes de réinitialisation par heure et par (e-mail, IP).
+    connexion_essais_par_compte: int = Field(default=5, ge=1, le=1000)
+    connexion_essais_par_ip: int = Field(default=20, ge=1, le=10000)
+    connexion_fenetre_s: int = Field(default=900, ge=1, le=86400)
+    connexion_attente_max_s: int = Field(default=3600, ge=1, le=86400)
+    reinitialisation_essais: int = Field(default=3, ge=1, le=100)
+    reinitialisation_fenetre_s: int = Field(default=3600, ge=1, le=86400)
     # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans
     # `internal_secret`, toute route interne répond 404 (fermé par défaut) et le démarrage avertit.
     # `internal_secret_precedent` sert la rotation : le nouveau secret va en `internal_secret`, l'ancien ici,
@@ -198,6 +207,13 @@ class Settings(BaseSettings):
     def _la_cle_secrete_exige_l_adresse(self) -> Self:
         if self.supabase_secret_key is not None and self.supabase_url is None:
             raise ValueError("supabase_secret_key sans supabase_url : poser l'adresse du projet aussi.")
+        return self
+
+    @model_validator(mode="after")
+    def _le_plafond_d_attente_couvre_la_fenetre(self) -> Self:
+        # La base refuse un plafond plus court que la fenêtre : échouer au démarrage plutôt qu'à la connexion.
+        if self.connexion_attente_max_s < self.connexion_fenetre_s:
+            raise ValueError("connexion_attente_max_s : au moins connexion_fenetre_s.")
         return self
 
     @property

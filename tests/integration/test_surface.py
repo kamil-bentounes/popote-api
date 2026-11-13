@@ -18,7 +18,7 @@ ROLES = [*EMPRUNTABLES, "popote_api", "popote_internal"]
 PRIVILEGES_DE_TABLE = ["select", "insert", "update", "delete", "truncate", "references", "trigger"]
 
 # Les tables de 0.4 : aucun droit aux rôles applicatifs, RLS forcée, sans politique. Une migration en ajoute.
-TABLES = ["public.security_event"]
+TABLES = ["public.security_event", "public.login_throttle"]
 
 # Les fonctions de 0.4 et les rôles qui peuvent les exécuter (rôle COURANT). Une migration en ajoute.
 EXECUTABLES_PAR: dict[str, set[str]] = {
@@ -38,6 +38,16 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.verifie_mot_de_passe(text, text)": {"popote_api"},
     "public.verifie_mot_de_passe_de(uuid, text)": {"popote_api"},
     "private.mot_de_passe_correspond(text, text)": set(),
+    "public.prend_les_creneaux(bytea, bytea, integer, integer, integer, integer)": {
+        "popote_api",
+        "service_role",
+    },
+    "public.prend_un_creneau_reinit(bytea, integer, integer)": {"popote_api", "service_role"},
+    "public.libere_compte(bytea)": {"popote_api", "service_role"},
+    "private.prend_les_creneaux(bytea, bytea, integer, integer, integer, integer, timestamptz)": set(),
+    "private.prend_un_creneau(text, bytea, integer, integer, integer, boolean, timestamptz)": set(),
+    "private.prend_un_creneau_reinit(bytea, integer, integer, timestamptz)": set(),
+    "private.purge_login_throttle(timestamptz, integer)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

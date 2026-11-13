@@ -26,6 +26,7 @@ LONGUEUR_DU_POIVRE_LOCAL = 32
 # Étiquettes de séparation : une clé de compte n'est jamais une clé d'IP, même si les textes se ressemblent.
 ETIQUETTE_COMPTE = b"popote/compte/v1\x00"
 ETIQUETTE_IP = b"popote/ip/v1\x00"
+ETIQUETTE_REINITIALISATION = b"popote/reinit/v1\x00"
 # Une requête sans adresse (relais absent ou invalide) : une clé commune, jamais « personne ».
 IP_ABSENTE = "sans-ip"
 PREFIXE_IPV6 = 64  # une IPv6 se regroupe par /64 : un foyer reçoit au moins un /64 (B12)
@@ -95,6 +96,19 @@ class Empreintes:
 
     def cle_ip(self, ip: str | None) -> bytes | None:
         return self._hmac(ETIQUETTE_IP, ip_canonique(ip))
+
+    def cle_reinitialisation(self, email: str, ip: str | None) -> bytes | None:
+        """La clé du compteur de réinitialisation : le COUPLE (e-mail, IP), jamais l'e-mail seul (B5).
+
+        Un tiers qui connaît l'adresse n'épuise ainsi que ses propres demandes, pas celles de la personne.
+        """
+        return self._hmac(ETIQUETTE_REINITIALISATION, f"{email_normalise(email)}\x00{ip_canonique(ip)}")
+
+    def cle_reinitialisation_requise(self, email: str, ip: str | None) -> bytes:
+        cle = self.cle_reinitialisation(email, ip)
+        if cle is None:
+            raise PoivreAbsentError
+        return cle
 
     def cle_compte_requise(self, email: str) -> bytes:
         """Pour qui COMPTE par clé : sans poivre, refuser plutôt que compter sans clé (fail closed)."""
