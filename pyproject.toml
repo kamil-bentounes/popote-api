@@ -42,14 +42,17 @@ asyncio_default_fixture_loop_scope = "function"
 strict_markers = true
 strict_xfail = true
 strict_config = true
-markers = ["integration: demande la base Supabase locale"]
+markers = [
+  "integration: demande la base Supabase locale",
+  "oasdiff: demande le binaire oasdiff (variable OASDIFF) ; tourne dans le job contrat de la CI",
+]
 
 [tool.ruff]
 line-length = 110
 target-version = "py313"
 src = ["src", "tests"]
 # Le dépôt garde aussi des scripts et des outils de conception : seul le code de l'API est contrôlé.
-include = ["src/**/*.py", "tests/**/*.py", "ops/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "ops/**/*.py", "scripts/ruptures_admises.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
@@ -61,4 +64,4 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
 strict = true
 python_version = "3.13"
 mypy_path = "src"
-packages = ["popote_api"]
+files = ["src/popote_api", "scripts/ruptures_admises.py"]
