@@ -354,7 +354,9 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   moins 10 comptes réels) voit, à l'absence du 60e mail, qu'une adresse sondée existe. Un quota global dur ne peut pas être à la fois
   indépendant de l'existence et inépuisable ; accepté pour un foyer de deux personnes, sur invitation (l'inscription est
   fermée). Un compte réel prend en plus le verrou de la personne et écrit un événement : sous contention de cette personne, sa
-  demande est plus lente ; S5b traduit les délais et erreurs de la même façon et mesure les médianes.
+  demande est plus lente ; S5b traduit les délais et erreurs de la même façon et mesure les médianes. Une panne ou un verrou propre
+  à `security_event` seule ne toucherait qu'un compte réel (`503` pour lui, `202` pour une adresse inconnue) : accepté, c'est une panne
+  partielle de la base, que la route ne peut pas masquer sans écrire aussi un événement pour les adresses inconnues (journal plein d'IP).
 - **Recherche du compte** : elle passe par `users_instance_id_email_idx (instance_id, lower(email))` ; sans `instance_id`, un
   parcours de la table arrêté à la première ligne trouvée ferait répondre une adresse connue plus vite qu'une inconnue (mesuré :
   4 ms contre 12 ms pour 20 000 comptes). Un test garde la requête et, sur une base fournie, la médiane des durées.
