@@ -297,6 +297,11 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 - **`POST /api/v1/sessions`** (connexion, publique) : `201` + `Set-Cookie`, corps `{id}` sans jeton ; `401
   identifiants_incorrects` ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
   (exemption écrite dans `tests/unit/test_posts_idempotents.py`). Détail : `docs/securite.md` § 4.5.
+- **Les appareils** (`/api/v1/me/sessions`, 0.4 T9) : `GET` liste paginée (§ 3.4) ; `DELETE /me/sessions/{id}` (UUID ou
+  `current`) : `204`, `404 session_introuvable` pour une session d'une autre personne ou inconnue, `204` si déjà fermée,
+  `401` si `current` est déjà fermée ; `DELETE /me/sessions?scope=others` : `scope` obligatoire (`others`), sinon
+  `422`. Les `DELETE` n'ont pas d'`Idempotency-Key` (exemption écrite : effet idempotent par nature, `Idempotency-Key`
+  ne vaut que pour les `POST`). Détail : `docs/securite.md` § 4.6.
 - **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
   que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
   (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte

@@ -257,6 +257,23 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus
   60 minutes ; « mot de passe oublié » reste ouvert (foyer de deux personnes).
 
+### 4.6 Les appareils et la déconnexion (0.4, migration 0140 ; code : `api/appareils.py`, `security/cookie.py`)
+
+- **`GET /api/v1/me/sessions`** : les sessions actives de la personne (ni révoquées, ni échues), la plus récemment
+  active d'abord, curseur sur (dernière activité, id). Champs : `id`, `browser`, `os`, `created_at`, `last_seen_at`,
+  `current` (une seule par page, calculée en Python : `id == session courante`). Jamais d'empreinte, d'IP ni de
+  texte d'agent.
+- **`DELETE /api/v1/me/sessions/{id}`** : `id` est un UUID ou `current`. Autre personne ou inconnue : le même `404
+  session_introuvable` (on ne révèle rien) et la session de l'autre reste valide. Déjà fermée : `204`. `current` (ou
+  son propre UUID) est la déconnexion : `204`, cookie vidé (`Max-Age=0`, mêmes attributs que la pose), événement
+  `deconnexion` ; une seconde déconnexion, ou une déconnexion simultanée perdue, rend `401`.
+- **`DELETE /api/v1/me/sessions?scope=others`** : `scope` obligatoire, une seule valeur (`others`) ; absent ou autre
+  rend `422`, rien n'est fermé. Garde la courante ; un événement `session_fermee` par session fermée.
+- **Contexte « personne »** : trois fonctions `security definer` (`mes_sessions`, `ferme_un_appareil`,
+  `ferme_les_autres_appareils`), exécutables par `authenticated` seul (B3) ; la personne vient de `auth.uid()`, jamais
+  d'un paramètre. Les événements s'écrivent dans la même transaction que la fermeture. Sans `Idempotency-Key` :
+  un `DELETE` est idempotent par nature.
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |

@@ -1,6 +1,68 @@
 {
   "components": {
     "schemas": {
+      "Appareil": {
+        "description": "Un appareil connecté : ce que la personne reconnaît, jamais ce qui permettrait de le retrouver.",
+        "properties": {
+          "browser": {
+            "description": "Famille de navigateur (`autre` si non reconnue).",
+            "enum": [
+              "chrome",
+              "firefox",
+              "safari",
+              "edge",
+              "autre"
+            ],
+            "title": "Browser",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Ouverture de la session.",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current": {
+            "description": "Vrai pour la session qui fait cette requête (une seule par page).",
+            "title": "Current",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "description": "Dernière activité.",
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "os": {
+            "description": "Famille de système (`autre` si non reconnue).",
+            "enum": [
+              "windows",
+              "macos",
+              "linux",
+              "android",
+              "ios",
+              "autre"
+            ],
+            "title": "Os",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "browser",
+          "os",
+          "created_at",
+          "last_seen_at",
+          "current"
+        ],
+        "title": "Appareil",
+        "type": "object"
+      },
       "Connexion": {
         "additionalProperties": false,
         "properties": {
@@ -147,6 +209,34 @@
           "household"
         ],
         "title": "Moi",
+        "type": "object"
+      },
+      "Page_Appareil_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Appareil"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "Page[Appareil]",
         "type": "object"
       },
       "ParametreEnCause": {
@@ -690,6 +780,630 @@
         "summary": "La personne connectée",
         "tags": [
           "moi"
+        ]
+      }
+    },
+    "/api/v1/me/sessions": {
+      "delete": {
+        "description": "Ferme toutes les sessions de la personne sauf celle qui fait la requête. `scope=others` est obligatoire.",
+        "operationId": "close_my_other_sessions",
+        "parameters": [
+          {
+            "description": "Seule valeur admise : `others`.",
+            "in": "query",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "const": "others",
+              "description": "Seule valeur admise : `others`.",
+              "title": "Scope",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Fermer tous les autres appareils",
+        "tags": [
+          "appareils"
+        ]
+      },
+      "get": {
+        "operationId": "list_my_sessions",
+        "parameters": [
+          {
+            "description": "Nombre de lignes par page (20 par défaut, 100 au plus).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre de lignes par page (20 par défaut, 100 au plus).",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque rendu par la page précédente.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque rendu par la page précédente.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_Appareil_"
+                }
+              }
+            },
+            "description": "Les sessions actives de la personne, la plus récemment active d'abord.",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Requête mal formée",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Mes appareils connectés",
+        "tags": [
+          "appareils"
+        ]
+      }
+    },
+    "/api/v1/me/sessions/{id}": {
+      "delete": {
+        "description": "`id` est l'identifiant d'une session de la personne, ou `current` : la session qui fait la requête (déconnexion : le cookie est vidé). Fermer une session déjà fermée est sans effet (`204`). Une session d'une autre personne ou inconnue est un `404`. Pas d'`Idempotency-Key` : l'effet est idempotent.",
+        "operationId": "close_my_session",
+        "parameters": [
+          {
+            "description": "UUID de la session, ou `current`.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la session, ou `current`.",
+              "pattern": "^(current|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "La session est fermée.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Pour `current` : le cookie vidé (`Max-Age=0`).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Fermer un appareil, ou se déconnecter",
+        "tags": [
+          "appareils"
         ]
       }
     },

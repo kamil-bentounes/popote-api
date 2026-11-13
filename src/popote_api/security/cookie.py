@@ -26,3 +26,16 @@ def pose_le_cookie_de_session(reponse: Response, reglages: Settings, jeton: str)
         httponly=True,
         samesite="lax",
     )
+
+
+def efface_le_cookie_de_session(reponse: Response, reglages: Settings) -> None:
+    """Vide le cookie (`Max-Age=0`) avec les mêmes attributs que `pose_le_cookie_de_session`.
+
+    Sans eux le navigateur ne reconnaît pas le cookie à remplacer (`__Host-` veut `Secure` et `Path=/`)."""
+    reponse.delete_cookie(
+        key=reglages.nom_du_cookie_de_session,
+        path="/",
+        secure=reglages.session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
