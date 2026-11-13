@@ -176,10 +176,13 @@ async def fait_tourner_la_session_et_ferme_les_autres(
     return None if session is None else Tournee(jeton, session)
 
 
-async def confirme_le_mot_de_passe_change(base: Base, personne: UUID, request_id: str | None) -> None:
-    """Étape 4 : `password_set` à vrai et l'événement, après le succès d'Auth seulement."""
+async def confirme_le_mot_de_passe_change(
+    base: Base, personne: UUID, session: UUID, request_id: str | None
+) -> None:
+    """Étape 4, après le succès d'Auth seulement : `password_set`, l'événement, et les autres sessions
+    refermées (une connexion faite avec l'ancien mot de passe pendant l'appel à Auth ne survit pas)."""
     async with base.connexion() as curseur:
-        await confirme_le_changement_de_mot_de_passe(curseur, personne, request_id)
+        await confirme_le_changement_de_mot_de_passe(curseur, personne, session, request_id)
 
 
 async def journalise_la_liste_de_fuites_indisponible(

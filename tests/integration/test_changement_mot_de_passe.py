@@ -22,6 +22,7 @@ from test_auth_admin_local import ENV_LOCAL
 from test_connexion import ECRITURE, MOT_DE_PASSE
 from test_reauthentification import Personne, fabrique_de_banc, moi
 
+from popote_api.api import moi as moi_api
 from popote_api.infra.auth_admin import AuthAdmin, AuthIndisponible
 from popote_api.infra.fuites import CauseIndisponibilite, ResultatFuite
 from popote_api.security.jeton import empreinte_du_jeton
@@ -325,3 +326,56 @@ async def test_auth_en_panne_donne_503_avec_le_nouveau_cookie_et_le_mot_de_passe
     # B9 : fermées par la base à l'étape 2, avant Auth (au succès, Auth les ferme aussi de son côté).
     assert lignes_auth(moi) == 0
     assert moi.evenements("mot_de_passe_change") == []  # l'événement n'existe qu'au succès
+
+
+async def test_une_session_ouverte_pendant_l_appel_a_auth_est_fermee_au_succes(
+    moi: Personne, fuites: FauxFuites, auth: EspionAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Une connexion faite avec l'ancien mot de passe pendant l'appel à Auth ne survit pas au changement."""
+    espion = auth
+    origine = espion.change_mot_de_passe
+    ouvertes: list[SessionDeTest] = []
+
+    async def avec_une_connexion_en_route(identifiant: UUID, mot_de_passe: str) -> None:
+        # La rotation est déjà validée : cette session naît après elle (connexion à l'ancien mot de passe).
+        ouvertes.append(moi.banc.fabrique.session(moi.id))
+        assert await lit_moi(moi, ouvertes[0].jeton) == 200
+        await origine(identifiant, mot_de_passe)
+
+    monkeypatch.setattr(espion, "change_mot_de_passe", avec_une_connexion_en_route)
+    reponse = await change(moi)
+    assert reponse.status_code == 204
+    assert len(ouvertes) == 1
+    assert await lit_moi(moi, ouvertes[0].jeton) == 401
+    assert await lit_moi(moi, jeton_pose(reponse)) == 200
+
+
+async def test_un_echec_de_la_base_apres_auth_rend_quand_meme_204_et_le_cookie(
+    moi: Personne,
+    fuites: FauxFuites,
+    auth: EspionAuth,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def casse(*_: object) -> None:
+        raise RuntimeError("base en panne")
+
+    monkeypatch.setattr(moi_api, "confirme_le_mot_de_passe_change", casse)
+    reponse = await change(moi)
+    assert reponse.status_code == 204  # le mot de passe EST changé
+    assert await lit_moi(moi, jeton_pose(reponse)) == 200
+    assert "confirmation en base a échoué" in caplog.text
+    assert NOUVEAU_NFC not in caplog.text and NOUVEAU_NFD not in caplog.text
+
+
+async def test_une_erreur_imprevue_a_l_etape_auth_rend_503_avec_le_cookie(
+    moi: Personne, fuites: FauxFuites
+) -> None:
+    class Casse(AuthEnPanne):
+        async def change_mot_de_passe(self, identifiant: UUID, mot_de_passe: str) -> None:
+            raise RuntimeError("imprévu")
+
+    moi.banc.app.state.auth_admin = Casse()
+    reponse = await change(moi)
+    assert reponse.status_code == 503
+    assert await lit_moi(moi, jeton_pose(reponse)) == 200

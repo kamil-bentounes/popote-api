@@ -10,8 +10,12 @@
 --  - `private.ferme_les_sessions_auth(p_person)` : la suppression des lignes `auth.sessions` et
 --    `auth.refresh_tokens` de la personne (B9) ; la réinitialisation et la suppression de compte (T14, T15) la
 --    réutiliseront.
---  - `public.confirme_le_changement_de_mot_de_passe(p_person, p_request_id)` : après le succès d'Auth, `password_set`
---    à vrai (l'ancienne appli en dépend pendant la fenêtre de retour) et l'événement `mot_de_passe_change`.
+--  - `private.ferme_les_autres_sessions(p_person, p_keep, p_now)` : ferme les sessions actives de la personne sauf
+--    `p_keep` (un `session_fermee` chacune), puis ses sessions Supabase Auth.
+--  - `public.confirme_le_changement_de_mot_de_passe(p_person, p_session, p_request_id)` : après le succès d'Auth,
+--    `password_set` à vrai (l'ancienne appli en dépend pendant la fenêtre de retour), l'événement
+--    `mot_de_passe_change`, et une SECONDE fermeture des autres sessions : une connexion faite avec l'ancien mot de
+--    passe pendant l'appel à Auth ne survit pas au changement.
 --
 -- DROITS (B3, B19) : seul `popote_api` (contexte connexion) exécute les deux fonctions publiques ; ni `authenticated`,
 -- ni `service_role`, ni `popote_internal`. Aucun paramètre d'horloge exécutable : la variante à `p_now` vit dans
@@ -22,10 +26,10 @@
 -- ne sont supprimées que par ces fonctions, appelées par la nouvelle API.
 --
 -- Retour arrière (sans perte) :
---   drop function public.confirme_le_changement_de_mot_de_passe(uuid, text),
+--   drop function public.confirme_le_changement_de_mot_de_passe(uuid, uuid, text),
 --     public.fait_tourner_et_ferme_les_autres(bytea, bytea);
 --   drop function private.fait_tourner_et_ferme_les_autres(bytea, bytea, timestamptz),
---     private.ferme_les_sessions_auth(uuid);
+--     private.ferme_les_autres_sessions(uuid, uuid, timestamptz), private.ferme_les_sessions_auth(uuid);
 -- ═══════════════════════════════════════════════════════════════════════════
 set local lock_timeout = '5s';
 set local statement_timeout = '30s';
@@ -45,6 +49,36 @@ comment on function private.ferme_les_sessions_auth(uuid) is
 revoke all on function private.ferme_les_sessions_auth(uuid)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 
+create or replace function private.ferme_les_autres_sessions(p_person uuid, p_keep uuid, p_now timestamptz)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_fermees bigint;
+begin
+  with fermees as (
+    update public.login_session s
+       set revoked_at = p_now
+     where s.person_id = p_person
+       and s.id <> p_keep
+       and s.revoked_at is null
+       and s.expires_at > p_now
+       and s.absolute_expires_at > p_now
+    returning s.id
+  )
+  select pg_catalog.count(private.ecrit_evenement('session_fermee', p_person, f.id)) into v_fermees
+    from fermees f;
+  perform private.ferme_les_sessions_auth(p_person);
+end;
+$$;
+comment on function private.ferme_les_autres_sessions(uuid, uuid, timestamptz) is
+  'Ferme les sessions actives de la personne sauf p_keep, et ses sessions Supabase Auth. Interne : aucun rôle ne l''exécute.';
+revoke all on function private.ferme_les_autres_sessions(uuid, uuid, timestamptz)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+
 create or replace function private.fait_tourner_et_ferme_les_autres(p_old_hash bytea, p_new_hash bytea, p_now timestamptz)
 returns uuid
 language plpgsql
@@ -55,7 +89,6 @@ as $$
 declare
   v_session uuid;
   v_person uuid;
-  v_fermees bigint;
 begin
   -- La rotation d'abord : c'est elle qui verrouille la ligne et départage deux changements simultanés.
   update public.login_session s
@@ -71,19 +104,7 @@ begin
     return null;
   end if;
 
-  with fermees as (
-    update public.login_session s
-       set revoked_at = p_now
-     where s.person_id = v_person
-       and s.id <> v_session
-       and s.revoked_at is null
-       and s.expires_at > p_now
-       and s.absolute_expires_at > p_now
-    returning s.id
-  )
-  select pg_catalog.count(private.ecrit_evenement('session_fermee', v_person, f.id)) into v_fermees
-    from fermees f;
-  perform private.ferme_les_sessions_auth(v_person);
+  perform private.ferme_les_autres_sessions(v_person, v_session, p_now);
   return v_session;
 end;
 $$;
@@ -105,7 +126,9 @@ revoke all on function public.fait_tourner_et_ferme_les_autres(bytea, bytea)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 grant execute on function public.fait_tourner_et_ferme_les_autres(bytea, bytea) to popote_api;
 
-create or replace function public.confirme_le_changement_de_mot_de_passe(p_person uuid, p_request_id text default null)
+create or replace function public.confirme_le_changement_de_mot_de_passe(
+  p_person uuid, p_session uuid, p_request_id text default null
+)
 returns void
 language sql
 volatile
@@ -114,9 +137,10 @@ set search_path = ''
 as $$
   update public.user_profile set password_set = true where id = p_person and password_set is not true;
   select private.ecrit_evenement('mot_de_passe_change', p_person, null, null, null, null, p_request_id);
+  select private.ferme_les_autres_sessions(p_person, p_session, pg_catalog.now());
 $$;
-comment on function public.confirme_le_changement_de_mot_de_passe(uuid, text) is
-  'Après le succès d''Auth : password_set à vrai et événement mot_de_passe_change. Exécutable par popote_api seul.';
-revoke all on function public.confirme_le_changement_de_mot_de_passe(uuid, text)
+comment on function public.confirme_le_changement_de_mot_de_passe(uuid, uuid, text) is
+  'Après le succès d''Auth : password_set à vrai, événement mot_de_passe_change, autres sessions fermées de nouveau. Exécutable par popote_api seul.';
+revoke all on function public.confirme_le_changement_de_mot_de_passe(uuid, uuid, text)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
-grant execute on function public.confirme_le_changement_de_mot_de_passe(uuid, text) to popote_api;
+grant execute on function public.confirme_le_changement_de_mot_de_passe(uuid, uuid, text) to popote_api;

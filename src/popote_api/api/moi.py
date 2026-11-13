@@ -15,7 +15,6 @@ from popote_api.errors import (
     reponse,
     reponses_erreur,
 )
-from popote_api.infra.auth_admin import AuthIndisponible, MotDePasseRefuseParAuth
 from popote_api.infra.fuites import EtatFuite
 from popote_api.schemas.moi import ChangementDeMotDePasse, Moi
 from popote_api.security.connexion import (
@@ -85,7 +84,7 @@ MOT_DE_PASSE_FUITE: Final = (
     "Ce mot de passe figure dans une liste de mots de passe volés : choisis-en un autre."
 )
 AUTH_EN_PANNE: Final = (
-    "Le mot de passe n'a pas été changé : réessaie dans un instant. Ta session reste ouverte, "
+    "Le changement n'a pas pu être confirmé : réessaie dans un instant. Ta session reste ouverte, "
     "tes autres appareils ont été déconnectés."
 )
 
@@ -164,8 +163,8 @@ async def change_le_mot_de_passe(
     # (3) Auth. Un échec laisse le mot de passe inchangé ; la session a tourné : le client reçoit son cookie.
     try:
         await app.state.auth_admin.change_mot_de_passe(personne.id, forme)
-    except (AuthIndisponible, MotDePasseRefuseParAuth) as erreur:
-        # Le texte de l'exception ne porte que le statut et le code d'Auth (ni e-mail ni mot de passe).
+    except Exception as erreur:  # la session a tourné : le client doit recevoir son cookie
+        # Le texte d'une erreur d'Auth ne porte que le statut et le code (ni e-mail ni mot de passe).
         journal.warning("Changement de mot de passe refusé ou impossible : %s", erreur)
         raise Probleme(
             503,
@@ -173,7 +172,11 @@ async def change_le_mot_de_passe(
             AUTH_EN_PANNE,
             headers={"Set-Cookie": nouveau_cookie.headers["set-cookie"]},
         ) from erreur
-    # (4) Le succès : `password_set` et l'événement.
-    await confirme_le_mot_de_passe_change(app.state.base, personne.id, request_id)
+    # (4) Le succès : `password_set`, l'événement, les autres sessions refermées. Le mot de passe EST changé :
+    # un échec de la base ici ne retire pas son cookie au client (il se reconnecterait sinon sans comprendre).
+    try:
+        await confirme_le_mot_de_passe_change(app.state.base, personne.id, tournee.session, request_id)
+    except Exception:
+        journal.error("Mot de passe changé, mais la confirmation en base a échoué", exc_info=True)
     nouveau_cookie.status_code = 204
     return nouveau_cookie

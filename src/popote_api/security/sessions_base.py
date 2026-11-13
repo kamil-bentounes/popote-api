@@ -88,9 +88,9 @@ async def fait_tourner_et_ferme_les_autres(curseur: Curseur, ancienne: bytes, no
 
 
 async def confirme_le_changement_de_mot_de_passe(
-    curseur: Curseur, personne: UUID, request_id: str | None
+    curseur: Curseur, personne: UUID, session: UUID, request_id: str | None
 ) -> None:
-    """`password_set` à vrai et événement `mot_de_passe_change` (0141) ; au succès d'Auth seulement."""
+    """`password_set`, événement `mot_de_passe_change`, autres sessions refermées (0141)."""
     await curseur.execute(
-        "select public.confirme_le_changement_de_mot_de_passe(%s, %s)", (personne, request_id)
+        "select public.confirme_le_changement_de_mot_de_passe(%s, %s, %s)", (personne, session, request_id)
     )
