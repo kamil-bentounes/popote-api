@@ -9,17 +9,20 @@ from fastapi import Depends, FastAPI
 from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, limites, relais
-from popote_api.api import health, internes, v1
+from popote_api.api import connexion, health, internes, v1
 from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import Base, SondeBase
+from popote_api.routes_publiques import ROUTES_PUBLIQUES
 from popote_api.security.debit import Debit, LimiteParAdresse
 from popote_api.security.empreintes import Empreintes
 from popote_api.security.origine import garde_origine
 from popote_api.trace import Trace
 
 avertissements = logging.getLogger(__name__)
+
+__all__ = ["ROUTES_PUBLIQUES", "create_app"]
 
 
 def _secret(valeur: SecretStr | None) -> str | None:
@@ -108,6 +111,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
 
     app.include_router(health.router)
     app.include_router(internes.router)
+    app.include_router(connexion.router)
     app.include_router(v1.cree_routeur())
     errors.installe(app)
     erreurs_base.installe(app)

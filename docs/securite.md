@@ -225,13 +225,45 @@ refusent de démarrer avec autre chose que `hibp`.
   (`login-session-purge`, 03 h 53 UTC).
 
 
+### 4.5 La connexion (0.4, `POST /api/v1/sessions` ; code : `security/connexion.py`, `security/cookie.py`, `api/connexion.py`)
+
+- **Ordre, qui est la sécurité de la route.** Corps validé (e-mail 254, mot de passe 256, champs inconnus refusés)
+  -> clés HMAC (`email_normalise`, B24) -> `prend_les_creneaux` (IP d'abord, B6) -> `verifie_mot_de_passe` pour
+  chaque candidat de `candidats_de_connexion`. Un créneau refusé (`429` + `Retry-After`) n'appelle **jamais** la
+  vérification : aucun `crypt()` pour qui martèle. Un mot de passe sans candidat (plus de 72 octets) échoue sans
+  appel à la base. Sans poivre, la route répond `503` : on ne compte pas sans clé.
+- **Une seule transaction** (`base.connexion()`), validée aussi sur un refus : le compteur et l'événement d'un
+  échec ne s'annulent pas avec lui.
+- **Un seul refus.** `401 identifiants_incorrects`, « E-mail ou mot de passe incorrect. », que le compte soit
+  inconnu, banni, supprimé, sans hachage, en `$2y$` ou que le mot de passe soit faux ; même corps, mêmes en-têtes,
+  aucun `Set-Cookie`. Un compte inconnu prend créneau, `crypt()` factice et événement comme un compte connu
+  (temps comparable, mesuré). Le message ne dit rien de la limite par compte ou par IP.
+- **Jeton.** Tiré par le serveur (`jeton_neuf`, 32 octets) ; celui d'un cookie du client n'est jamais adopté. La
+  base ne garde que l'empreinte. Le corps de la réponse (`{"id"}`) ne porte pas le jeton.
+- **Cookie** (`security/cookie.py`, seul endroit qui écrit ses attributs) : `__Host-popote_session`, `HttpOnly`,
+  `Secure`, `SameSite=Lax`, `Path=/`, sans `Domain`, `Max-Age` 90 jours (le serveur tient les 30 jours glissants).
+  Hors local, démarrer avec un autre nom ou sans `Secure` (`POPOTE_SESSION_COOKIE_SECURE=false`) est refusé.
+- **Cookie déjà présent (B22).** Une connexion réussie révoque la session présentée si elle est valide (événement
+  `session_fermee`, écrit par la base) ; un cookie invalide est ignoré. Un échec ne ferme rien.
+- **Journal.** `connexion_reussie` (personne et session), `connexion_ratee` (clé de compte seule), `connexion_bloquee`
+  (la clé qui vient de bloquer : celle du compte, ou celle de l'IP quand c'est l'IP ; jamais e-mail, IP ni agent en
+  clair). Il s'écrit une fois par fenêtre de blocage et par clé (B21) : au plus deux événements par rafale.
+- **Rafales et verrous (revue).** Un mot de passe qui change à la normalisation coûte deux `crypt()` pour un créneau ;
+  les lignes de limite restent verrouillées pendant la vérification (les connexions d'une même IP ou d'un même
+  compte passent en série) ; un relais sans `X-Popote-IP` met tout le monde dans la clé commune `sans-ip`.
+  Acceptés pour un foyer de deux personnes ; à revoir si la charge change.
+- **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait
+  un jeton en base ; chaque succès ouvre une session neuve, chaque échec se compte.
+- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus
+  60 minutes ; « mot de passe oublié » reste ouvert (foyer de deux personnes).
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |
 |---|---|---|---|---|
 | Personne | `popote_api` | `set local role authenticated` | `request.jwt.claims` = `{"sub": <personne>, "role": "authenticated"}` | toute requête d'une personne connectée ; la RLS et les gardes (`tg_saisie_garde`, `tg_depense_garde`…) s'appliquent |
 | Service | `popote_internal` | `set local role service_role` | `{"role": "service_role"}` | seulement les routes `/internal/*`, l'acceptation d'une invitation et les purges ; liste fermée, chaque usage relu |
-| Connexion | `popote_api` | aucun : fonction `security definer` privée (`Base.connexion()`) | aucune | vérifier un mot de passe, limites, sessions, journal ; lire la session (`session_personne`), avant d'emprunter `authenticated` dans la même transaction ; liste fermée, comme le service |
+| Connexion | `popote_api` | aucun : fonction `security definer` privée (`Base.connexion()`) | aucune | vérifier un mot de passe, limites, sessions, journal ; lire la session (`session_courante`, depuis 0.4 T8), avant d'emprunter `authenticated` dans la même transaction ; liste fermée, comme le service |
 | Sauvegarde | `postgres`, hors API | — | — | `pg_dump` lancé par GitHub Actions |
 
 - **Deux rôles de connexion, deux pools.** `popote_api` n'est membre que d'`authenticated`, `popote_internal`

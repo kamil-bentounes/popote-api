@@ -7,15 +7,12 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.dependencies.models import Dependant
 
 from popote_api.api import v1
-from popote_api.main import create_app
+from popote_api.main import ROUTES_PUBLIQUES, create_app
 from popote_api.security.session import PersonneDeLaSession, personne_connectee
 
-# Les routes publiques, chacune avec sa raison. Une route qui s'ajoute ici se justifie en relecture ; celles
-# de 0.4 (connexion, invitation, réinitialisation) s'y ajouteront avec leur jeton à usage unique.
-LISTE_BLANCHE = {
-    "/api/healthz": "le processus répond, sans donnée",
-    "/api/readyz": "la base répond, sans donnée ; sert au réveil quotidien du projet",
-}
+# Les routes publiques, chacune avec sa raison : `ROUTES_PUBLIQUES` (main.py). Une route ajoutée à la liste se
+# justifie en relecture ; T13 et T15 y ajoutent les leurs, avec leur jeton à usage unique.
+LISTE_BLANCHE = ROUTES_PUBLIQUES
 # Servi par FastAPI et non par une `APIRoute` : n'existe pas en prod (`openapi_url=None`).
 CONTRAT = "/api/openapi.json"
 ENVIRONNEMENTS = ["local", "essai", "prod"]

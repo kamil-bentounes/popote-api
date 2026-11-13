@@ -24,7 +24,7 @@ from fastapi import APIRouter, FastAPI
 
 from popote_api.api import v1
 from popote_api.infra.db import Base
-from popote_api.main import create_app
+from popote_api.main import ROUTES_PUBLIQUES, create_app
 from popote_api.security.session import DEFI_D_AUTHENTIFICATION
 
 
@@ -68,7 +68,7 @@ def routes_de_v1(app: FastAPI) -> list[tuple[str, str]]:
     return sorted(
         (methode, route.path)
         for route in routes_de_l_api(app)
-        if route.path.startswith("/api/v1/")
+        if route.path.startswith("/api/v1/") and route.path not in ROUTES_PUBLIQUES
         for methode in sorted(route.methods or [])
         if methode not in {"HEAD", "OPTIONS"}
     )
@@ -145,3 +145,23 @@ class TestMatriceParRoute:
         assert reponse.headers["www-authenticate"] == DEFI_D_AUTHENTIFICATION
         assert reponse.json()["code"] == "pas_de_session"
         assert str(monde.moi.id) not in reponse.text
+
+
+ECRITURE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
+
+
+async def test_la_connexion_publique_ne_change_rien_pour_qui_a_deja_une_session(
+    client: httpx.AsyncClient, fabrique: Fabrique, monde: Monde
+) -> None:
+    """Route publique : la session présentée ne donne ni accès ni information, et un échec ne la ferme pas."""
+    ouverte = {"Cookie": f"__Host-popote_session={fabrique.session(monde.moi.id).jeton}"}
+    refus = await client.post(
+        "/api/v1/sessions",
+        json={"email": "inconnue@test.local", "password": "mauvais-mot-de-passe-long"},
+        headers=ouverte | ECRITURE,
+    )
+    assert refus.status_code == 401
+    assert refus.json()["code"] == "identifiants_incorrects"
+    assert "set-cookie" not in refus.headers
+    assert str(monde.moi.id) not in refus.text
+    assert (await client.get("/api/v1/me", headers=ouverte)).status_code == 200  # l'échec ne l'a pas fermée

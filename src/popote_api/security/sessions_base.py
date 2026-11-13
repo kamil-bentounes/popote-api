@@ -6,21 +6,19 @@ transaction par requête :
 l'appelant décide quand elle se valide.
 """
 
-from dataclasses import dataclass
-from datetime import datetime
 from uuid import UUID
 
-from popote_api.infra.db import Curseur
+from popote_api.infra.db import Curseur, SessionCourante
 from popote_api.security.appareil import Appareil
 
-
-@dataclass(frozen=True, slots=True)
-class SessionCourante:
-    """Ce que rend la lecture d'une session valide : personne, session, dernière réauthentification."""
-
-    personne: UUID
-    session: UUID
-    reauth_at: datetime
+__all__ = [
+    "SessionCourante",
+    "cree_session",
+    "fait_tourner_session",
+    "ferme_session",
+    "marque_reauth",
+    "session_courante",
+]
 
 
 async def cree_session(

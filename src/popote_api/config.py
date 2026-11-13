@@ -123,6 +123,8 @@ class Settings(BaseSettings):
     # Le nom du cookie de session ne se change qu'en local, où `__Host-` et `Secure` ne passent pas partout
     # sur `http://localhost` : hors local, c'est `NOM_DU_COOKIE_DE_SESSION`, un autre nom est une erreur.
     session_cookie_name: str | None = None
+    # `Secure` ne se retire qu'en local (http://localhost) ; ailleurs, le retirer est une erreur de démarrage.
+    session_cookie_secure: bool = True
 
     # L'adresse du projet Supabase (`https://<réf>.supabase.co`). Elle donne la revendication `iss` du
     # contexte personne, que `tg_recipe_photo` lit (spec § 5.1). Sans elle, il refuse.
@@ -222,6 +224,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _regle_le_cookie_de_session(self) -> Self:
+        if self.env is not Env.local and not self.session_cookie_secure:
+            raise ValueError("session_cookie_secure ne se retire qu'en local.")
         nom = self.session_cookie_name
         if nom is None:
             return self

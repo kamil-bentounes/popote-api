@@ -21,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from popote_api import suivi
 from popote_api.infra.auth_admin import AuthIndisponible, CompteDejaExistant
 from popote_api.journal import CONTEXTE
+from popote_api.routes_publiques import PUBLIQUES_DE_V1
 from popote_api.security.signature import ETAT_SIGNATURE_VERIFIEE, PREFIXE_INTERNE
 
 journal = logging.getLogger(__name__)
@@ -263,7 +264,8 @@ def _route_fermee(request: Request) -> bool:
     refus tels quels.
     """
     validee = getattr(request.state, ETAT_SESSION_VALIDEE, False)
-    return request.scope["path"].startswith(PREFIXE_V1) and not validee
+    chemin = request.scope["path"]
+    return chemin.startswith(PREFIXE_V1) and chemin not in PUBLIQUES_DE_V1 and not validee
 
 
 def _refus_sans_session(request: Request, raison: str) -> JSONResponse:

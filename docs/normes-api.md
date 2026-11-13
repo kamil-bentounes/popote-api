@@ -290,11 +290,17 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
 ## 3.10 Par défaut, fermé
 
 - Toute route exige une session, sauf une liste écrite : connexion, lecture et acceptation d'une invitation,
-  demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`.
+  demande et usage d'une réinitialisation, `/api/healthz`, `/api/readyz`. La liste est la constante
+  `ROUTES_PUBLIQUES` (`routes_publiques.py`, reprise par `main.py`), chaque entrée avec sa raison ; un test
+  d'architecture exige `personne_connectee` sur toute autre route. Sous `/api/v1/`, une route publique rend ses
+  propres `422` et `405` (les autres rendent `401` tant qu'aucune session n'est validée).
+- **`POST /api/v1/sessions`** (connexion, publique) : `201` + `Set-Cookie`, corps `{id}` sans jeton ; `401
+  identifiants_incorrects` ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
+  (exemption écrite dans `tests/unit/test_posts_idempotents.py`). Détail : `docs/securite.md` § 4.5.
 - **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
   que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
   (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte
-  SHA-256 des 32 octets du jeton et appelle `session_personne` ; elle rend la personne **et** le curseur de sa
+  SHA-256 des 32 octets du jeton et appelle `session_courante` (0.4 T8 : elle refuse aussi un compte banni ou supprimé) ; elle rend la personne **et** le curseur de sa
   transaction (un seul emprunt au pool par requête, session et contexte personne dans la même transaction).
   Un cookie absent, mal formé, inconnu, échu, révoqué, au bout des 90 jours, d'une personne bannie ou
   supprimée rend le même `401 pas_de_session`, pour qu'on n'apprenne rien sur les jetons.
