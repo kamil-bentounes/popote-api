@@ -367,6 +367,16 @@ des parts recompose le montant, signe compris.
 cascade avec le profil, pour que la suppression de compte aboutisse — mais la
 part figée en centimes sur chaque dépense (D60).
 
+### `password_reset` : les liens de réinitialisation du mot de passe (0146, étape 0.4 T15a)
+
+`id`, `person_id` (`auth.users`, cascade, indexée), `token_hash` (**SHA-256 du jeton, 32 octets, unique** : le jeton n'est
+jamais écrit), `created_at`, `expires_at` (défaut +30 minutes, `CHECK` : jamais plus de 30 minutes), `used_at`,
+`revoked_at`. Un index unique partiel garantit **un seul lien actif par personne**. Aucun droit, RLS activée et forcée,
+sans politique : `public.cree_reinitialisation(p_email, p_hash)` (`popote_api` et `service_role`) révoque les liens actifs et
+en écrit un neuf pour un compte ni banni ni supprimé, avec profil et foyer ; sinon rend null. `private.purge_password_reset`
+efface la fin de vie + 7 jours (`pg_cron` `password-reset-purge`, 03 h 37 UTC, gardé comme 0142). L'usage du lien est T15b.
+Table neuve, aucun appelant dans l'appli en ligne. Retour arrière : en tête de la migration.
+
 ### `invite_link` : les invitations par lien (0142 et 0143, étape 0.4 T12)
 
 `id`, `household_id` (cascade), `created_by` et `accepted_by` (`on delete set null`, indexées : un compte supprimé laisse

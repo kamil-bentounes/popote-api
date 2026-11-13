@@ -374,3 +374,46 @@ def test_une_cle_d_auth_non_transmissible_echoue_sans_etre_recopiee(cle: str) ->
             {"env": "local", "supabase_url": "https://p.supabase.co", "supabase_secret_key": cle}
         )
     assert cle not in str(erreur.value)
+
+
+@pytest.mark.parametrize(
+    "adresse",
+    [
+        "https://popote.example/chemin",
+        "https://popote.example/?a=1",
+        "https://popote.example/#f",
+        "https://u:p@popote.example",
+        "http://popote.example",  # http hors de l'hôte local
+        "https://popote.example:0",
+    ],
+)
+def test_public_base_url_refuse_ce_qui_n_est_pas_une_origine_https(adresse: str) -> None:
+    with pytest.raises(ValidationError, match="public_base_url"):
+        Settings.model_validate({"env": "local", "public_base_url": adresse})
+
+
+def test_public_base_url_accepte_une_origine_et_l_hote_local_en_http_en_local() -> None:
+    assert (
+        str(
+            Settings.model_validate(
+                {"env": "local", "public_base_url": "https://popote.example"}
+            ).public_base_url
+        )
+        == "https://popote.example/"
+    )
+    local = Settings.model_validate({"env": "local", "public_base_url": "http://localhost:5173"})
+    assert str(local.public_base_url) == "http://localhost:5173/"
+    assert Settings.model_validate({"env": "local", "public_base_url": ""}).public_base_url is None
+
+
+def test_la_boite_de_mail_locale_n_est_permise_qu_en_local() -> None:
+    assert Settings.model_validate({"env": "local", "mail_provider": "local"}).mail_provider == "local"
+    with pytest.raises(ValidationError, match="mail_provider"):
+        Settings.model_validate(
+            {
+                "env": "essai",
+                "mail_provider": "local",
+                "database_url": DSN,
+                "relay_secret": SECRET,
+            }
+        )

@@ -62,12 +62,14 @@ async def test_avec_l_adresse_interne_le_demarrage_n_avertit_pas(caplog: pytest.
             internal_secret="i" * 32,
             supabase_url="https://p.supabase.co",
             supabase_secret_key="sb_secret_" + "k" * 30,
+            public_base_url="https://popote.example",
         )
     )
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
         async with app.router.lifespan_context(app):
             pass
-    assert caplog.text == ""
+    # Le mail (`aucun` jusqu'à T16) a son propre avertissement, testé à part.
+    assert [m for m in caplog.messages if "MAIL_PROVIDER" not in m] == []
     assert app.state.base.service_configure is True
 
 
@@ -136,10 +138,31 @@ async def test_avec_le_poivre_le_demarrage_n_avertit_pas_et_ne_le_journalise_pas
             internal_secret="i" * 32,
             supabase_url="https://p.supabase.co",
             supabase_secret_key="sb_secret_" + "k" * 30,
+            public_base_url="https://popote.example",
         )
     )
     with caplog.at_level(logging.WARNING, logger="popote_api.main"):
         async with app.router.lifespan_context(app):
             pass
-    assert caplog.text == ""
+    # Le mail (`aucun` jusqu'à T16) a son propre avertissement, testé à part.
+    assert [m for m in caplog.messages if "MAIL_PROVIDER" not in m] == []
     assert app.state.empreintes.disponible is True
+
+
+async def test_hors_local_sans_fournisseur_de_mail_le_demarrage_le_dit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(reglages("essai", mail_provider="aucun"))
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert "POPOTE_MAIL_PROVIDER=aucun" in caplog.text
+    assert "POPOTE_PUBLIC_BASE_URL absente" in caplog.text
+
+
+async def test_en_local_le_mail_absent_n_avertit_pas(caplog: pytest.LogCaptureFixture) -> None:
+    app = create_app(reglages("local"))
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert "MAIL_PROVIDER" not in caplog.text
