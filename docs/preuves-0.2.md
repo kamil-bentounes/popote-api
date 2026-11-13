@@ -123,6 +123,23 @@ Même constat sur la base locale et sur la copie jetable.
   prod seront tirés à part, dans le gestionnaire de secrets, au déploiement.
 - **Région.** L'hôte du pooler de l'essai est en `eu-west-1`, et non `eu-west-3` comme dans le plan.
 
+### Rejeu du 13/11/2026 sur le pooler, après 0.3
+
+Pooler de l'essai (`aws-1-eu-west-1.pooler.supabase.com:6543`, mode transaction, `sslmode=require`), rôles
+`popote_api.<ref>` et `popote_internal.<ref>`, adresses construites dans le processus, aucune valeur écrite.
+
+- `session_user` affirmé : `select session_user, current_user` rend `popote_api / popote_api` puis
+  `popote_internal / popote_internal` ; les tests de `test_contextes.py` l'affirment aussi (`connexion`).
+- `test_roles.py` et `test_porte_du_service.py` : 12 réussis, 31 sautés, 1 échec attendu (`xfail` strict sur
+  l'`execute` hérité de `PUBLIC`), 0 échoué. Les 31 sautés demandent la base locale (semis, `authenticator`,
+  `postgres`) : ils ne tournent pas sur le pooler.
+- `test_contextes.py` sans adresse d'administration : 12 réussis, 2 sautés, 6 échoués. Quatre échecs viennent du
+  semis (la fabrique sème par `POPOTE_TEST_DSN_ADMIN`, absente : les données vont dans la base locale, pas sur
+  l'essai). Deux sont propres à Supavisor : `PoolTimeout` en 0,3 s (la première connexion distante dépasse ce
+  délai) et les options de démarrage `-c statement_timeout=0` ignorées par le pooler (le piège du test n'est
+  pas posé). Ce sont des hypothèses de test, pas des défauts du code ; non corrigés ici.
+- Le reste de `tests/integration` rejoué sans adresse d'administration : sans objet (76 échecs de semis).
+
 ## Preuve 4 : le relais
 
 Date : 12/11/2026 (navigateur Chromium, puis rejouée par `curl` le même soir). À travers
