@@ -178,6 +178,8 @@ def acces_interdits_a_un_message(source: str) -> list[str]:
     for noeud in ast.walk(ast.parse(source)):
         if isinstance(noeud, ast.Attribute) and noeud.attr in ATTRIBUTS_DES_MESSAGES:
             fautes.append(noeud.attr)
+        elif isinstance(noeud, ast.Constant) and noeud.value in ATTRIBUTS_DES_MESSAGES:  # getattr(m, "code")
+            fautes.append(str(noeud.value))
         elif isinstance(noeud, ast.Name) and noeud.id in NOMS_DES_MESSAGES | {"_CACHET"}:
             fautes.append(noeud.id)
         elif isinstance(noeud, ast.alias) and noeud.name in NOMS_DES_MESSAGES | {"_CACHET"}:
@@ -203,6 +205,7 @@ def test_une_realisation_reelle_ne_voit_que_l_enveloppe(chemin: Path) -> None:
         "x: MessageInvitation",
         "from popote_api.infra.mails_textes import _CACHET",
         "n = message.validite_min",
+        "subject = getattr(message, 'code')",
     ],
 )
 def test_le_controle_attrape_une_realisation_qui_lit_le_message(source: str) -> None:

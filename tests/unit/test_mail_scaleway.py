@@ -190,6 +190,30 @@ async def test_un_code_deja_expire_n_est_pas_envoye(decalage_s: int) -> None:
     assert erreur.value.issue_inconnue is False
 
 
+@pytest.mark.parametrize(
+    ("horloge_us", "echeance_us", "part"),
+    [
+        (700_000, 900_000, False),  # même seconde tronquée : TEM le verrait déjà passé
+        (0, 999_999, False),
+        (900_000, 100_000 + 1_000_000, True),  # la seconde suivante
+    ],
+)
+async def test_l_expiration_se_juge_a_la_seconde_comme_le_fournisseur(
+    horloge_us: int, echeance_us: int, part: bool
+) -> None:
+    debut = datetime(2026, 11, 13, 9, 30, 15, tzinfo=UTC)
+    boite, vues = envoi(lambda _: ok())
+    boite._horloge = lambda: debut + timedelta(microseconds=horloge_us)
+    message = MessageCode(ADRESSE, CODE, 10, debut + timedelta(microseconds=echeance_us))
+    if part:
+        await boite.envoie_le_code(message)
+        assert corps(vues[0])["send_before"] == "2026-11-13T09:30:16Z"
+    else:
+        with pytest.raises(MailIndisponible, match="expiré"):
+            await boite.envoie_le_code(message)
+        assert vues == []
+
+
 async def test_un_code_qui_expire_dans_une_seconde_part_encore() -> None:
     boite, vues = envoi(lambda _: ok())
     await boite.envoie_le_code(MessageCode(ADRESSE, CODE, 10, HORLOGE + timedelta(seconds=1)))
@@ -499,6 +523,132 @@ def test_l_erreur_dit_si_le_mail_a_pu_partir(reponse: Reponse, inconnue: bool) -
     assert une_panne(reponse).issue_inconnue is inconnue
 
 
+@pytest.mark.parametrize(
+    ("premiere", "seconde", "inconnue"),
+    [
+        (coupure, lambda _: httpx.Response(400), True),
+        (delai, lambda _: httpx.Response(400), True),
+        (coupure, lambda _: httpx.Response(503), True),
+        (delai, lambda _: httpx.Response(200, json={"emails": [{"status": "failed"}]}), True),
+        (lambda _: httpx.Response(503), coupure, True),
+        (lambda _: httpx.Response(503), lambda _: httpx.Response(400), False),
+        (lambda _: httpx.Response(503), lambda _: httpx.Response(503), False),
+        (lambda _: httpx.Response(502), lambda _: httpx.Response(400), True),
+        (lambda _: httpx.Response(502), lambda _: httpx.Response(504), True),
+        (lambda _: httpx.Response(504), lambda _: httpx.Response(504), True),
+        (lambda _: httpx.Response(500), lambda _: httpx.Response(502), True),
+    ],
+)
+def test_une_premiere_tentative_sans_reponse_laisse_l_issue_inconnue_quelle_que_soit_la_seconde(
+    premiere: Reponse, seconde: Reponse, inconnue: bool
+) -> None:
+    assert une_panne(reponses_dans_l_ordre(premiere, seconde)).issue_inconnue is inconnue
+
+
+def test_une_exception_etrangere_du_transport_n_est_pas_reprise_et_laisse_l_issue_inconnue() -> None:
+    def tombe(requete: httpx.Request) -> httpx.Response:
+        raise RuntimeError(f"boom {CLE} {ADRESSE}")
+
+    async def envoyer() -> tuple[MailIndisponible, int]:
+        boite, vues = envoi(tombe)
+        with pytest.raises(MailIndisponible) as erreur:
+            await boite.envoie_le_code(message_code())
+        return erreur.value, len(vues)
+
+    erreur, appels = asyncio.run(envoyer())
+    assert appels == 1 and erreur.issue_inconnue is True
+    sortie = tout_ce_qui_sort(erreur)
+    assert CLE not in sortie and ADRESSE not in sortie and "boom" not in sortie
+    assert not any(isinstance(m, RuntimeError) for m in la_chaine_des_erreurs(erreur))
+
+
+def test_un_503_puis_le_delai_total_pendant_la_pause_laisse_l_issue_connue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
+
+    async def pause_sans_fin(_: float) -> None:
+        await asyncio.Event().wait()
+
+    async def envoyer() -> MailIndisponible:
+        boite = EnvoiScaleway(
+            SecretStr(CLE),
+            PROJET,
+            EXPEDITEUR,
+            ORIGINES,
+            transport=httpx.MockTransport(lambda _: httpx.Response(503)),
+            maintenant=lambda: HORLOGE,
+            pause=pause_sans_fin,
+        )
+        with pytest.raises(MailIndisponible) as erreur:
+            await boite.envoie_le_code(message_code())
+        return erreur.value
+
+    # Aucune requête en vol, aucune tentative incertaine : le 503 de TEM dit que rien n'est parti.
+    assert asyncio.run(envoyer()).issue_inconnue is False
+
+
+def test_un_503_puis_le_delai_total_pendant_la_seconde_requete_laisse_l_issue_inconnue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
+    appels = 0
+
+    class UnPuisMuet(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            nonlocal appels
+            appels += 1
+            if appels == 1:
+                return httpx.Response(503)
+            await asyncio.Event().wait()
+            raise AssertionError("jamais atteint")
+
+    async def envoyer() -> MailIndisponible:
+        boite = EnvoiScaleway(
+            SecretStr(CLE),
+            PROJET,
+            EXPEDITEUR,
+            ORIGINES,
+            transport=UnPuisMuet(),
+            maintenant=lambda: HORLOGE,
+            pause=lambda _: asyncio.sleep(0),
+        )
+        with pytest.raises(MailIndisponible) as erreur:
+            await boite.envoie_le_code(message_code())
+        return erreur.value
+
+    assert asyncio.run(envoyer()).issue_inconnue is True
+
+
+def test_un_etat_unknown_de_tem_laisse_l_issue_inconnue() -> None:
+    assert une_panne(lambda _: httpx.Response(200, json={"emails": [{"status": "unknown"}]})).issue_inconnue
+
+
+class CorpsQuiCasseALaFermeture(httpx.AsyncByteStream):
+    async def __aiter__(self) -> Any:
+        yield b""
+
+    async def aclose(self) -> None:
+        raise httpx.CloseError("fermeture cassée")
+
+
+def test_un_503_dont_la_fermeture_casse_reste_un_503_qui_se_reprend() -> None:
+    async def envoyer() -> int:
+        boite, vues = envoi(
+            reponses_dans_l_ordre(httpx.Response(503, stream=CorpsQuiCasseALaFermeture()), ok())
+        )
+        await boite.envoie_le_code(message_code())
+        return len(vues)
+
+    assert asyncio.run(envoyer()) == 2
+
+
+def test_un_503_dont_la_fermeture_casse_ne_laisse_pas_l_issue_inconnue() -> None:
+    # Le statut reçu décide : un 503 est un refus, la fermeture cassée n'en fait pas une coupure incertaine.
+    erreur = une_panne(lambda _: httpx.Response(503, stream=CorpsQuiCasseALaFermeture()))
+    assert erreur.issue_inconnue is False
+
+
 def test_un_delai_total_depasse_laisse_l_issue_inconnue(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
 
@@ -669,6 +819,42 @@ async def test_la_chaine_d_une_erreur_ne_porte_aucune_requete_ni_aucune_erreur_d
             assert secret not in repr(vars(maillon)) + repr(maillon.args)
 
 
+@pytest.mark.parametrize("panne", [p for p in PANNES if p != "succes"])
+async def test_l_erreur_finale_n_a_ni_contexte_ni_cause_qui_garde_une_pile(panne: str) -> None:
+    # Une exception retient sa pile, donc les variables locales : `charge` (adresse, code), l'en-tête de clé.
+    boite, _ = envoi(PANNES[panne])
+    with pytest.raises(MailIndisponible) as erreur:
+        await boite.envoie_le_code(message_code())
+    assert erreur.value.__context__ is None
+    cause = erreur.value.__cause__
+    assert cause is None or (type(cause).__name__ == "_CauseDeTransport" and cause.__traceback__ is None)
+
+
+def test_l_erreur_du_delai_total_n_a_ni_contexte_ni_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
+
+    class Muet(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            await asyncio.Event().wait()
+            raise AssertionError("jamais atteint")
+
+    async def envoyer() -> MailIndisponible:
+        boite = EnvoiScaleway(
+            SecretStr(CLE), PROJET, EXPEDITEUR, ORIGINES, transport=Muet(), maintenant=lambda: HORLOGE
+        )
+        with pytest.raises(MailIndisponible) as erreur:
+            await boite.envoie_le_code(message_code())
+        return erreur.value
+
+    erreur = asyncio.run(envoyer())
+    assert erreur.__cause__ is None and erreur.__context__ is None
+
+
+def test_le_repr_d_une_reponse_ne_porte_pas_le_corps() -> None:
+    reponse = mail_scaleway._Reponse(200, 0.5, f"corps {ADRESSE} {CODE}".encode())
+    assert ADRESSE not in repr(reponse) and CODE not in repr(reponse)
+
+
 async def test_un_5xx_se_reprend_meme_si_son_corps_est_enorme_ou_compresse() -> None:
     enorme = httpx.Response(503, content=b"x" * (mail_scaleway.OCTETS_MAX_REPONSE * 4))
     compresse = httpx.Response(
@@ -725,6 +911,36 @@ COMPLET = {
     "scaleway_tem_secret_key": CLE,
     "scaleway_tem_project_id": str(PROJET),
 }
+
+
+@pytest.mark.parametrize(
+    "cle", ["x", "1111 1111-aaaa-bbbb-cccc-dddddddddddd", "g" * 8 + "-aaaa-bbbb-cccc-" + "d" * 12, "d" * 36]
+)
+def test_une_cle_qui_n_est_pas_un_uuid_est_refusee_sans_etre_recopiee(cle: str) -> None:
+    with pytest.raises(ValueError, match="UUID") as erreur:
+        EnvoiScaleway(SecretStr(cle), PROJET, EXPEDITEUR, ORIGINES)
+    assert cle not in tout_ce_qui_sort(erreur.value)
+
+
+def test_la_fabrique_refuse_une_cle_qui_n_est_pas_un_uuid() -> None:
+    with pytest.raises(ValueError, match="UUID"):
+        cree_envoi_mail(reglages("local", **(COMPLET | {"scaleway_tem_secret_key": "x"})))
+
+
+@pytest.mark.parametrize(
+    "adresse", ["a@evil.example", "a@sub.notre-popote.fr", "a@notre-popote.fr.evil.example"]
+)
+def test_un_expediteur_hors_du_domaine_verifie_est_refuse(adresse: str) -> None:
+    with pytest.raises(ValueError, match=r"notre-popote\.fr"):
+        reglages("local", mail_from_address=adresse)
+    with pytest.raises(ValueError, match=r"notre-popote\.fr"):
+        Expediteur(adresse, "Popote")
+
+
+def test_la_fabrique_refuse_un_expediteur_hors_du_domaine_meme_si_les_reglages_sont_contournes() -> None:
+    config = reglages("local", **COMPLET).model_copy(update={"mail_from_address": "a@evil.example"})
+    with pytest.raises(ValueError, match=r"notre-popote\.fr"):
+        cree_envoi_scaleway(config)
 
 
 @pytest.mark.parametrize("env", ["local", "essai", "prod"])
@@ -784,6 +1000,7 @@ def test_un_projet_qui_n_est_pas_un_uuid_est_refuse_sans_recopier_la_cle() -> No
         "a@notre-popote.fr\r\nBcc: x@y.fr",
         "a..b@notre-popote.fr", ".a@notre-popote.fr", "a.@notre-popote.fr", "a@", "@notre-popote.fr",
         "a@notre popote.fr", "é@notre-popote.fr", "<a@notre-popote.fr>", "x" * 65 + "@notre-popote.fr",
+        "a@b.c", "a@notre-popote.f",
     ],
 )  # fmt: skip
 def test_une_adresse_d_expedition_mal_formee_est_refusee(adresse: str) -> None:
@@ -792,7 +1009,25 @@ def test_une_adresse_d_expedition_mal_formee_est_refusee(adresse: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "nom", ["", "Po\npote", "Po\x00pote", "x" * 61, "   ", 'Po"pote', "Po<pote>", "Po,pote", "Po;pote"]
+    "nom",
+    [
+        "",
+        "Po\npote",
+        "Po\x00pote",
+        "x" * 61,
+        "   ",
+        'Po"pote',
+        "Po<pote>",
+        "Po,pote",
+        "Po;pote",
+        "Popote @evil",
+        "Popote:",
+        "Po\\pote",
+        " Popote",
+        "Popote ",
+        "Popote\u3164",
+        "Po\u2800pote",
+    ],
 )
 def test_un_nom_d_expediteur_mal_forme_est_refuse(nom: str) -> None:
     with pytest.raises(ValidationError, match="mail_from_name"):

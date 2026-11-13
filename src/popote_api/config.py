@@ -17,7 +17,11 @@ HOTES_LOCAUX = frozenset({"127.0.0.1", "localhost", "::1"})
 FORME_D_UNE_ADRESSE_D_EXPEDITION = re.compile(
     r"[A-Za-z0-9_%+-]+(\.[A-Za-z0-9_%+-]+)*@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+"
 )
+# Le seul domaine vérifié chez TEM : un expéditeur d'un autre domaine est refusé à chaque envoi.
+DOMAINE_D_ENVOI_VERIFIE = "notre-popote.fr"
 LONGUEUR_MAX_DU_NOM_D_EXPEDITEUR = 60
+# Lettres sans glyphe (hangul, braille vide) : un nom qui en porte s'afficherait avec un blanc.
+REMPLISSAGES_INVISIBLES = frozenset("\u115f\u1160\u3164\uffa0\u2800")
 FORME_D_UN_NOM_D_HOTE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
 
 
@@ -280,8 +284,12 @@ class Settings(BaseSettings):
             FORME_D_UNE_ADRESSE_D_EXPEDITION.fullmatch(adresse) is None
             or len(local) > 64
             or len(adresse) > 254
+            or len(adresse.rpartition(".")[2]) < 2  # un domaine de tête d'une lettre n'existe pas
+            or adresse.rpartition("@")[2] != DOMAINE_D_ENVOI_VERIFIE
         ):
-            raise ValueError("mail_from_address : une adresse e-mail simple (ASCII, sans blanc).")
+            raise ValueError(
+                f"mail_from_address : une adresse simple de {DOMAINE_D_ENVOI_VERIFIE} (ASCII, sans blanc)."
+            )
         return adresse
 
     @field_validator("mail_from_name")
@@ -291,7 +299,9 @@ class Settings(BaseSettings):
             not nom.strip()
             or len(nom) > LONGUEUR_MAX_DU_NOM_D_EXPEDITEUR
             or not nom.isprintable()  # refuse retours à la ligne et caractères de contrôle
-            or any(c in '"<>,;' for c in nom)  # séparent ou ferment une adresse dans un en-tête `From`
+            or any(c in '"<>,;:@\\' for c in nom)  # séparent ou ferment une adresse dans un en-tête `From`
+            or nom != nom.strip()
+            or any(c in REMPLISSAGES_INVISIBLES for c in nom)
         ):
             raise ValueError(
                 f"mail_from_name : un nom affichable, {LONGUEUR_MAX_DU_NOM_D_EXPEDITEUR} caractères au plus."

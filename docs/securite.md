@@ -744,22 +744,29 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   code, ni le lien, ni un prénom (un test d'architecture le garde pour tout `infra/mail_*.py`) ; le sujet et le texte envoyés sont ceux de
   l'enveloppe. (1) **La clé n'est lue que par ce module** : test d'architecture (aucun autre fichier de `src/` ne nomme
   `scaleway_tem_secret_key`, hors réglages et fabrique, ni n'en appelle `get_secret_value` ; deux lectures dans le module, jamais passées à
-  un autre code) ; `SecretStr`, `repr` des réglages et de l'envoi masqués, clé refusée à la construction si elle n'est pas transmissible
-  dans un en-tête (sinon h11 la recopierait dans son message). (2) **Aucune donnée dans les journaux ni les exceptions** : ni clé, ni
+  un autre code) ; `SecretStr`, `repr` des réglages et de l'envoi masqués, clé refusée à la construction si ce n'est pas un UUID (forme des
+  clés Scaleway ; un blanc ou un caractère hors ASCII ferait recopier la clé par h11 dans son message) ; expéditeur limité au domaine vérifié
+  `notre-popote.fr` (réglages et objet `Expediteur`). (2) **Aucune donnée dans les journaux ni les exceptions** : ni clé, ni
   adresse, ni objet, ni texte, ni corps de réponse ; seuls le type de l'erreur et la classe du statut (`4xx`, `5xx`). (3) Délais finis
   (3 s, 5 s, 15 s au total), aucune exception d'httpx chaînée (elle porte la requête entière : clé, adresse, texte ; on n'en garde que le
-  type), redirections refusées, `trust_env=False`, réponse lue sur 64 Kio au plus, tout `Content-Encoding` refusé (`Accept-Encoding:
+  type, dans une cause neuve sans pile) ; l'issue d'une tentative est un résultat (`_Issue`), pas une exception, et l'erreur finale est levée hors de tout
+  `except`, donc sans contexte ; le `repr` d'une réponse masque son corps, redirections refusées, `trust_env=False`, réponse lue sur 64 Kio au plus, tout `Content-Encoding` refusé (`Accept-Encoding:
   identity` : sans décompression, la borne porte sur les octets reçus). (4) **Une** reprise sur coupure, délai ou `5xx` (pause de 0,5 s,
   `Retry-After` entier respecté jusqu'à 3 s) ; **aucune** sur `4xx`, ni sous un `2xx` même illisible ou dont le corps se coupe : un mail
   déjà accepté n'est jamais renvoyé par l'API ; au pire deux mails identiques (coupure après acceptation), jamais deux codes différents.
   (5) Succès = premier mail `new`, `sending` ou `sent` : **accepté, pas remis** ; l'identifiant du mail n'est pas gardé (un rebond dur ne
   se voit que dans la console TEM). (6) **Un code expiré n'est jamais livré** : `send_before` est `enveloppe.expire_le`, l'échéance
   ABSOLUE fixée une fois à la demande du code (`MessageCode.expire_le`), tronquée à la seconde, identique à la reprise et **jamais
-  recalculée à l'envoi** ; un code déjà expiré n'est pas envoyé. (7) L'annulation de la tâche n'est ni avalée ni reprise. (8) **Issue
-  inconnue** : une coupure, un délai, un délai total ou un `2xx` illisible lèvent `MailIndisponible(issue_inconnue=True)` ; un `4xx`,
-  un `5xx` ou un état `failed` ou `canceled`, non. (9) **Sentry (décidé le 13/11) :** la clé et l'adresse du destinataire sont des
-  variables locales de `mail_scaleway.py` pendant l'envoi ; à l'installation de Sentry, `include_local_variables=False` et
-  `send_default_pii=False` sont **obligatoires**, avec un `before_send` qui retire les `vars` des cadres de pile. Sources, gestes de la
+  recalculée à l'envoi** ; un code déjà expiré n'est pas envoyé (les deux heures se comparent tronquées, comme TEM les verra). (7) L'annulation de la tâche n'est ni avalée ni reprise. (8) **Issue
+  inconnue** : `MailIndisponible(issue_inconnue=True)` quand le mail a pu partir : coupure, délai (de requête ou total tombé pendant une
+  requête en vol), `2xx` illisible ou à l'état `unknown`, `502` ou `504`, exception étrangère du transport. Elle **cumule** les tentatives :
+  une première tentative sans réponse laisse l'issue inconnue quoi que dise la seconde. Elle est fausse pour un `4xx`, un `500` ou `503`, un état `failed` ou
+  `canceled`, et pour un délai total tombé pendant la pause entre deux tentatives sans incertitude. Un statut reçu décide, même si le corps ou la
+  fermeture casse ensuite. (9) **Sentry (décidé le 13/11) :** la clé et l'adresse du destinataire sont des
+  variables locales de `mail_scaleway.py` (`_poste`, `_transmet`) et des appelants (le message) pendant l'envoi, donc dans les cadres de toute
+  pile qui traverse ces fonctions : aucun code ne peut les en retirer ; à l'installation de Sentry, `include_local_variables=False` et
+  `send_default_pii=False` sont **obligatoires**, avec un `before_send` qui retire les `vars` des cadres de pile. `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
+  ne jamais les appeler sur les réglages sans `include_input=False`. Sources, gestes de la
   clé, rotation et quota : `docs/exploitation.md`, « L'envoi réel ».
 - Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`, `tests/unit/test_mail_scaleway.py` (faux transport
   `httpx.MockTransport` : aucun appel réel). `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
