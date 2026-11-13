@@ -138,7 +138,7 @@ begin
   if v_uid is null then
     raise exception 'non authentifié' using errcode = 'insufficient_privilege';
   end if;
-  select household_id, true into v_hh, v_existait from public.user_profile where id = v_uid;
+  select household_id into v_hh from public.user_profile where id = v_uid;
 
   /* Le verrou du foyer AVANT la première écriture : la fonction écrit désormais
      dans `saisie`, `cloture_choix` et `facture`. Sans lui, un départ pendant un
@@ -198,7 +198,10 @@ begin
   /* 0090 : ses comptes perso partent AVANT son profil. Supprimer le profil
      mettait `titulaire_id` à null, ce que `compte_titulaire_coherent` refuse. */
   delete from public.compte where genre = 'perso' and titulaire_id = v_uid;
-  delete from public.user_profile where id = v_uid;
+  /* C'est l'effet de la suppression, sous le verrou du foyer, qui dit si le profil existait : deux appels
+     simultanés du même compte n'écrivent pas deux `compte_supprime`. */
+  delete from public.user_profile where id = v_uid returning true into v_existait;
+  v_existait := coalesce(v_existait, false);
 
   if v_hh is not null
      and not exists (select 1 from public.user_profile where household_id = v_hh) then

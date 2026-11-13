@@ -65,6 +65,7 @@ def seme_foyer(fabrique: Fabrique, *, a_deux: bool, cloture: bool = True) -> Foy
         return UUID(str(ligne[0]))
 
     charge("Loyer", 80000, "fixe", "mensuel", membres)
+    charge("Abonnement de A", 1500, "fixe", "mensuel", [a])
     charge("Courses de A", 1500, "au_fil", "mensuel", [a])
     if b:
         charge("Abonnement de B", 1200, "fixe", "mensuel", [b])

@@ -595,3 +595,11 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   supprime `auth.users`. Risque accepté : `efface_mes_donnees` est appelable directement (PostgREST) par une personne
   connectée, sans réauthentification ; elle n'y gagne que ce qu'elle obtiendrait déjà par `delete_my_account`, et le compte
   Auth reste (elle peut se reconnecter). La garde de réauth est celle de la route (T14b).
+- **Résidus connus** (hors de la fonction) : `auth.audit_log_entries` (journal de GoTrue : `actor_id`, adresse et IP ; ni la
+  fonction ni la suppression d'`auth.users` n'y touchent, à traiter côté Auth) et `auth.flow_state.user_id` ; `login_throttle`
+  (clés HMAC de compte, purgées à l'échéance, pas à la suppression) ; les identifiants d'une personne supprimée restent dans
+  `depense_part`, `cloture_choix` et `versement_epargne` (uuid sans clé étrangère) tant que le foyer existe ; les événements
+  écrits après l'effacement (reconnexion avant la suppression d'`auth.users`) gardent leurs clés. Les objets de Storage ne
+  sont pas touchés ici.
+- **Pour T14b** : `idempotency_key.person_id` référence le profil ; la route `DELETE /me` ne doit pas enregistrer sa
+  réponse idempotente après `efface_mes_donnees()` (clé étrangère violée) : exclure la route de l'idempotence.

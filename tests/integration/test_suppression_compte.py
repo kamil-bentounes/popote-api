@@ -3,6 +3,8 @@ La route `DELETE /me` est T14b. Données inventées."""
 
 import os
 import threading
+import time
+from collections.abc import Iterator
 from uuid import UUID, uuid4
 
 import psycopg
@@ -17,6 +19,14 @@ pytestmark = pytest.mark.integration
 # Des clés propres à chaque exécution : un reste d'un essai précédent ne fausse pas le décompte.
 CLE_A = os.urandom(32)
 CLE_B = os.urandom(32)
+
+
+@pytest.fixture(autouse=True)
+def journal_propre(fabrique: Fabrique) -> Iterator[None]:
+    """Les `compte_supprime` sans personne, restes d'un essai raté, ne faussent pas les décomptes."""
+    nettoie_evenements(fabrique.admin)
+    yield
+    nettoie_evenements(fabrique.admin)
 
 
 def efface(admin: psycopg.Connection[tuple[object, ...]], personne: UUID, *, ancienne: bool = False) -> None:
@@ -113,7 +123,7 @@ def nettoie_evenements(admin: psycopg.Connection[tuple[object, ...]]) -> None:
     )
 
 
-def test_les_cles_de_la_personne_partent_avant_l_evenement_et_les_autres_restent(fabrique: Fabrique) -> None:
+def test_les_cles_de_la_personne_partent_et_celles_des_autres_restent(fabrique: Fabrique) -> None:
     graine = seme_foyer(fabrique, a_deux=True)
     assert graine.b is not None
     pose_ses_traces(fabrique, graine.a)
@@ -240,9 +250,14 @@ def test_sans_identite_la_fonction_refuse_comme_l_ancienne(fabrique: Fabrique) -
 def test_anon_ne_peut_pas_l_executer(fabrique: Fabrique) -> None:
     admin = fabrique.admin
     for nom in ("efface_mes_donnees", "delete_my_account"):
-        with pytest.raises(errors.InsufficientPrivilege), admin.transaction():
+        with pytest.raises(errors.InsufficientPrivilege, match="permission denied"), admin.transaction():
             admin.execute("set local role anon")
             admin.execute(f"select public.{nom}()")
+    droit = admin.execute(
+        "select has_function_privilege('anon', 'public.efface_mes_donnees()', 'execute'),"
+        " has_function_privilege('service_role', 'public.efface_mes_donnees()', 'execute')"
+    ).fetchone()
+    assert droit == (False, False)
 
 
 def test_delete_my_account_garde_ses_droits_et_sa_forme(fabrique: Fabrique) -> None:
@@ -296,3 +311,44 @@ def test_avant_la_suppression_du_compte_auth_les_sessions_sont_deja_fermees(fabr
     )
     supprime_auth(fabrique.admin, graine.a.id)
     nettoie_evenements(fabrique.admin)
+
+
+def test_la_suppression_attend_le_verrou_du_foyer(fabrique: Fabrique) -> None:
+    """Un autre geste tient le verrou du budget du foyer : la suppression attend, puis aboutit."""
+    graine = seme_foyer(fabrique, a_deux=True)
+    erreurs: list[BaseException] = []
+
+    def part() -> None:
+        try:
+            with psycopg.connect(DSN_ADMIN, autocommit=True) as connexion:
+                efface(connexion, graine.a.id)
+        except BaseException as erreur:
+            erreurs.append(erreur)
+
+    with psycopg.connect(DSN_ADMIN, autocommit=True) as tiers, tiers.transaction():
+        tiers.execute(
+            "select pg_advisory_xact_lock(hashtext('budget'), hashtext(%s))", (str(graine.foyer_id),)
+        )
+        fil = threading.Thread(target=part)
+        fil.start()
+        attend = False
+        for _ in range(100):
+            attend = (
+                nombre(
+                    fabrique.admin,
+                    "select count(*) from pg_stat_activity where wait_event_type = 'Lock'"
+                    " and query like '%%efface_mes_donnees%%'",
+                )
+                > 0
+            )
+            if attend:
+                break
+            time.sleep(0.1)
+        assert attend, "la suppression devait attendre le verrou du foyer"
+        assert (
+            nombre(fabrique.admin, "select count(*) from public.user_profile where id = %s", graine.a.id) == 1
+        )
+    fil.join(timeout=30)
+    assert erreurs == []
+    assert nombre(fabrique.admin, "select count(*) from public.user_profile where id = %s", graine.a.id) == 0
+    supprime_auth(fabrique.admin, graine.a.id)

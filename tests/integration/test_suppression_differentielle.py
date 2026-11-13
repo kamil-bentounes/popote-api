@@ -5,6 +5,8 @@ transactions annulées : mêmes identifiants, aucune différence due au hasard. 
 nouvelle fonction écrit ou vide, sont comparées à part (test_suppression_compte).
 """
 
+from pathlib import Path
+
 import psycopg
 import pytest
 from _fabrique import Fabrique
@@ -12,6 +14,7 @@ from _suppression import FoyerSeme, en_tant_que, seme_foyer
 
 pytestmark = pytest.mark.integration
 
+RACINE = Path(__file__).resolve().parents[2]
 EXCLUES = {"security_event", "login_session"}
 Instantane = dict[str, tuple[int, str]]
 
@@ -48,7 +51,10 @@ def joue(
         with admin.transaction():
             en_tant_que(admin, personne.id)
             if ancienne:
-                admin.execute("select public.delete_my_account()")
+                admin.execute("reset role")
+                admin.execute(corps_de_0112())
+                en_tant_que(admin, personne.id)
+                admin.execute("select public.delete_my_account_0112()")
             else:
                 admin.execute("select public.efface_mes_donnees()")
                 admin.execute("reset role")
@@ -58,6 +64,14 @@ def joue(
             _instantane_pris.append(instantane(admin))
             raise _Annule
     return _instantane_pris.pop()
+
+
+def corps_de_0112() -> str:
+    """Le corps d'origine de `delete_my_account` (migration 0112), renommé : c'est lui qu'on rejoue."""
+    texte = (RACINE / "supabase/migrations/0112_budget_depart.sql").read_text(encoding="utf-8")
+    debut = texte.index("create or replace function public.delete_my_account()")
+    fin = texte.index("end $$;", debut) + len("end $$;")
+    return texte[debut:fin].replace("public.delete_my_account()", "public.delete_my_account_0112()", 1)
 
 
 class _Annule(Exception):
