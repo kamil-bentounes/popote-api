@@ -31,6 +31,7 @@ class Evenement(StrEnum):
     compte_supprime = "compte_supprime"
     compte_repris = "compte_repris"
     verification_fuites_indisponible = "verification_fuites_indisponible"
+    code_demande = "code_demande"
 
 
 async def journalise(

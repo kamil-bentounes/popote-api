@@ -24,6 +24,7 @@ TABLES = [
     "public.invite_link",
     "public.reprise_en_cours",
     "public.password_reset",
+    "public.login_code",
 ]
 
 # Les fonctions de 0.4 et les rôles qui peuvent les exécuter (rôle COURANT). Une migration en ajoute.
@@ -78,6 +79,18 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.reserve_reprise(bytea)": {"service_role"},
     "public.libere_reprise(bytea, uuid)": {"service_role"},
     "public.efface_mes_donnees()": {"authenticated"},
+    (
+        "public.prend_les_creneaux_de_demande"
+        "(bytea, bytea, bytea, integer, integer, integer, integer, integer)"
+    ): {"popote_api"},
+    "public.prend_un_envoi(integer, integer)": {"popote_api"},
+    "public.demande_un_code(text, bytea, uuid, bytea, bytea, text)": {"popote_api"},
+    (
+        "private.prend_les_creneaux_de_demande"
+        "(bytea, bytea, bytea, integer, integer, integer, integer, integer, timestamptz)"
+    ): set(),
+    "private.prend_un_envoi(integer, integer, timestamptz)": set(),
+    "private.purge_login_code(timestamptz, integer)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()
