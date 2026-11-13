@@ -15,7 +15,6 @@ LISTE_BLANCHE: dict[str, str] = {
     "/api/v1/sessions": "connexion : publique ; chaque succès ouvre une session neuve, un échec se compte",
     "/api/v1/invitations/inspections": "inspection d'un lien : publique ; lecture sans effet, sans clé",
     "/api/v1/invitations/acceptances": "acceptation d'un lien : publique ; le lien n'entre pas en base",
-    "/api/v1/password-resets": "demande de réinitialisation : publique ; toujours 202, rien à rejouer",
     "/api/v1/me/reauthentication": "réauthentification : effet naturellement idempotent",
 }
 PREFIXE = "/api/v1/"

@@ -1,0 +1,2 @@
+# Raison : la route POST /api/v1/password-resets est retirée : plus de mot de passe dans la nouvelle appli (D3), le code par mail remplace la réinitialisation ; la nouvelle appli n'est pas en ligne et personne ne consomme ce contrat
+error at base.json, in API POST /api/v1/password-resets api path removed without deprecation [api-path-removed-without-deprecation].
