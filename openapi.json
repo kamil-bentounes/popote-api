@@ -216,6 +216,34 @@
         "title": "InvitationCreee",
         "type": "object"
       },
+      "InvitationEnAttente": {
+        "description": "Un lien en attente du foyer : jamais son jeton, son empreinte ni le nom de qui l'a créé.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "Échéance du lien : sept jours après la création.",
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "InvitationEnAttente",
+        "type": "object"
+      },
       "Moi": {
         "description": "La personne connectée, telle qu'elle se voit : de quoi afficher son nom, son foyer et son adresse.",
         "properties": {
@@ -295,6 +323,34 @@
           "next_cursor"
         ],
         "title": "Page[Appareil]",
+        "type": "object"
+      },
+      "Page_InvitationEnAttente_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvitationEnAttente"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "Page[InvitationEnAttente]",
         "type": "object"
       },
       "ParametreEnCause": {
@@ -859,6 +915,228 @@
       }
     },
     "/api/v1/me/invitations": {
+      "get": {
+        "operationId": "list_my_invitations",
+        "parameters": [
+          {
+            "description": "Nombre de lignes par page (20 par défaut, 100 au plus).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Nombre de lignes par page (20 par défaut, 100 au plus).",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Curseur opaque rendu par la page précédente.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Curseur opaque rendu par la page précédente.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InvitationEnAttente_"
+                }
+              }
+            },
+            "description": "Les liens ni expirés, ni utilisés, ni révoqués, le plus récent d'abord.",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Requête mal formée",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Les liens d'invitation en attente de mon foyer",
+        "tags": [
+          "invitations"
+        ]
+      },
       "post": {
         "description": "Le jeton du lien n'est rendu qu'UNE fois, dans cette réponse ; un rejeu (même `Idempotency-Key`) rend le même statut et la même ligne avec `token: null` : l'hôte révoque et recrée si la réponse s'est perdue. Dix liens par 24 h glissantes pour le foyer, révoqués compris (`429 quota_invitations` avec `Retry-After`). Sans foyer : `403 aucun_foyer`.",
         "operationId": "create_my_invitation",
@@ -1136,6 +1414,220 @@
           }
         ],
         "summary": "Créer un lien d'invitation pour mon foyer",
+        "tags": [
+          "invitations"
+        ]
+      }
+    },
+    "/api/v1/me/invitations/{id}": {
+      "delete": {
+        "description": "Révoquer un lien déjà révoqué (ou échu) est sans effet (`204`). Un lien d'un autre foyer ou inconnu est un `404` : il n'est ni révélé ni touché. Un lien déjà accepté ne se révoque pas (`409 invitation_utilisee`). Pas d'`Idempotency-Key` : l'effet est idempotent.",
+        "operationId": "revoke_my_invitation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Le lien est révoqué.",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conflit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Révoquer un lien d'invitation de mon foyer",
         "tags": [
           "invitations"
         ]
