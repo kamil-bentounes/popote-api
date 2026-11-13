@@ -18,7 +18,8 @@
 --    l'épuiser.
 --  - `public.demande_un_code` : le MÊME travail pour une adresse connue et inconnue. Verrou sur la clé du compte
 --    (deux demandes simultanées se suivent) puis, pour un compte réel, sur la personne (la même clé que
---    `cree_session`, 0139 : la règle d'ordre de S6 nomme ce verrou). Un code actif de moins de 60 secondes n'est
+--    `cree_session`, 0139 : la règle d'ordre de S6 nomme ce verrou). ORDRE DES VERROUS, que S7 reprend : clé de
+--    compte, puis personne, puis lignes `login_code` (jamais une ligne avant la personne : interblocage). Un code actif de moins de 60 secondes n'est
 --    pas remplacé : même identifiant rendu, pas de nouveau code, donc pas de mail (un double clic ne tue pas le
 --    code déjà parti). `code_demande` ne s'écrit que pour un compte réel : une IP ne remplit pas le journal.
 --  - `private.purge_login_code` : échéance + 1 jour, chaque nuit par pg_cron. `private.purge_journal_securite`
@@ -33,7 +34,7 @@
 -- COMPATIBLE avec l'appli en ligne : table et fonctions neuves ; deux CHECK de tables de 0.4 ÉLARGIS (aucune valeur
 -- retirée : ce que le code déjà déployé écrit passe encore) ; `purge_journal_securite` garde sa signature.
 --
--- RETOUR ARRIÈRE (sans perte pour l'appli : un code se redemande). Dans CET ordre, et les CHECK d'avant ne passent
+-- RETOUR ARRIÈRE (sans perte pour l'appli : un code se redemande). Dans CET ordre ; les CHECK d'avant ne passent
 -- que si les lignes aux valeurs neuves sont parties :
 --   select cron.unschedule('login-code-purge');   -- si pg_cron est là
 --   drop function public.demande_un_code(text, bytea, uuid, bytea, bytea, text);
@@ -49,13 +50,42 @@
 --   alter table public.login_throttle drop constraint login_throttle_scope_check, add constraint
 --     login_throttle_scope_check check (scope in ('account', 'ip', 'reset', 'invitation_ip', 'invitation_link'));
 --   alter table public.security_event drop constraint security_event_kind_check, add constraint
---     security_event_kind_check check (kind in (<la liste de 0136, sans 'code_demande'>));
---   create or replace function private.purge_journal_securite(...)  -- corps de la migration 0136
+--     security_event_kind_check check (kind in (
+--       'connexion_reussie', 'connexion_ratee', 'connexion_bloquee', 'deconnexion',
+--       'reauthentification_reussie', 'reauthentification_ratee', 'session_fermee',
+--       'mot_de_passe_change', 'reinitialisation_demandee', 'reinitialisation_utilisee',
+--       'invitation_creee', 'invitation_acceptee', 'invitation_revoquee',
+--       'compte_supprime', 'compte_repris', 'verification_fuites_indisponible'));
+--   create or replace function private.purge_journal_securite(p_now timestamptz default now(),
+--     p_lot integer default 5000) returns integer language plpgsql volatile security definer set search_path = ''
+--   as $f$
+--   declare v_total integer := 0; v_lot integer;
+--   begin
+--     if p_lot is null or p_lot < 1 then
+--       raise exception 'La taille du lot doit être positive.' using errcode = 'invalid_parameter_value';
+--     end if;
+--     loop
+--       delete from public.security_event where id in (select id from public.security_event
+--         where occurred_at < p_now - case when kind in ('connexion_ratee', 'connexion_bloquee')
+--                                          then interval '90 days' else interval '365 days' end
+--         order by id limit p_lot for update skip locked);
+--       get diagnostics v_lot = row_count;
+--       v_total := v_total + v_lot;
+--       exit when v_lot < p_lot;
+--     end loop;
+--     raise notice 'purge du journal de securite : % ligne(s) effacee(s)', v_total;
+--     return v_total;
+--   end; $f$;
+--   comment on function private.purge_journal_securite(timestamptz, integer) is
+--     'Efface les événements de sécurité échus (échecs de connexion 90 jours, le reste 1 an), par lots ; rend leur nombre. Lancée chaque nuit par pg_cron.';
 -- ═══════════════════════════════════════════════════════════════════════════
 set local lock_timeout = '5s';
 set local statement_timeout = '30s';
 
 -- ── 1. Deux CHECK élargis (rien n'est retiré) ───────────────────────────────
+/* `validate` suit l'`add` dans la même transaction : les deux tables gardent leur verrou exclusif le temps du scan.
+   Elles sont petites (un foyer de deux personnes : quelques milliers de lignes par an) et `lock_timeout` borne
+   l'attente du verrou. Le nouvel ensemble est un sur-ensemble de l'ancien : la validation ne peut pas échouer. */
 alter table public.login_throttle
   drop constraint login_throttle_scope_check,
   add constraint login_throttle_scope_check check (scope in (
@@ -227,10 +257,13 @@ declare
   v_personne uuid;
   v_actif public.login_code%rowtype;
 begin
+  -- `p_request_id` se contrôle ici, pour les deux branches : sinon seul un compte réel (qui écrit l'événement) le
+  -- refuserait, et l'erreur de la base recopierait la ligne refusée.
   if p_email is null or p_account_key is null or p_code_request_id is null or p_code_hash is null
-     or p_ip_hash is null
+     or p_ip_hash is null or pg_catalog.octet_length(p_email) > 254
      or pg_catalog.octet_length(p_account_key) <> 32 or pg_catalog.octet_length(p_code_hash) <> 32
-     or pg_catalog.octet_length(p_ip_hash) <> 32 then
+     or pg_catalog.octet_length(p_ip_hash) <> 32
+     or (p_request_id is not null and p_request_id !~ '^[0-9a-f]{32}$') then
     raise exception 'Paramètres invalides.' using errcode = 'invalid_parameter_value';
   end if;
 
@@ -238,17 +271,34 @@ begin
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('login_code'),
                                            pg_catalog.hashtext(pg_catalog.encode(p_account_key, 'hex')));
 
+  /* Le compte se lit DEUX fois : une première sans verrou pour connaître la personne, puis, le verrou de la personne
+     pris, une seconde sous `for key share` (une suppression du compte attendrait, au lieu de casser l'insertion).
+     L'ordre clé de compte, personne, lignes reste ainsi celui de toutes les autres fonctions : un `key share` pris
+     avant le verrou de la personne ouvrirait un cycle avec qui tient la personne et attend `auth.users`.
+     `instance_id` : seul l'index `users_instance_id_email_idx (instance_id, lower(email))` sert la recherche. Sans
+     lui, un parcours complet de la table s'arrête à la première ligne trouvée : une adresse connue répondrait plus
+     vite qu'une inconnue (mesuré : 4 ms contre 12 ms sur 20 000 comptes). Supabase pose toujours cette valeur.
+     Un bannissement simultané n'attend pas le `key share` : la vérification (S7) relit l'état du compte. */
   select u.id into v_personne
     from auth.users u
-   where pg_catalog.lower(u.email) = p_email
+   where u.instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+     and pg_catalog.lower(u.email) = p_email
      and u.deleted_at is null
      and (u.banned_until is null or u.banned_until <= pg_catalog.now())
      and exists (select 1 from public.user_profile p where p.id = u.id)
-     for key share of u;  -- une suppression du compte attendrait, au lieu de casser l'insertion
+   order by u.id  -- deux comptes à la casse près (l'index unique d'Auth la distingue) : toujours le même
+   limit 1;
 
   if v_personne is not null then
     -- La même clé que `cree_session` (0139) : un code ne se révoque pas pendant qu'une session s'ouvre.
     perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_personne::text, 0));
+    select u.id into v_personne
+      from auth.users u
+     where u.id = v_personne
+       and u.deleted_at is null
+       and (u.banned_until is null or u.banned_until <= pg_catalog.now())
+       and exists (select 1 from public.user_profile p where p.id = u.id)
+       for key share of u;
   end if;
 
   select * into v_actif
@@ -369,3 +419,5 @@ begin
   return v_total;
 end;
 $$;
+comment on function private.purge_journal_securite(timestamptz, integer) is
+  'Efface les événements de sécurité échus (échecs de connexion et demandes de code 90 jours, le reste 1 an), par lots ; rend leur nombre. Lancée chaque nuit par pg_cron.';

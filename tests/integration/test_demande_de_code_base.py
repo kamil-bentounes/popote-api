@@ -7,6 +7,7 @@ retire ses lignes : la base est partagée.
 
 import re
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -15,7 +16,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from _connexions import DSN_API, connecte
+from _connexions import DSN_ADMIN, DSN_API, connecte
 from _fabrique import Fabrique
 
 pytestmark = pytest.mark.integration
@@ -116,6 +117,19 @@ def vieillit(admin: psycopg.Connection[Ligne], cle: bytes, de: timedelta) -> Non
         " where account_key = %s",
         (de, de, cle),
     )
+
+
+def attend_un_verrou(admin: psycopg.Connection[Ligne]) -> None:
+    """Rend la main quand une demande attend un verrou (preuve : `pg_stat_activity`, pas un délai)."""
+    for _ in range(400):
+        ligne = admin.execute(
+            "select 1 from pg_stat_activity where usename = 'popote_api' and wait_event_type = 'Lock'"
+            " and query like '%%demande_un_code%%'"
+        ).fetchone()
+        if ligne is not None:
+            return
+        time.sleep(0.025)
+    pytest.fail("la demande n'attend aucun verrou")
 
 
 def evenements(admin: psycopg.Connection[Ligne], cle: bytes) -> list[Ligne]:
@@ -313,6 +327,93 @@ class TestDemandeUnCode:
                     None,
                 ),
             )
+
+    @pytest.mark.parametrize("reelle", [True, False], ids=["connue", "inconnue"])
+    @pytest.mark.parametrize("mauvais", ["abc", "A" * 32, "a" * 33, ""])
+    def test_un_identifiant_de_requete_mal_forme_est_refuse_pour_les_deux_branches(
+        self, reelle: bool, mauvais: str, adresse_reelle: tuple[UUID, str], cles: Cles
+    ) -> None:
+        """Sinon seul un compte réel le refuserait, et l'erreur de la base recopierait la ligne refusée."""
+        email = adresse_reelle[1] if reelle else inconnue()
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            demande(email, cles.neuve(), request_id=mauvais)
+
+    def test_une_adresse_de_plus_de_254_octets_est_refusee(self, cles: Cles) -> None:
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            demande("a" * 244 + "@test.local", cles.neuve())  # 255
+        demande("a" * 243 + "@test.local", cles.neuve())  # 254 : passe
+
+    def test_deux_comptes_a_la_casse_pres_donnent_toujours_le_meme(
+        self,
+        adresse_reelle: tuple[UUID, str],
+        fabrique: Fabrique,
+        cles: Cles,
+        admin: psycopg.Connection[Ligne],
+    ) -> None:
+        premier, email = adresse_reelle
+        second = fabrique.personne(fabrique.foyer())
+        admin.execute("update auth.users set email = %s where id = %s", (email.upper(), second.id))
+        attendu = min(premier, second.id)
+        assert demande(email, cles.neuve())[0] == attendu
+
+    def test_la_recherche_du_compte_passe_par_l_index_d_auth(self, admin: psycopg.Connection[Ligne]) -> None:
+        """Seul `users_instance_id_email_idx (instance_id, lower(email))` sert la recherche : sans
+        `instance_id`, un parcours de la table, arrêté à la première ligne trouvée, ferait répondre une
+        adresse connue plus vite qu'une inconnue (4 ms contre 12 ms pour 20 000 comptes)."""
+        fonction = "public.demande_un_code(text, bytea, uuid, bytea, bytea, text)"
+        ligne = admin.execute("select pg_get_functiondef(%s::regprocedure)", (fonction,)).fetchone()
+        assert ligne is not None
+        assert "u.instance_id = '00000000-0000-0000-0000-000000000000'::uuid" in str(ligne[0])
+
+    def test_une_adresse_connue_et_une_inconnue_repondent_dans_le_meme_temps(
+        self, admin: psycopg.Connection[Ligne], cles: Cles
+    ) -> None:
+        """La mesure n'a de sens qu'avec beaucoup de comptes (la base locale en a plus de 20 000) et avec un
+        compte tôt dans la table : un compte neuf serait trouvé aussi tard qu'une adresse inconnue."""
+        nombre = admin.execute("select count(*) from auth.users").fetchone()
+        ancien = admin.execute(
+            "select u.email from auth.users u join public.user_profile p on p.id = u.id"
+            " where u.deleted_at is null and (u.banned_until is null or u.banned_until <= now())"
+            " order by u.ctid limit 1"
+        ).fetchone()
+        if nombre is None or int(nombre[0]) < 5000 or ancien is None:  # type: ignore[call-overload]
+            pytest.skip("trop peu de comptes pour que le parcours de la table se mesure")
+        email = str(ancien[0])
+
+        def mediane(adresse: str) -> float:
+            durees = []
+            with connecte(DSN_API) as cx:
+                for _ in range(30):
+                    debut = time.perf_counter()
+                    cx.execute(
+                        DEMANDE,
+                        (adresse, cles.neuve(), uuid4(), token_bytes(32), token_bytes(32), None),
+                    ).fetchone()
+                    durees.append(time.perf_counter() - debut)
+                    cx.rollback()
+            return sorted(durees)[15]
+
+        assert abs(mediane(email) - mediane(inconnue())) < 0.003
+
+    def test_un_bannissement_pendant_l_attente_du_verrou_de_la_personne_donne_une_ligne_factice(
+        self, adresse_reelle: tuple[UUID, str], cles: Cles, admin: psycopg.Connection[Ligne]
+    ) -> None:
+        """Le compte se relit une fois le verrou de la personne pris : celui qui le tenait a pu le bannir."""
+        personne, email = adresse_reelle
+        cle = cles.neuve()
+        with psycopg.connect(DSN_ADMIN) as tenant, ThreadPoolExecutor(max_workers=1) as pool:
+            tenant.execute(
+                "select pg_advisory_xact_lock(pg_catalog.hashtextextended(%s, 0))", (str(personne),)
+            )
+            tenant.execute(
+                "update auth.users set banned_until = now() + interval '1 day' where id = %s", (personne,)
+            )
+            futur = pool.submit(demande, email, cle)
+            attend_un_verrou(admin)
+            tenant.commit()
+            rendu = futur.result(timeout=20)
+        assert rendu[0] is None and rendu[2] is True
+        assert codes(admin, cle)[0]["person_id"] is None and evenements(admin, cle) == []
 
     def test_supprimer_le_compte_emporte_ses_codes(
         self, adresse_reelle: tuple[UUID, str], cles: Cles, admin: psycopg.Connection[Ligne]

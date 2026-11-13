@@ -345,7 +345,22 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   **un refus n'use pas les suivants** ; sans escalade (le créneau de trop attend la fin de la fenêtre, ne compte pas, ne
   prolonge rien). **Aucun créneau global à la demande** : dix adresses bidon depuis une IP l'auraient épuisé pour tous.
   Le **coupe-circuit global** (`prend_un_envoi`, 60 mails par heure) se prend à l'envoi réel, après la réponse, pour un compte
-  réel seulement : il protège le quota du fournisseur sans qu'un anonyme puisse l'épuiser.
+  réel seulement : il protège le quota du fournisseur. Une adresse inventée n'envoie rien, donc n'y compte pas ; un anonyme ne
+  l'atteint qu'en connaissant **au moins 10 comptes réels** (6 demandes par heure chacun) : le foyer en compte deux.
+- **Risques acceptés** (plan, risque 6) : qui connaît une adresse peut user ses 6 demandes par heure depuis une seule IP (3 par
+  15 minutes) et priver la personne de **code** jusqu'à une heure ; la clé d'accès n'est pas touchée. Les fenêtres sont fixes :
+  jusqu'au double de la limite peut passer à cheval sur deux fenêtres (12 demandes d'une adresse, 120 envois globaux).
+  Le coupe-circuit, qui ne compte que les comptes réels, est observable : qui a déjà fait partir 59 envois (donc détient au
+  moins 10 comptes réels) voit, à l'absence du 60e mail, qu'une adresse sondée existe. Un quota global dur ne peut pas être à la fois
+  indépendant de l'existence et inépuisable ; accepté pour un foyer de deux personnes, sur invitation (l'inscription est
+  fermée). Un compte réel prend en plus le verrou de la personne et écrit un événement : sous contention de cette personne, sa
+  demande est plus lente ; S5b traduit les délais et erreurs de la même façon et mesure les médianes.
+- **Recherche du compte** : elle passe par `users_instance_id_email_idx (instance_id, lower(email))` ; sans `instance_id`, un
+  parcours de la table arrêté à la première ligne trouvée ferait répondre une adresse connue plus vite qu'une inconnue (mesuré :
+  4 ms contre 12 ms pour 20 000 comptes). Un test garde la requête et, sur une base fournie, la médiane des durées.
+- **Ordre des verrous**, que S7 reprend : clé de compte, puis personne (la clé de `cree_session`), puis `auth.users` en `for key share`
+  (le compte se relit une fois le verrou de la personne pris), puis les lignes `login_code`. `for key share` n'empêche pas un
+  bannissement simultané : la vérification (S7) relit l'état du compte.
 - Tests : `tests/integration/test_demande_de_code_base.py` (dont 50 demandes simultanées par adresse connue et inconnue, un
   test de dérive entre les portées du `CHECK` et celles que les fonctions emploient) et `test_surface.py`.
 
