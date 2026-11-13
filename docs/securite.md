@@ -476,6 +476,21 @@ l'administration exige les deux : sinon l'application démarre avec un avertisse
 - Versions figées (`uv.lock`, `package-lock.json`), mises à jour hebdomadaires automatiques et relues ;
   `pip-audit` et `npm audit` bloquants sur les failles hautes ; actions GitHub figées par empreinte, droits
   minimaux par workflow ; image du conteneur minimale, sans root, scannée (Trivy) ; SBOM CycloneDX produit.
+- **Clés d'accès (0.4bis S8a) : `webauthn` 3.0.1** (py_webauthn, Duo Labs), seule dépendance ajoutée, figée par `==`.
+  Relu à la source le 13/11/2026 :
+  - licence **BSD-3-Clause** (PyPI `license_expression` et dépôt) ; publiée le 25/09/2026, donc au-delà du délai de Dependabot (7 jours)
+    et de `exclude-newer` ; dépôt non archivé, dernier envoi le 08/10/2026 ; aucune faille connue (OSV, `pip-audit`) ;
+  - **OpenSSF Scorecard 3,3 sur 10** (9/11/2026 : Maintained 4, Code-Review 0, Branch-Protection 0, SAST 0, Security-Policy 0,
+    Fuzzing 0 ; Dangerous-Workflow, Binary-Artifacts et License à 10) : le score est bas, la bibliothèque est petite et typée,
+    et ses entrées sont les octets d'un navigateur : `infra/webauthn.py` les entoure (refus de tout ce que la bibliothèque ne
+    lit pas comme prévu, 750 réponses abîmées dans `tests/unit/test_webauthn.py`). Écartées : `fido2` (BSD-2-Clause avec des
+    parties Apache-2.0 et MPL-2.0), les clés d'accès de Supabase Auth (« experimental ») ;
+  - dépendances qu'elle fait venir (versions de `uv.lock`) : `cryptography` 50.0.2 (Apache-2.0 OR BSD-3-Clause, option
+    BSD-3-Clause), `pyOpenSSL` 26.4.0 (Apache-2.0), `cbor2` 6.1.5 (MIT), `pyasn1` 0.6.5 (BSD-2-Clause), `pyasn1-modules` 0.4.2
+    (BSD-2-Clause d'après son fichier de licence ; PyPI écrit « BSD »), `cffi` 2.1.1 (**MIT-0**, venu avec `cryptography`),
+    `pycparser` 3.12 (BSD-3-Clause). **MIT-0** (MIT sans obligation d'attribution, approuvée par l'OSI) n'est pas dans la liste
+    des licences admises de la politique : classée « à relire », acceptée ici par le propriétaire du dépôt, à confirmer dans la
+    demande de fusion.
 
 ### 7.6 Vérification : OWASP ASVS niveau 2
 
@@ -645,3 +660,50 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   pas filtrer le prénom (hôte et invité), ne pas normaliser en NFC, marques et remplissages invisibles, avaler l'annulation,
   journaliser le message de l'erreur.
 
+
+### 4.13 Les clés d'accès : le socle (0.4bis S8a ; code : `infra/webauthn.py`, `config.py`)
+
+Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9) et la gestion (S10) s'appuient sur elle.
+
+- **RP ID et origines** (`WEBAUTHN_PAR_ENV`, surchargeables par `POPOTE_WEBAUTHN_RP_ID` et `POPOTE_WEBAUTHN_ORIGINS`, liste séparée
+  par des virgules) : prod `notre-popote.fr` et `https://notre-popote.fr` ; essai `essai.notre-popote.fr` et
+  `https://essai.notre-popote.fr` ; local `localhost` et `http://localhost:5173` (jamais `127.0.0.1` : une adresse IP n'est pas un
+  RP ID valide). **Aucun aperçu `*.workers.dev`** : son hôte n'a pas le RP ID de l'essai pour suffixe ; la route de défi y rendra
+  `403 cle_origine_non_admise` (S8b), le code par mail reste possible. Le démarrage échoue si une origine n'est pas celle que le
+  navigateur écrit (`schéma://hôte[:port]`, minuscules, sans chemin, barre finale ni port par défaut), si, hors local, elle n'est pas
+  `https` sans port ou vise `localhost` ou une adresse IP, si, en local, `http` vise autre chose que `localhost`, ou si le RP ID n'est pas
+  l'hôte (ou un domaine parent, à la frontière d'un point) de **chaque** origine, ou n'a pas de point (`com`).
+- **Ce que la bibliothèque est tenue de faire** (lu dans `webauthn` 3.0.1) et ce que `infra/webauthn.py` y ajoute, W3C WebAuthn niveau 3
+  (Recommandation du 25/08/2026) :
+  - **options d'enregistrement** : clé découvrable (`residentKey: required`), `userVerification: required`, attestation `none`,
+    défi de 32 octets (`secrets`), délai de 300 000 ms, `excludeCredentials` (transports connus seulement), identifiant d'utilisateur de
+    1 à 64 octets (la bibliothèque remplace un identifiant vide par un tirage : refusé ici) ; **options de connexion** : aucune clé
+    nommée, `userVerification: required` (la cérémonie ne part d'aucun nom : § 14.6.2) ;
+  - **vérifications des deux cérémonies** : défi égal à celui des options (la base le tient à usage unique, S8b), origine dans la liste
+    **exacte**, hachage du RP ID, UP, **UV exigé**, signature, BS jamais sans BE ; en plus, ici : **`crossOrigin` autre que `false`
+    ou `topOrigin` présents refusés** (la bibliothèque lit « crossOrigin » avec `bool()` : la chaîne `"false"` vaudrait vrai et elle ne
+    lit pas `topOrigin`), **attestation autre que `none` refusée** (Popote n'a aucune racine de confiance à offrir), identifiant de
+    clé de 16 à 1023 octets et **égal** à celui de l'attestation ;
+  - **connexion en plus** : l'identifiant de la réponse est celui de la clé lue en base ; **`userHandle` présent et égal** à celui de la
+    personne (§ 7.2) ; éligibilité à la sauvegarde (BE) **inchangée** ; compteur : si l'un des deux n'est pas nul, il doit croître. Un
+    compteur qui ne croît pas lève `CompteurDeCleRegresse`, **après** la vérification de la signature : sans signature valide, ce
+    n'est qu'un refus ordinaire (S9 n'écrit `cle_suspecte` que sur cette erreur, un inconnu ne peut pas en provoquer) ;
+  - **toute entrée illisible** (JSON, base64url, CBOR, clé COSE tronquée) donne `ReponseDeCleRefusee`, au message fixe : ni clé, ni
+    identifiant, ni signature, ni défi n'y entrent ; la cause reste chaînée pour le journal du serveur. Les erreurs de la
+    bibliothèque attrapées sont `WebAuthnException`, `ValueError`, `TypeError`, `KeyError`, `IndexError` (les deux dernières viennent d'une clé
+    COSE incomplète : trouvé en abîmant des réponses) ; toute autre exception est un bogue et remonte.
+- **Limites dites.** (1) L'attestation `none` ne prouve pas que l'authentificateur détient la clé privée à l'enregistrement : W3C § 7.1
+  note qu'un attaquant qui connaît un identifiant et une clé publique pourrait les enregistrer comme siens ; la parade est la base :
+  **identifiant de clé unique pour tout le monde** (`409 cle_deja_enregistree`, S8b). (2) Le défi n'est vérifié qu'égal à celui qu'on
+  donne : le rejeu d'un défi est refusé par la base, pas par ce module. (3) L'AAGUID est gardé, jamais interprété.
+- **Authentificateur de test** : `tests/unit/_authentificateur.py` (ES256, EdDSA, RS256 ; UP, UV, BE, BS, compteur, `userHandle`,
+  origine, RP ID, défi, signature, cadre, attestation réglables) ; il sert à tous les tests de S8b à S16.
+- Tests : `tests/unit/test_webauthn.py` (refus d'origine, RP ID, défi, UV, UP, `userHandle`, BE, compteur, signature, cadre, attestation,
+  identifiant ; réponses mal formées et 750 réponses aux octets abîmés), `tests/unit/test_config_cles.py`. Mutations rejouées
+  (`scripts` non versionnés, liste dans la demande de fusion) : UV non exigée (deux cérémonies, deux options), clé non découvrable,
+  origine admise sans liste (deux cérémonies), attestation non filtrée, `crossOrigin`, `topOrigin`, `userHandle` (non exigé ou absent admis),
+  clé de la réponse non comparée, BE libre, compteur (ignoré, égal admis, zéro des deux refusé, zéro après un compteur admis, contrôlé
+  avant la signature), défi (taille, court admis, non comparé), bornes de l'identifiant de clé, identifiant d'attestation, identifiant
+  d'utilisateur vide, RP ID des options, clés exclues, et dans la configuration : suffixe, frontière de point, `http`, `localhost`,
+  RP ID sans point : chacune fait échouer un test.
+- **Retour arrière** : retirer `infra/webauthn.py`, les réglages `webauthn_*` et la dépendance (`uv remove webauthn`).
