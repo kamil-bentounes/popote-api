@@ -59,7 +59,10 @@ def test_la_date_de_l_invitation_est_celle_de_paris() -> None:
     assert "jusqu'au 21/11/2026 à 00 h 30" in textes.texte_de_l_invitation(message)
 
 
-@pytest.mark.parametrize("objet", [textes.OBJET_DU_CODE, textes.OBJET_DE_L_INVITATION])
+@pytest.mark.parametrize(
+    "objet",
+    [textes.OBJET_DU_CODE, textes.OBJET_DE_L_INVITATION_DE_REPLI, textes.objet_de_l_invitation("Marc")],
+)
 def test_un_objet_fait_au_moins_dix_caracteres_et_ne_porte_aucun_secret(objet: str) -> None:
     assert len(objet) >= 10
     assert "123456" not in objet

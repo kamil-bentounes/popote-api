@@ -631,7 +631,9 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   la base `EnvoiParEnveloppe` rend l'enveloppe et ne passe que celle-ci à `_transmet`, que la réalisation écrit ; seules
   `enveloppe_du_code` et `enveloppe_de_l_invitation` la fabriquent (cachet privé au module ; tests d'architecture : aucun autre appel,
   aucun autre fichier ne nomme le cachet, et un fichier `infra/mail_*.py` ne lit ni `.code`, ni `.lien`, ni un prénom, ni `MessageCode`), l'objet est vérifié contre
-  `OBJETS_AUTORISES` (deux constantes, sans code, prénom ni lien) et doit être un `str` exact. `envoie_sans_remonter(envoyer,
+  les gabarits d'objet (`objet_admis`) et doit être un `str` exact. Les objets sont fixes, sauf un : celui de l'invitation, « {Hôte}
+  t'a gardé une place en cuisine », où l'hôte est le **seul** prénom admis (jamais celui de l'invité), filtré par `prenom_valide`, 30 caractères
+  au plus ; refusé, l'objet de repli « Une place t'attend en cuisine » s'applique. Jamais de code ni de lien dans un objet. `envoie_sans_remonter(envoyer,
   message, quoi)` est l'enveloppe de la tâche d'arrière-plan : `quoi` est un `TypeDeMail` (`code`, `invitation`, ou ces deux littéraux ; liste fermée,
   vérifiée à l'exécution, appariée au type exact du message : aucune adresse ni aucun code ne peut entrer dans le journal par là) ; elle
   journalise le type de l'erreur seul et borne l'envoi par son propre délai (20 s, sous les 25 s de la requête et au-dessus des 15 s de
@@ -646,7 +648,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   une requête (même vide), un blanc ou une tabulation, un jeton de plus de 128 caractères, ou s'il est en `http` ailleurs que vers l'hôte
   local ; un `POPOTE_PUBLIC_BASE_URL` hors de `Settings.origines` est signalé au démarrage hors local, car tous les liens seraient refusés). Leur `__repr__` masque tout : ni adresse, ni code, ni lien, ni prénom.
 - **Les textes** : du texte clair, en français. L'objet du code est constant (`Ton code de connexion Popote`) et **ne porte jamais
-  le code** : le fournisseur garde l'objet. Aucun prénom dans un objet. Dans le texte, un prénom passe par `prenom_affichable` :
+  le code** : le fournisseur garde l'objet. Le seul prénom d'un objet est celui de l'hôte, dans l'invitation (voir plus haut). Dans le texte, un prénom passe par `prenom_affichable` :
   lettres Unicode (NFC d'abord, marques combinantes admises à trois de suite), espaces, tirets, apostrophes, 30 caractères au
   plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Sont refusés : les remplissages invisibles (U+3164, U+115F, U+1160, U+FFA0, U+2800), les caractères sans largeur (U+200B à U+200F, U+2060 à
   U+2064, U+FEFF) où qu'ils soient, les marques combinantes invisibles (U+034F, sélecteurs de variante, U+17B4, U+17B5, U+180B à

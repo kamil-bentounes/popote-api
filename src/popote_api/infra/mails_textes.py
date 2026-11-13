@@ -21,7 +21,9 @@ if TYPE_CHECKING:  # `mails` importe ce module : l'import ne se fait que pour le
 
 # TEM exige un objet d'au moins 10 caractères.
 OBJET_DU_CODE: Final = "Ton code de connexion Popote"
-OBJET_DE_L_INVITATION: Final = "Invitation à rejoindre un foyer sur Popote"
+OBJET_DE_L_INVITATION_DE_REPLI: Final = "Une place t'attend en cuisine"
+# Le seul objet qui porte une variable : le prénom de l'HÔTE (jamais celui de l'invité), par `prenom_valide`.
+SUITE_DE_L_OBJET_DE_L_INVITATION: Final = " t'a gardé une place en cuisine"
 REPLI_DU_PRENOM: Final = "Quelqu'un"
 LONGUEUR_MAX_DU_PRENOM: Final = 30
 _SEPARATEURS_DU_PRENOM: Final = frozenset(" -'\u2019")  # espace, tiret, apostrophes droite et typographique
@@ -129,13 +131,27 @@ def texte_de_l_invitation(message: "MessageInvitation") -> str:
 
 # --- L'enveloppe rendue : la seule chose que les réalisations envoient ---------------------------------
 
-OBJETS_AUTORISES: Final = frozenset({OBJET_DU_CODE, OBJET_DE_L_INVITATION})
+OBJETS_FIXES: Final = frozenset({OBJET_DU_CODE, OBJET_DE_L_INVITATION_DE_REPLI})
 _CACHET: Final = object()  # seul ce module le détient : une enveloppe ne se fabrique pas ailleurs
 FORME_DU_JETON_DE_LIEN: Final = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CHEMIN_DU_LIEN: Final = "/invitation"
 
 
 LONGUEUR_MAX_DE_LA_PARTIE_LOCALE: Final = 64
+
+
+def objet_de_l_invitation(prenom_hote: str) -> str:
+    """« {Hôte} t'a gardé une place en cuisine » ; le prénom de l'hôte est refusé : l'objet de repli."""
+    hote = prenom_valide(prenom_hote)
+    return f"{hote}{SUITE_DE_L_OBJET_DE_L_INVITATION}" if hote else OBJET_DE_L_INVITATION_DE_REPLI
+
+
+def objet_admis(objet: str) -> bool:
+    """Un objet fixe, ou le gabarit de l'invitation avec un prénom présentable (30 caractères au plus)."""
+    if objet in OBJETS_FIXES:
+        return True
+    prenom, suite, reste = objet.partition(SUITE_DE_L_OBJET_DE_L_INVITATION)
+    return bool(suite) and not reste and prenom_valide(prenom) == prenom
 
 
 def destinataire_valide(valeur: object) -> bool:
@@ -166,8 +182,8 @@ class Enveloppe:
     def __post_init__(self) -> None:
         if self.cachet is not _CACHET:
             raise TypeError("Enveloppe : fabriquée par les fonctions de mails_textes, pas autrement.")
-        if type(self.objet) is not str or self.objet not in OBJETS_AUTORISES:  # pas une sous-classe de str
-            raise ValueError("Enveloppe : objet hors de l'ensemble autorisé (constant, sans code ni prénom).")
+        if type(self.objet) is not str or not objet_admis(self.objet):  # pas une sous-classe de str
+            raise ValueError("Enveloppe : objet hors des gabarits autorisés (fixes, sans code).")
         if not destinataire_valide(self.destinataire) or not self.texte:
             raise ValueError("Enveloppe : destinataire invalide ou texte vide.")
         if self.expire_le is not None and self.expire_le.utcoffset() is None:
@@ -216,4 +232,5 @@ def enveloppe_de_l_invitation(message: "MessageInvitation", origines: frozenset[
     """`origines` : celles du front de l'environnement (`Settings.origines`)."""
     if not lien_d_invitation_admis(message.lien, origines):
         raise ValueError("Invitation : le lien n'est pas celui d'une origine du front.")
-    return Enveloppe(message.destinataire, OBJET_DE_L_INVITATION, texte_de_l_invitation(message), _CACHET)
+    objet = objet_de_l_invitation(message.prenom_hote)
+    return Enveloppe(message.destinataire, objet, texte_de_l_invitation(message), _CACHET)

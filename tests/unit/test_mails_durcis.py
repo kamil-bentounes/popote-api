@@ -136,7 +136,10 @@ async def test_une_realisation_ne_recoit_que_des_enveloppes_au_objet_constant() 
     await realisation.envoie_le_code(code())
     await realisation.envoie_l_invitation(invitation())
     assert [type(e) for e in realisation.recues] == [Enveloppe, Enveloppe]
-    assert [e.objet for e in realisation.recues] == [textes.OBJET_DU_CODE, textes.OBJET_DE_L_INVITATION]  # type: ignore[attr-defined]
+    assert [e.objet for e in realisation.recues] == [
+        textes.OBJET_DU_CODE,
+        "Marc t'a gardé une place en cuisine",
+    ]  # type: ignore[attr-defined]
     assert realisation.recues[0].expire_le == MAINTENANT + timedelta(minutes=10)  # type: ignore[attr-defined]
 
 
@@ -167,14 +170,28 @@ def test_l_enveloppe_du_code_porte_le_texte_et_l_objet_constants() -> None:
 
 def test_l_enveloppe_de_l_invitation_porte_le_texte_et_l_objet_constants() -> None:
     enveloppe = textes.enveloppe_de_l_invitation(invitation(), ORIGINES)
-    assert enveloppe.objet == textes.OBJET_DE_L_INVITATION
+    assert enveloppe.objet == "Marc t'a gardé une place en cuisine"
     assert enveloppe.texte == textes.texte_de_l_invitation(invitation())
 
 
 @pytest.mark.parametrize(
-    "objet", ["Code Popote 123456", "Invitation de Claire", "", textes.OBJET_DU_CODE + " "]
+    "objet",
+    [
+        "Code Popote 123456",
+        "Invitation de Claire",
+        "",
+        textes.OBJET_DU_CODE + " ",
+        "Marc<b> t'a gardé une place en cuisine",  # prénom non présentable
+        "x@y.fr t'a gardé une place en cuisine",
+        " t'a gardé une place en cuisine",  # sans prénom
+        "A" * 31 + " t'a gardé une place en cuisine",  # plus de 30 caractères
+        "Marc t'a gardé une place en cuisine 123456",  # rien après le gabarit
+        "Marc t'a gardé une place en cuisine\n",
+        "Marc\u3164Support t'a gardé une place en cuisine",
+        "123456 t'a gardé une place en cuisine",
+    ],
 )
-def test_une_enveloppe_refuse_un_objet_hors_de_l_ensemble_autorise(objet: str) -> None:
+def test_une_enveloppe_refuse_un_objet_hors_des_gabarits_autorises(objet: str) -> None:
     with pytest.raises(ValueError, match="objet"):
         textes.Enveloppe(ADRESSE, objet, "texte", textes._CACHET)
 
@@ -191,10 +208,36 @@ def test_une_enveloppe_refuse_un_destinataire_invalide_ou_un_texte_vide() -> Non
         textes.Enveloppe(ADRESSE, textes.OBJET_DU_CODE, "", textes._CACHET)
 
 
+@pytest.mark.parametrize(
+    ("prenom_hote", "attendu"),
+    [
+        ("Marc", "Marc t'a gardé une place en cuisine"),
+        ("  Élodie ", "Élodie t'a gardé une place en cuisine"),
+        ("A" * 30, "A" * 30 + " t'a gardé une place en cuisine"),
+        ("A" * 31, "Une place t'attend en cuisine"),
+        ("x@y.fr", "Une place t'attend en cuisine"),
+        ("Marc<script>", "Une place t'attend en cuisine"),
+        ("Marc\u3164Support", "Une place t'attend en cuisine"),
+        ("", "Une place t'attend en cuisine"),
+        ("Marc2", "Une place t'attend en cuisine"),
+    ],
+)
+def test_l_objet_de_l_invitation_porte_le_seul_prenom_de_l_hote_ou_le_repli(
+    prenom_hote: str, attendu: str
+) -> None:
+    message = MessageInvitation(ADRESSE, "Claire", prenom_hote, LIEN, EXPIRE_LE)
+    assert textes.enveloppe_de_l_invitation(message, ORIGINES).objet == attendu
+
+
+def test_l_objet_de_l_invitation_ne_porte_ni_l_invite_ni_le_lien() -> None:
+    objet = textes.enveloppe_de_l_invitation(invitation(), ORIGINES).objet
+    assert "Claire" not in objet and "jeton-secret" not in objet and ADRESSE not in objet
+
+
 def test_l_objet_du_code_ne_porte_pas_le_code_et_celui_de_l_invitation_ni_prenom_ni_lien() -> None:
     assert "123456" not in textes.enveloppe_du_code(code(), MAINTENANT).objet
     objet = textes.enveloppe_de_l_invitation(invitation(), ORIGINES).objet
-    assert "Claire" not in objet and "Marc" not in objet and "jeton-secret" not in objet
+    assert "Claire" not in objet and "jeton-secret" not in objet
 
 
 # --- Le destinataire --------------------------------------------------------------------------------------
