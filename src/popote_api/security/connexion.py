@@ -25,7 +25,12 @@ from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton, je
 from popote_api.security.journal_securite import Evenement, journalise
 from popote_api.security.limites_base import CleBloquee, liberer_le_compte, prendre_les_creneaux
 from popote_api.security.mots_de_passe import candidats_de_connexion
-from popote_api.security.sessions_base import cree_session, marque_reauth
+from popote_api.security.sessions_base import (
+    confirme_le_changement_de_mot_de_passe,
+    cree_session,
+    fait_tourner_et_ferme_les_autres,
+    marque_reauth,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +155,44 @@ async def tente_la_reauthentification(
             request_id=request_id,
         )
         return Reauthentifiee()
+
+
+@dataclass(frozen=True, slots=True)
+class Tournee:
+    jeton: str  # le nouveau jeton, pour le cookie ; la base n'en garde que l'empreinte
+    session: UUID
+
+
+async def fait_tourner_la_session_et_ferme_les_autres(
+    base: Base, empreinte_courante: bytes
+) -> Tournee | None:
+    """Étape 2 du changement de mot de passe : une transaction, validée avant l'appel à Auth.
+
+    `None` : l'empreinte ne désigne plus de session valide (un autre changement vient de la faire tourner) ;
+    la route répond `401` sans cookie."""
+    jeton, empreinte = jeton_neuf()
+    async with base.connexion() as curseur:
+        session = await fait_tourner_et_ferme_les_autres(curseur, empreinte_courante, empreinte)
+    return None if session is None else Tournee(jeton, session)
+
+
+async def confirme_le_mot_de_passe_change(base: Base, personne: UUID, request_id: str | None) -> None:
+    """Étape 4 : `password_set` à vrai et l'événement, après le succès d'Auth seulement."""
+    async with base.connexion() as curseur:
+        await confirme_le_changement_de_mot_de_passe(curseur, personne, request_id)
+
+
+async def journalise_la_liste_de_fuites_indisponible(
+    base: Base, personne: UUID, request_id: str | None
+) -> None:
+    """B23 : la liste est hors service, le mot de passe est accepté et l'événement le dit (sans valeur)."""
+    async with base.connexion() as curseur:
+        await journalise(
+            curseur,
+            Evenement.verification_fuites_indisponible,
+            personne=personne,
+            request_id=request_id,
+        )
 
 
 async def _prend_les_creneaux(

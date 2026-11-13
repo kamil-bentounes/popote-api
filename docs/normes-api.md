@@ -309,6 +309,12 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   sensible dont `reauth_at` date de plus de 300 s (horloge `app.state.horloge`, avancée à la main par les tests) ;
   un `403` et non un `401` (session valide), le front ne se déconnecte que sur `401`. À déclarer sur la route avec
   `reponses_erreur(403)`. Détail : `docs/securite.md` § 4.7.
+- **`PUT /api/v1/me/password`** (0.4 T11) : corps `{new_password}` (`extra="forbid"`, 256 caractères au plus ; les règles de
+  fond, 15 à 64 caractères et 72 octets, rendent un `422` à pointeur `/new_password`) ; `204` + nouveau `Set-Cookie` ;
+  `403 reauthentification_requise` ; `422` ; `401` (second changement simultané : jamais de `Set-Cookie`) ; `503
+  auth_indisponible` **avec le nouveau cookie**. Sans `Idempotency-Key` ni `If-Match` (exemption écrite : `PUT` idempotent
+  par nature, ressource « de soi » sans version, et rejouer une réponse garderait un mot de passe en base). Détail :
+  `docs/securite.md` § 4.8.
 - **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
   que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
   (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte

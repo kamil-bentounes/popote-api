@@ -15,6 +15,7 @@ from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import Base, SondeBase
+from popote_api.infra.fuites import fuites_pour
 from popote_api.routes_publiques import ROUTES_PUBLIQUES
 from popote_api.security.debit import Debit, LimiteParAdresse
 from popote_api.security.empreintes import Empreintes
@@ -95,6 +96,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.state.horloge_unix = time.time  # l'instant de la signature interne ; les tests la remplacent
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
     app.state.auth_admin = auth_admin
+    app.state.fuites = fuites_pour(settings)  # les tests le remplacent par un faux
 
     # Le dernier middleware ajouté est le plus extérieur. De l'extérieur vers l'intérieur : `Identifiant`,
     # `Trace`, `Acces`, `Garde`, `LimiteParAdresse` (un refus de débit ne lit pas le corps), puis les

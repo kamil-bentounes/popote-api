@@ -13,7 +13,9 @@ from popote_api.security.appareil import Appareil
 
 __all__ = [
     "SessionCourante",
+    "confirme_le_changement_de_mot_de_passe",
     "cree_session",
+    "fait_tourner_et_ferme_les_autres",
     "fait_tourner_session",
     "ferme_session",
     "marque_reauth",
@@ -71,3 +73,24 @@ async def marque_reauth(curseur: Curseur, session: UUID, personne: UUID) -> bool
     await curseur.execute("select public.marque_reauth(%s, %s) as ok", (session, personne))
     ligne = await curseur.fetchone()
     return bool(ligne is not None and ligne["ok"])
+
+
+async def fait_tourner_et_ferme_les_autres(curseur: Curseur, ancienne: bytes, nouvelle: bytes) -> UUID | None:
+    """Une seule fonction SQL (0141) : fait tourner la session, ferme les autres et celles de Supabase Auth.
+
+    `None` si l'ancienne empreinte ne désigne aucune session valide (un second changement simultané)."""
+    await curseur.execute(
+        "select public.fait_tourner_et_ferme_les_autres(%s, %s) as id", (ancienne, nouvelle)
+    )
+    ligne = await curseur.fetchone()
+    identifiant: UUID | None = ligne["id"] if ligne is not None else None
+    return identifiant
+
+
+async def confirme_le_changement_de_mot_de_passe(
+    curseur: Curseur, personne: UUID, request_id: str | None
+) -> None:
+    """`password_set` à vrai et événement `mot_de_passe_change` (0141) ; au succès d'Auth seulement."""
+    await curseur.execute(
+        "select public.confirme_le_changement_de_mot_de_passe(%s, %s)", (personne, request_id)
+    )

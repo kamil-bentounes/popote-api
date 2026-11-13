@@ -25,6 +25,7 @@ from fastapi import APIRouter, FastAPI
 
 from popote_api.api import v1
 from popote_api.infra.db import Base
+from popote_api.infra.fuites import ResultatFuite
 from popote_api.main import ROUTES_PUBLIQUES, create_app
 from popote_api.security.session import DEFI_D_AUTHENTIFICATION
 
@@ -99,6 +100,17 @@ def _fermer_les_autres_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response
     assert reponse.status_code == 204
 
 
+def _mot_de_passe_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 204
+    assert "set-cookie" in reponse.headers
+
+
+def _mot_de_passe_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Route « de soi » : l'autre foyer change SON mot de passe ; celui de `moi` ne bouge pas.
+    assert reponse.status_code == 204
+    assert str(monde.moi.id) not in reponse.text
+
+
 def _reauth_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
     assert reponse.status_code == 204
 
@@ -128,6 +140,12 @@ MATRICE: dict[tuple[str, str], Cas] = {
         _reauth_chez_moi,
         _reauth_chez_un_autre_foyer,
         lambda _: {"password": MOT_DE_PASSE_DE_MOI},
+    ),
+    ("PUT", "/api/v1/me/password"): Cas(
+        lambda _: "/api/v1/me/password",
+        _mot_de_passe_chez_moi,
+        _mot_de_passe_chez_un_autre_foyer,
+        lambda _: {"new_password": "un-tout-nouveau-mot-de-passe"},
     ),
 }
 
@@ -167,6 +185,16 @@ def test_une_route_sans_cas_est_vue_par_l_enumeration(monkeypatch: pytest.Monkey
     assert ("GET", "/api/v1/essai/orpheline") not in MATRICE
 
 
+class FuitesSaines:
+    async def verifie(self, mot_de_passe: str) -> ResultatFuite:
+        return ResultatFuite.sain()
+
+
+class AuthSansEffet:
+    async def change_mot_de_passe(self, identifiant: UUID, mot_de_passe: str) -> None:
+        return None
+
+
 @pytest.fixture
 def monde(fabrique: Fabrique) -> Monde:
     moi = fabrique.personne(fabrique.foyer())
@@ -188,9 +216,11 @@ def _cas(methode: str, chemin: str) -> Cas:
 @pytest.fixture
 def client(base: Base, monkeypatch: pytest.MonkeyPatch) -> httpx.AsyncClient:
     # Le poivre : sans lui, la réauthentification refuse de compter. L'IP ne bloque pas la matrice.
-    return client_de(
-        application_de_test(base, monkeypatch, identity_pepper="p" * 32, connexion_essais_par_ip=10000)
-    )
+    app = application_de_test(base, monkeypatch, identity_pepper="p" * 32, connexion_essais_par_ip=10000)
+    # Ni réseau ni Auth : la matrice garde l'autorisation (le changement : `test_changement_mot_de_passe.py`).
+    app.state.fuites = FuitesSaines()
+    app.state.auth_admin = AuthSansEffet()
+    return client_de(app)
 
 
 pytestmark = pytest.mark.integration

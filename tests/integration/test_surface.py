@@ -51,6 +51,10 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.mes_sessions(integer, timestamptz, uuid)": {"authenticated"},
     "public.ferme_un_appareil(uuid, uuid)": {"authenticated"},
     "public.ferme_les_autres_appareils(uuid)": {"authenticated"},
+    "public.fait_tourner_et_ferme_les_autres(bytea, bytea)": {"popote_api"},
+    "public.confirme_le_changement_de_mot_de_passe(uuid, text)": {"popote_api"},
+    "private.fait_tourner_et_ferme_les_autres(bytea, bytea, timestamptz)": set(),
+    "private.ferme_les_sessions_auth(uuid)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()
