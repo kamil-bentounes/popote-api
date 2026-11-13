@@ -421,13 +421,32 @@ jobs:
             echo "::error::le conteneur n'est pas prêt après 5 minutes"
             return 1
           }
+          # $1 : l'image ; $2 : la carte COMPLÈTE des variables non secrètes. Un PATCH de `environment_variables`
+          # remplace toute la carte (l'API ne fusionne pas) : on envoie donc l'existante, complétée.
+          # Les variables secrètes ne sont pas dans le corps : elles restent telles quelles.
           deployer() {
             local corps
             # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
-            corps=$(jq -n --arg image "$1" '{registry_image: $image, redeploy: true}') || return 1
+            corps=$(jq -n --arg image "$1" --argjson variables "$2" \
+              '{registry_image: $image, environment_variables: $variables, redeploy: true}') || return 1
             scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null || return 1
             sleep 10 # laisser le statut quitter `ready` avant de le lire
             attendre_pret
+          }
+          # Prouve ce que le PATCH a laissé : la carte non secrète est celle qu'on voulait, les noms des variables
+          # secrètes n'ont pas bougé (leurs valeurs ne se relisent pas : seules les clés sont comparées).
+          verifier_variables() {
+            local lu
+            lu=$(scw "$conteneur") || return 1
+            if ! jq -e --argjson attendu "$1" '.environment_variables == $attendu' <<< "$lu" > /dev/null; then
+              echo "::error::les variables non secrètes du conteneur ne sont pas celles qu'on a posées"
+              return 1
+            fi
+            if [ "$(jq -c '[.secret_environment_variables[].key] | sort' <<< "$lu")" != "$noms_secrets" ]; then
+              echo "::error::les variables secrètes du conteneur ont changé"
+              return 1
+            fi
+            echo "variables du conteneur vérifiées : $(jq -r '.environment_variables | keys | join(", ")' <<< "$lu")"
           }
           # Seule la version rendue prouve que la nouvelle image répond : l'ancienne répond 200 aussi.
           attendre_version() {
@@ -446,18 +465,46 @@ jobs:
             done
           }
 
-          # Lue avant la mise à jour : c'est l'image à reposer si la nouvelle ne démarre pas.
-          precedente=$(scw "$conteneur" | jq -r '.registry_image // empty')
+          # Lu avant la mise à jour : l'image et les variables à reposer si la nouvelle ne démarre pas (une
+          # ancienne image ne connaît pas `POPOTE_MAIL_PROVIDER=scaleway` : elle refuserait de démarrer).
+          actuel=$(scw "$conteneur")
+          precedente=$(jq -r '.registry_image // empty' <<< "$actuel")
           if [ -z "$precedente" ]; then
             echo "::error::image en place illisible : rien à reposer en cas d'échec, on ne déploie pas"
             exit 1
           fi
-          if deployer "$REFERENCE" && attendre_version; then
+          anciennes=$(jq -c '.environment_variables // {}' <<< "$actuel")
+          noms_secrets=$(jq -c '[.secret_environment_variables[]?.key] | sort' <<< "$actuel")
+          # L'envoi des mails : la clé est un secret du conteneur (posée à la main) ; sans elle, l'API refuserait de
+          # démarrer avec `scaleway`.
+          if ! jq -e 'any(.secret_environment_variables[]?; .key == "POPOTE_SCALEWAY_TEM_SECRET_KEY")' <<< "$actuel" > /dev/null; then
+            echo "::error::le secret POPOTE_SCALEWAY_TEM_SECRET_KEY manque au conteneur : on ne déploie pas"
+            exit 1
+          fi
+          # Le projet de l'envoi est celui du conteneur : conteneur, espace de noms, projet. Aucun identifiant n'est
+          # écrit dans le dépôt ni dans une variable de GitHub.
+          espace=$(jq -r '.namespace_id // empty' <<< "$actuel")
+          projet=$(scw "$SCW_API/containers/v1beta1/regions/$SCW_REGION/namespaces/$espace" | jq -r '.project_id // empty')
+          if ! printf '%s' "$projet" | grep -Eq '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'; then
+            echo "::error::projet du conteneur illisible"
+            exit 1
+          fi
+          echo "::add-mask::$projet"
+          nouvelles=$(jq -c --arg projet "$projet" \
+            '. + {POPOTE_MAIL_PROVIDER: "scaleway", POPOTE_SCALEWAY_TEM_PROJECT_ID: $projet, POPOTE_PUBLIC_BASE_URL: "https://essai.notre-popote.fr"}' \
+            <<< "$anciennes")
+          # Avant d'envoyer : aucune variable existante n'est perdue ni changée par la complétion.
+          if ! jq -e --argjson anciennes "$anciennes" --argjson nouvelles "$nouvelles" \
+            '$anciennes | to_entries | all(.key as $k | .value == $nouvelles[$k])' <<< "null" > /dev/null; then
+            echo "::error::la carte complétée perd ou change une variable existante"
+            exit 1
+          fi
+          if deployer "$REFERENCE" "$nouvelles" && verifier_variables "$nouvelles" && attendre_version; then
             echo "déploiement vérifié"
             exit 0
           fi
-          echo "::error::la nouvelle image ne tient pas : on repose l'image précédente"
-          if deployer "$precedente"; then
+          echo "::error::la nouvelle image ne tient pas : on repose l'image et les variables précédentes"
+          if deployer "$precedente" "$anciennes"; then
             echo "image précédente reposée"
           else
             echo "::error::l'image précédente n'a pas pu être reposée : l'essai est à rétablir à la main"
