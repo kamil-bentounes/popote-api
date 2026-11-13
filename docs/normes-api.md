@@ -264,6 +264,10 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `popote-api`. L'intégration continue compare chaque branche à `main` (`oasdiff`) et refuse une rupture non
   annoncée. `popote-web` fixe une version du contrat et régénère son client ; un écart fait échouer son
   intégration continue.
+- Avant la bascule (la nouvelle appli n'est pas en ligne), une demande de fusion peut annoncer une rupture : elle
+  ajoute un fichier `docs/ruptures-admises/<AAAAMMJJ>-<sujet>.txt` produit par `scripts/ruptures_admises.py genere`,
+  et son titre porte `!`. Le fichier ne vaut que dans cette demande ; la variable de dépôt
+  `CONTRAT_RUPTURES_ADMISES` à `non` ferme cette porte le jour J (`docs/ruptures-admises/LISEZMOI.md`).
 - Régénérer le contrat : `uv run python scripts/exporte_contrat.py` (application construite en `local`, sans base ;
   clés triées, fin de ligne finale). `openapi.json` est marqué `linguist-generated` : il ne s'écrit jamais à la
   main, et en cas de conflit on le régénère. Chaque route porte un `operation_id` stable et un `summary`.

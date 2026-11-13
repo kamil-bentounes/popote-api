@@ -27,7 +27,8 @@ jobs:
       - run: uv run ruff format --check
       - run: uv run ruff check
       - run: uv run mypy
-      - run: uv run pytest -m "not integration" -q
+      # Les tests `oasdiff` tournent dans le job `contrat`, qui installe le binaire figé.
+      - run: uv run pytest -m "not integration and not oasdiff" -q
       # On audite le verrou (`uv.lock`), pas l'environnement : le projet lui-même, installé en
       # mode éditable, n'existe pas sur PyPI et ferait échouer `--strict`.
       - name: Auditer les dépendances
@@ -73,7 +74,12 @@ jobs:
             "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/$archive"
           echo "$OASDIFF_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" oasdiff
-      - name: Refuser une rupture du contrat par rapport à main
+      - name: Tester le contrôle de rupture (avec oasdiff)
+        run: OASDIFF="$RUNNER_TEMP/oasdiff" uv run pytest -m oasdiff -q tests/unit/test_ruptures_admises.py
+      - name: Refuser une rupture du contrat par rapport à main, sauf celles que cette demande annonce
+        env:
+          # Passée par l'environnement, jamais interpolée dans le script.
+          RUPTURES_ADMISES_AUTORISEES: ${{ vars.CONTRAT_RUPTURES_ADMISES }}
         run: |
           set -euo pipefail
           git rev-parse --verify --quiet origin/main > /dev/null || { echo "::error::origin/main est absent du dépôt"; exit 1; }
@@ -83,8 +89,11 @@ jobs:
             exit 0
           fi
           git show origin/main:openapi.json > "$RUNNER_TEMP/openapi-main.json"
-          "$RUNNER_TEMP/oasdiff" breaking "$RUNNER_TEMP/openapi-main.json" openapi.json \
-            --fail-on ERR --deprecation-days-stable 30 --format githubactions
+          # `oasdiff breaking --fail-on ERR` reste la garde ; seuls les fichiers de docs/ruptures-admises AJOUTÉS
+          # par cette demande y font exception (docs/ruptures-admises/LISEZMOI.md).
+          uv run python scripts/ruptures_admises.py controle --oasdiff "$RUNNER_TEMP/oasdiff" \
+            --base "$RUNNER_TEMP/openapi-main.json" --revision openapi.json \
+            --autorisees "$RUPTURES_ADMISES_AUTORISEES"
   base:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
