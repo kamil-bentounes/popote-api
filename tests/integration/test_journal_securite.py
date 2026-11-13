@@ -74,7 +74,7 @@ def a_purger(admin: psycopg.Connection[Ligne]) -> int:
     """Combien de lignes la purge devrait emporter, toutes marques confondues (base partagée)."""
     ligne = admin.execute(
         "select count(*) from public.security_event where occurred_at < %s - case"
-        " when kind in ('connexion_ratee', 'connexion_bloquee') then interval '90 days'"
+        " when kind in ('connexion_ratee', 'connexion_bloquee', 'code_demande') then interval '90 days'"
         " else interval '365 days' end",
         (MAINTENANT,),
     ).fetchone()
@@ -313,7 +313,13 @@ def test_les_fonctions_security_definer_ont_un_search_path_vide(
 
 @pytest.mark.parametrize(
     ("kind", "jours"),
-    [("connexion_reussie", 365), ("session_fermee", 365), ("connexion_ratee", 90), ("connexion_bloquee", 90)],
+    [
+        ("connexion_reussie", 365),
+        ("session_fermee", 365),
+        ("connexion_ratee", 90),
+        ("connexion_bloquee", 90),
+        ("code_demande", 90),
+    ],
 )
 def test_purge_garde_une_seconde_avant_l_echeance_et_efface_une_seconde_apres(
     kind: str, jours: int, admin: psycopg.Connection[Ligne], marque: str
@@ -329,7 +335,13 @@ def test_purge_garde_une_seconde_avant_l_echeance_et_efface_une_seconde_apres(
 
 @pytest.mark.parametrize(
     ("kind", "jours"),
-    [("connexion_reussie", 365), ("connexion_ratee", 90), ("connexion_bloquee", 90), ("deconnexion", 365)],
+    [
+        ("connexion_reussie", 365),
+        ("connexion_ratee", 90),
+        ("connexion_bloquee", 90),
+        ("code_demande", 90),
+        ("deconnexion", 365),
+    ],
 )
 def test_purge_garde_un_evenement_pile_a_l_echeance(
     kind: str, jours: int, admin: psycopg.Connection[Ligne], marque: str
