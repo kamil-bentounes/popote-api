@@ -124,19 +124,21 @@ def test_l_attente_double_a_chaque_blocage_et_plafonne_a_soixante_minutes(
         ip = neuve(cles)
 
 
-def test_les_blocages_retombent_apres_vingt_quatre_heures(
-    admin: psycopg.Connection[Ligne], cles: list[bytes]
+@pytest.mark.parametrize(
+    ("apres_la_fin", "attendu", "crans"),
+    [(timedelta(hours=24) - timedelta(seconds=1), 3600, 3), (timedelta(hours=24), 900, 1)],
+    ids=["une_seconde_avant", "pile"],
+)
+def test_les_blocages_retombent_vingt_quatre_heures_apres_leur_fin(
+    apres_la_fin: timedelta, attendu: int, crans: int, admin: psycopg.Connection[Ligne], cles: list[bytes]
 ) -> None:
     compte, ip = neuve(cles), neuve(cles)
     assert bloque(admin, compte, ip, T0) == 900
     assert bloque(admin, compte, neuve(cles), T0 + 15 * MIN) == 1800
-    deuxieme_fin = T0 + 15 * MIN + 30 * MIN
+    deuxieme_fin = T0 + 15 * MIN + 30 * MIN  # 0149 : la retombée se mesure depuis la FIN du blocage
     assert ligne_de(admin, "account", compte)["strikes"] == 2
-    # 24 h après le dernier blocage : le cran retombe, le prochain est de 15 min.
-    plus_tard = T0 + 15 * MIN + timedelta(hours=24)
-    assert deuxieme_fin < plus_tard
-    assert bloque(admin, compte, neuve(cles), plus_tard) == 900
-    assert ligne_de(admin, "account", compte)["strikes"] == 1
+    assert bloque(admin, compte, neuve(cles), deuxieme_fin + apres_la_fin) == attendu
+    assert ligne_de(admin, "account", compte)["strikes"] == crans
 
 
 def test_un_succes_remet_le_compte_a_zero_mais_pas_l_ip(

@@ -442,6 +442,40 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   de fermeture, 100 requêtes à activité périmée contre reconnexions et fermetures, connexions croisées de deux personnes) ne donnent aucun `40P01`. Un `40P01` reste traduit en
   `503` + `Retry-After: 1` (`erreurs_base.py`) comme filet.
 
+### 4.15 Code par mail : la vérification et la session, côté base (0.4bis S7a, migration 0149)
+
+- **Un seul appel.** `public.ouvre_une_session_par_code` (`popote_api` seul) lit la ligne du code sans verrou pour connaître sa personne,
+  prend `verrouille_la_personne` (et celle de la session présentée), **relit la preuve `for update` sous le verrou**, puis, bon code :
+  `used_at`, `ouvre_la_session` (`opened_with = 'code'`, révoque la session présentée), événement `connexion_par_code`. Une fermeture de toutes
+  les sessions validée avant révoque les codes de la personne (0148) : le code est alors refusé, aucune session ne naît après elle.
+- **Un refus est un résultat** (`ouverte = faux`, la transaction se valide, l'essai reste) ; une **erreur** annule tout (code encore
+  valable, `attempts` inchangé : testé avec un déclencheur qui lève sur `login_session`). Refus : demande inconnue ou d'une autre adresse,
+  révoquée, utilisée, échue, cinq essais faits, faux code, personne qui ne peut pas entrer. Le faux code compte un essai, le cinquième tue
+  la ligne ; le bon code au cinquième essai passe. Plafond d'essais : 6 codes par heure et par adresse (0147) fois 5 essais, aucune limite de plus.
+- **Ligne factice** (personne nulle) : mêmes écritures qu'une vraie ligne (l'essai monte) ; un test borne l'écart de durée médiane d'un faux
+  code à 3 ms (mesuré : environ 25 µs ; garde contre un écart grossier, pas preuve d'égalité) ; jamais de session, jamais de journal. **« Peut entrer »** s'écrit une fois, dans `private.personne_peut_entrer` (profil, ni bannie
+  ni supprimée) ; la demande et la vérification l'appellent, aucune n'écrit `exists (… user_profile …)` (un test lit leurs sources). La
+  personne bannie, supprimée ou sans profil est refusée **avant** de consommer, essai compté, jamais par une exception (`cree_session` et
+  `ouvre_la_session` lèvent encore : garde de dernier recours).
+- **Hors de portée de ce test.** La comparaison des empreintes n'est pas à temps constant : c'est un HMAC à poivre, l'appelant n'en
+  maîtrise pas le début. `ferme_les_autres_*` ne revérifient pas la session gardée (hérité de 0140 et 0141) : rien ici ne s'y appuie.
+- **Ordre des verrous avec Auth.** Pour une vraie ligne : verrou de personne, puis la ligne d'`auth.users` (`for key share`, comme
+  `demande_un_code`), puis la ligne du code : la suppression d'un compte par Auth tient le compte puis supprime le code en cascade ; prendre le
+  code d'abord ouvrirait un cycle (`40P01`). Testé : B attend le compte sans tenir de ligne.
+- **Risques acceptés (dits, pas résolus ici).** (1) `efface_mes_donnees` (0145) ne prend pas le verrou de personne avant S14 (0156) : une
+  vérification qui a lu « peut entrer » avant l'effacement peut insérer sa session après lui (la clé étrangère vise `auth.users`, pas le
+  profil), avec un événement `connexion_par_code` portant la clé de compte ; elle meurt à la suppression d'Auth. Même défaut que
+  `cree_session` aujourd'hui ; **S14 le ferme et reçoit le test de course** (S7b ne doit pas précéder S14 en production sans le savoir).
+  (2) Un faux code présenté avec la session d'une autre personne attend le verrou de celle-ci pour une vraie ligne et pas pour une ligne
+  factice : il faut déjà détenir un cookie valide de cette personne. (3) `demande_un_code` rend le même `code_request_id` pendant 60 s :
+  qui connaît l'adresse peut brûler les 5 essais du code en cours ; la victime redemande après 60 s (même nature que le blocage du compte).
+  (4) `personne_peut_entrer` compare le bannissement à `now()` : la variante à horloge n'y est pas fidèle (sans effet en production).
+  Une erreur de la base (CHECK) recopie la ligne dans son `DETAIL` : `erreurs_base.py` ne l'écrit jamais.
+- **Expand seulement.** `cree_session` garde sa signature et son corps (le code déjà déployé l'appelle) ; `ouvre_la_session` a un nom neuf
+  et en répète le corps jusqu'à S15, qui retire `cree_session`.
+- **Les crans retombent 24 h après la FIN du blocage** (`prend_un_creneau`, relevé en revue de S7) : 0138 les remettait à zéro 24 h après
+  son début ; après un blocage de 24 h l'escalade repartait de 15 minutes (environ 17 essais par jour au lieu de 5).
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |

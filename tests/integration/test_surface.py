@@ -97,6 +97,13 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.lit_la_session(bytea, timestamptz)": set(),
     "public.note_l_activite_de_la_session(bytea)": {"popote_api"},
     "private.note_l_activite_de_la_session(bytea, timestamptz)": set(),
+    "public.ouvre_la_session(uuid, bytea, text, text, bytea, text)": {"popote_api"},
+    "public.ouvre_une_session_par_code(uuid, bytea, bytea, bytea, text, text, bytea, text)": {"popote_api"},
+    "private.ouvre_la_session(uuid, bytea, text, text, bytea, text, timestamptz)": set(),
+    (
+        "private.ouvre_une_session_par_code(uuid, bytea, bytea, bytea, text, text, bytea, timestamptz, text)"
+    ): set(),
+    "private.personne_peut_entrer(uuid)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

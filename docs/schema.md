@@ -388,7 +388,7 @@ adresse connue et inconnue ; un code de moins de 60 s n'est pas remplacé), `pre
 (adresse, IP), puis adresse ; un refus n'use pas les suivants), `prend_un_envoi` (coupe-circuit global de 60 mails par
 heure). `private.purge_login_code` : échéance + 1 jour (`pg_cron` `login-code-purge`, 03 h 43 UTC). `login_throttle.scope`
 gagne `code_ip`, `code_paire`, `code_compte`, `mail_global` ; `security_event.kind` gagne `code_demande` (90 jours). La
-vérification et la session sont S7. Objets neufs, deux `CHECK` élargis : compatible avec l'appli en ligne. Retour arrière :
+vérification et la session sont S7a (0149, `docs/securite.md` § 4.15 : `login_session.opened_with`, `ouvre_la_session`, `ouvre_une_session_par_code`, `private.personne_peut_entrer`). Objets neufs, deux `CHECK` élargis : compatible avec l'appli en ligne. Retour arrière :
 en tête de la migration. Voir `docs/securite.md` § 4.13.
 
 ### `invite_link` : les invitations par lien (0142 et 0143, étape 0.4 T12)
