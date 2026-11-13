@@ -66,7 +66,7 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
         if settings.mail_provider is MailProvider.aucun and settings.relais_exige:
             avertissements.warning(
                 "POPOTE_MAIL_PROVIDER=aucun : aucun mail ne part, le code de connexion et les invitations "
-                "sont inopérants."
+                "sont inopérants (poser POPOTE_MAIL_PROVIDER=scaleway et la clé d'envoi)."
             )
         if settings.public_base_url is None and settings.relais_exige:
             avertissements.warning(

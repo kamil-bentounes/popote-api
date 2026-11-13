@@ -647,6 +647,11 @@ configuration, journalisation, protection des données.
 
 - Données et traitements en Europe ; liste des sous-traitants tenue (Supabase, hébergeurs, fournisseurs de
   modèles, envoi de mails, Pwned Passwords) avec leurs conditions de conservation vérifiées.
+- **Scaleway Transactional Email** (sous-traitant, Paris, S4) : reçoit l'adresse du destinataire, l'objet, le texte (code ou lien
+  d'invitation) et l'adresse IP émettrice. Selon la documentation de Scaleway (relue le 13/11/2026) : le contenu est effacé à
+  l'acceptation par le serveur du destinataire, au premier rebond dur ou après 36 heures d'échecs, avec des sauvegardes chiffrées de
+  7 jours ; les métadonnées (dont l'adresse IP émettrice) sont gardées tant que le domaine d'envoi est actif. Le code n'est jamais dans
+  l'objet. Sources : `docs/exploitation.md`, « L'envoi réel ».
 - **Pwned Passwords** (`api.pwnedpasswords.com`, service de Have I Been Pwned) : reçoit les 5 premiers
   caractères hexadécimaux du SHA-1 d'un nouveau mot de passe, l'adresse IP du serveur de l'API et l'agent
   `popote`. Il ne reçoit ni e-mail, ni identifiant, ni compte, ni le mot de passe, ni le reste de l'empreinte :
@@ -816,10 +821,50 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   dites** : les homoglyphes d'une seule écriture passent (un prénom entièrement cyrillique qui ressemble à un prénom latin) ; un prénom
   qui mêle deux écritures légitimement (hiragana et kanji) reçoit le repli ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
   30 lettres (« Support Popote » passe) : le filtre réduit l'hameçonnage par prénom sans le supprimer (menace F6). Un prénom ne se garde jamais sans ce filtre : S12 l'applique aussi à la saisie.
-- **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`) ou `local`
-  (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs). L'envoi réel par Scaleway TEM vient
-  avec S4 ; hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage.
-- Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
+- **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`), `local`
+  (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs) ou `scaleway` (S4, ci-dessous).
+  Hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage ; le refus de démarrer sans fournisseur
+  `scaleway` complet est armé en S7. Avec `scaleway`, la clé ou le projet manquant empêche de démarrer.
+- **L'envoi réel, `infra/mail_scaleway.py` (S4)** : Scaleway Transactional Email, `POST` vers une adresse **écrite en dur** (région
+  `fr-par`), clé dans `X-Auth-Token`. `EnvoiScaleway` hérite d'`EnvoiParEnveloppe` : il n'écrit que `_transmet(enveloppe)` et ne voit ni le
+  code, ni le lien, ni un prénom (un test d'architecture le garde pour tout `infra/mail_*.py`) ; le sujet et le texte envoyés sont ceux de
+  l'enveloppe. (1) **La clé n'est lue que par ce module** : test d'architecture (aucun autre fichier de `src/` ne nomme
+  `scaleway_tem_secret_key`, hors réglages et fabrique, ni n'en appelle `get_secret_value` ; deux lectures dans le module, jamais passées à
+  un autre code) ; `SecretStr`, `repr` des réglages et de l'envoi masqués, clé refusée à la construction si ce n'est pas un UUID (forme des
+  clés Scaleway ; un blanc ou un caractère hors ASCII ferait recopier la clé par h11 dans son message) ; expéditeur (adresse et nom) limité au
+  domaine vérifié `notre-popote.fr` et sans caractère d'en-tête ni mot encodé `=?`, projet de type `UUID` : tout est revalidé dans la fabrique,
+  même si les réglages sont contournés (`model_construct`, `model_copy`). La clé n'est gardée que sous le nom `_cle_tem`, que le test d'architecture traite comme la clé. (2) **Aucune donnée dans les journaux ni les exceptions** : ni clé, ni
+  adresse, ni objet, ni texte, ni corps de réponse ; seuls le type de l'erreur et la classe du statut (`4xx`, `5xx`). (3) Délais finis
+  (3 s, 5 s, 15 s au total), aucune exception d'httpx chaînée (elle porte la requête entière : clé, adresse, texte ; on n'en garde que le
+  type, dans une cause neuve sans pile) ; l'issue d'une tentative est un résultat (`_Issue`), pas une exception, et l'erreur finale est levée hors de tout
+  `except`, donc sans contexte ; le `repr` d'une réponse masque son corps, redirections refusées, `trust_env=False`, réponse lue sur 64 Kio au plus, tout `Content-Encoding` refusé (`Accept-Encoding:
+  identity` : sans décompression, la borne porte sur les octets reçus). (4) **Une** reprise sur coupure, délai ou `5xx` (pause de 0,5 s,
+  `Retry-After` entier respecté jusqu'à 3 s) ; **aucune** sur `4xx`, ni sous un `2xx` même illisible ou dont le corps se coupe : un mail
+  déjà accepté n'est jamais renvoyé par l'API ; au pire deux mails identiques (coupure après acceptation), jamais deux codes différents.
+  (5) Succès = premier mail `new`, `sending` ou `sent` : **accepté, pas remis** ; l'identifiant du mail n'est pas gardé (un rebond dur ne
+  se voit que dans la console TEM). (6) **Un code expiré n'est jamais livré** : `send_before` est `enveloppe.expire_le`, l'échéance
+  ABSOLUE fixée une fois à la demande du code (`MessageCode.expire_le`), tronquée à la seconde, identique à la reprise et **jamais
+  recalculée à l'envoi** ; un code déjà expiré n'est pas envoyé (les deux heures se comparent tronquées, comme TEM les verra). (7) L'annulation de la tâche n'est ni avalée ni reprise. (8) **Issue
+  inconnue** : `MailIndisponible(issue_inconnue=True)` quand le mail a pu partir : coupure après l'envoi de la requête, délai (de requête ou
+  total tombé pendant une requête en vol), tout `5xx` (TEM a pu enregistrer le mail avant d'échouer à répondre), `2xx` illisible ou à l'état
+  `unknown`, exception étrangère du transport. Elle **cumule** les tentatives : une première tentative incertaine laisse l'issue
+  inconnue quoi que dise la seconde. Elle est fausse pour un `4xx`, un état `failed` ou `canceled`, une **connexion impossible** (la requête
+  n'est jamais partie : `ConnectError`, `ConnectTimeout`, `PoolTimeout`, reprise sans risque) et pour un délai total tombé pendant la pause
+  après une telle tentative. Un statut reçu décide, même si le corps ou la fermeture casse ensuite. **La reprise recontrôle l'échéance du
+  code** (sans toucher à `send_before`) : un code expiré pendant la pause n'est pas reposté. (9) **Règle globale : aucun outil ne capture les variables locales des cadres d'une pile.** La clé et l'adresse
+  du destinataire sont des variables locales de `mail_scaleway.py` (`_transmet`, `_poste`) et des appelants (le message) pendant l'envoi,
+  donc dans les cadres de toute pile qui traverse ces fonctions : aucun code ne peut les en retirer, on garantit donc qu'aucun outil ne les
+  lit. Sentry (décidé le 13/11) arrivera avec `include_local_variables=False`, `send_default_pii=False` et `max_request_body_size="never"` ;
+  un test d'architecture échoue si `sentry_sdk.init` apparaît sans ces trois réglages, ou si `show_locals`, `rich.traceback` ou
+  `TracebackException(capture_locals=True)` apparaît dans `src/`. La clé reste un `SecretStr` jusqu'au dernier moment : la valeur brute
+  n'existe que dans `_en_tetes_ou_rien` (nettoyage et contrôle de forme compris), le temps de construire les en-têtes ; la construction de l'envoi
+  l'essaie une fois pour refuser une clé mal formée au démarrage, et l'erreur est levée hors de cette fonction. Le test d'architecture exige une seule
+  lecture dans le module ; il refuse aussi `sentry_sdk.init` importé sous un alias, tout `capture_locals` autre que `False`, toute forme d'import
+  de `rich.traceback`, et la constante `"_cle_tem"` hors du module. **Limite dite** : ces gardes lisent l'arbre du code, elles ne suivent pas un alias posé par affectation, un `**{"capture_locals": True}` ni un nom de module ou d'attribut assemblé à l'exécution (revue de code). `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
+  ne jamais les appeler sur les réglages sans `include_input=False`. Sources, gestes de la
+  clé, rotation et quota : `docs/exploitation.md`, « L'envoi réel ».
+- Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`, `tests/unit/test_mail_scaleway.py` (faux transport
+  `httpx.MockTransport` : aucun appel réel). `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
   pas filtrer le prénom (hôte et invité), ne pas normaliser en NFC, marques et remplissages invisibles, avaler l'annulation,
   journaliser le message de l'erreur, `quoi` libre, objet non contrôlé ou portant le code, destinataire en `\S+`, origine du lien non vérifiée,
   invisible au milieu d'un prénom, écritures mêlées, NFKC, annulation dite « non envoyé » ou traduite en erreur, envoi sans délai propre.

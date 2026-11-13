@@ -33,6 +33,10 @@ required-version = "==0.10.7"
 # Faux positif : la règle ne connaît que la forme relative ("7 days"), et notre date fixe donne un délai
 # de deux semaines au moment de la résolution, avec un verrou qui se rejoue à l'identique.
 exclude-newer = "2026-10-29T00:00:00Z"  # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+# Exception d'UN paquet, pour un correctif de sécurité publié après la date ci-dessus : `opentelemetry-api` 1.45.2
+# (29/10/2026, 17 h 29 UTC) corrige CVE-2026-126360 / GHSA-mf5v-w3w3-f6cg. Elle date de plus de deux semaines :
+# la règle d'hygiène tient. Voir https://docs.astral.sh/uv/concepts/resolution/#reproducible-resolutions
+exclude-newer-package = { opentelemetry-api = "2026-10-30T00:00:00Z" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration", "tests/authz", "tests/contract"]

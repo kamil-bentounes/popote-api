@@ -4,6 +4,7 @@ from functools import lru_cache
 from ipaddress import ip_address
 from typing import Self
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,7 +12,47 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 LONGUEUR_MINIMALE_DU_SECRET = 32
 LONGUEUR_MINIMALE_DU_POIVRE = 32
 HOTES_LOCAUX = frozenset({"127.0.0.1", "localhost", "::1"})
+# L'adresse d'expédition : ASCII, une seule arobase, un domaine à points ; aucun blanc ni saut de ligne
+# (elle s'écrit dans le champ `from` de l'envoi).
+FORME_D_UNE_ADRESSE_D_EXPEDITION = re.compile(
+    r"[A-Za-z0-9_%+-]+(\.[A-Za-z0-9_%+-]+)*@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+"
+)
+# Le seul domaine vérifié chez TEM : un expéditeur d'un autre domaine est refusé à chaque envoi.
+DOMAINE_D_ENVOI_VERIFIE = "notre-popote.fr"
+LONGUEUR_MAX_DU_NOM_D_EXPEDITEUR = 60
+# Lettres sans glyphe (hangul, braille vide) : un nom qui en porte s'afficherait avec un blanc.
+REMPLISSAGES_INVISIBLES = frozenset("\u115f\u1160\u3164\uffa0\u2800")
 FORME_D_UN_NOM_D_HOTE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
+
+
+def adresse_d_expedition_valide(adresse: object) -> bool:
+    """Une adresse simple du domaine vérifié chez TEM : ASCII, sans blanc ni saut de ligne, 254 au plus.
+
+    Elle sert aux réglages ET à l'objet `Expediteur` : un réglage contourné (`model_construct`) est refusé.
+    """
+    if not isinstance(adresse, str) or FORME_D_UNE_ADRESSE_D_EXPEDITION.fullmatch(adresse) is None:
+        return False
+    local, _, domaine = adresse.rpartition("@")
+    return (
+        len(local) <= 64
+        and len(adresse) <= 254
+        and len(adresse.rpartition(".")[2]) >= 2  # un domaine de tête d'une lettre n'existe pas
+        and domaine == DOMAINE_D_ENVOI_VERIFIE
+    )
+
+
+def nom_d_expediteur_valide(nom: object) -> bool:
+    """Un nom affichable, qui ne ferme pas ni ne prolonge une adresse dans l'en-tête `From`."""
+    return (
+        isinstance(nom, str)
+        and bool(nom.strip())
+        and nom == nom.strip()
+        and len(nom) <= LONGUEUR_MAX_DU_NOM_D_EXPEDITEUR
+        and nom.isprintable()  # refuse retours à la ligne et caractères de contrôle
+        and not any(c in '"<>,;:@\\' for c in nom)
+        and "=?" not in nom  # un mot encodé (RFC 2047) serait décodé dans l'en-tête
+        and not any(c in REMPLISSAGES_INVISIBLES for c in nom)
+    )
 
 
 def est_valeur_d_en_tete(valeur: str) -> bool:
@@ -75,8 +116,9 @@ class Env(StrEnum):
 
 
 class MailProvider(StrEnum):
-    aucun = "aucun"  # aucun envoi : la réinitialisation est inopérante (le défaut)
+    aucun = "aucun"  # aucun envoi : le code de connexion et les invitations sont inopérants (le défaut)
     local = "local"  # une boîte en mémoire (`BoiteDeTest`) : local seulement
+    scaleway = "scaleway"  # l'envoi réel par Scaleway Transactional Email (`infra/mail_scaleway.py`)
 
 
 class BreachCheck(StrEnum):
@@ -189,8 +231,16 @@ class Settings(BaseSettings):
     # La liste de fuites ne se remplace qu'en local : ailleurs, désactiver la vérification est refusé.
     breach_check: BreachCheck = BreachCheck.hibp
 
-    # L'envoi des mails (`infra/mails.py`). `local` ne se pose qu'en local ; l'envoi réel vient avec S4.
+    # L'envoi des mails (`infra/mails.py`). `local` ne se pose qu'en local. `scaleway` exige la clé d'envoi
+    # et le projet ; sa clé n'est lue que par `infra/mail_scaleway.py` (test d'architecture). Sans fournisseur
+    # (`aucun`), hors local, l'application démarre avec un avertissement : le refus n'est armé qu'en S7.
     mail_provider: MailProvider = MailProvider.aucun
+    # La clé d'API dédiée à l'envoi (application IAM qui n'a que `TransactionalEmailEmailApiCreate`).
+    scaleway_tem_secret_key: SecretStr | None = None
+    scaleway_tem_project_id: UUID | None = None
+    # L'expéditeur, sur le domaine vérifié chez TEM (`notre-popote.fr`). Sûrs dans tout environnement.
+    mail_from_address: str = "bonjour@notre-popote.fr"
+    mail_from_name: str = "Popote"
     # L'origine publique du front, où pointent les liens : `<public_base_url>/invitation#<jeton>`.
     public_base_url: AnyHttpUrl | None = None
 
@@ -250,6 +300,38 @@ class Settings(BaseSettings):
         if adresse.scheme == "http" and not (info.data.get("env") is Env.local and hote in HOTES_LOCAUX):
             raise ValueError("supabase_url : https obligatoire (http seulement vers l'hôte local, en local).")
         return adresse
+
+    @field_validator("scaleway_tem_secret_key", "scaleway_tem_project_id", mode="before")
+    @classmethod
+    def _reglage_d_envoi_vide_vaut_absent(cls, valeur: object) -> object:
+        return None if valeur == "" else valeur
+
+    @field_validator("mail_from_address")
+    @classmethod
+    def _adresse_d_expedition_bien_formee(cls, adresse: str) -> str:
+        if not adresse_d_expedition_valide(adresse):
+            raise ValueError(
+                f"mail_from_address : une adresse simple de {DOMAINE_D_ENVOI_VERIFIE} (ASCII, sans blanc)."
+            )
+        return adresse
+
+    @field_validator("mail_from_name")
+    @classmethod
+    def _nom_d_expediteur_bien_forme(cls, nom: str) -> str:
+        if not nom_d_expediteur_valide(nom):
+            raise ValueError(
+                f"mail_from_name : un nom affichable, {LONGUEUR_MAX_DU_NOM_D_EXPEDITEUR} caractères au plus."
+            )
+        return nom
+
+    @model_validator(mode="after")
+    def _scaleway_exige_la_cle_et_le_projet(self) -> Self:
+        if self.mail_provider is not MailProvider.scaleway:
+            return self
+        for nom in ("scaleway_tem_secret_key", "scaleway_tem_project_id"):
+            if getattr(self, nom) is None:
+                raise ValueError(f"{nom} est obligatoire avec mail_provider=scaleway.")
+        return self
 
     @field_validator("webauthn_rp_id", "webauthn_origins", mode="before")
     @classmethod
