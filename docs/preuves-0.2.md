@@ -8,7 +8,7 @@ Définies au § 10 de la [spec du socle](https://github.com/kamil-bentounes/popo
 
 | # | Preuve | État | Où |
 |---|---|---|---|
-| 1 | Clés historiques : travailler avec la seule clé secrète, réactiver ; suppression de la clé publiable par défaut ; coupure de la connexion par mot de passe de GoTrue sans perdre son administration | en partie le 12/11/2026 : la clé secrète seule suffit (clés historiques encore actives) ; le reste attend un jeton de gestion avec « API Keys » et « Auth » en écriture | [Preuve 1](#preuve-1--la-clé-secrète-seule-en-partie) |
+| 1 | Clés historiques : travailler avec la seule clé secrète, réactiver ; suppression de la clé publiable par défaut ; coupure de la connexion par mot de passe de GoTrue sans perdre son administration | en partie le 12/11/2026 : la clé secrète seule suffit (clés historiques encore actives) ; le reste attend un jeton de gestion avec « API Keys » et « Auth » en écriture ; Auth sans mot de passe prouvé le 13/11/2026 | [Preuve 1](#preuve-1--la-clé-secrète-seule-en-partie) |
 | 2 | Réveil : une requête de l'API sur `/api/readyz` garde-t-elle le projet éveillé (demande plus de 7 jours d'inactivité mesurée) | en cours depuis le 12/11/2026 (`reveil-essai.yml`, 06:47 UTC) ; verdict le 20/11 au plus tôt | — |
 | 3 | Rôles `popote_api` et `popote_internal` par Supavisor, avec `set local role` | faite le 12/11/2026 | [Preuve 3 : Supavisor](#preuve-3--supavisor) |
 | 4 | Relais Cloudflare : cookie `__Host-`, `no-store`, en-tête secret, adresse IP lue | faite le 12/11/2026 | [Preuve 4](#preuve-4--le-relais) |
@@ -29,6 +29,31 @@ Avec la seule clé secrète (`sb_secret_…`), passée dans l'en-tête `apikey`,
 Reste à prouver, avec un jeton de gestion qui écrit les clés et les réglages d'Auth : la même chose **clés
 historiques désactivées**, puis leur réactivation ; la suppression possible ou non de la clé publiable par
 défaut ; la coupure de `/auth/v1/token?grant_type=password` sans perdre `createUser` et `updateUserById`.
+
+### Suite : Auth hébergé sans mot de passe (0.4bis S1)
+
+Date : 13/11/2026, sur l'essai (`popote-essai`), par `ops/preuve_auth_sans_mot_de_passe.py` (mode d'emploi dans
+[`exploitation.md`](exploitation.md)). Deux exécutions de suite, mêmes résultats, sortie 0, aucun compte de test
+restant. Le plan n'écrit donc pas S13 sur une hypothèse.
+
+- `createUser` avec `email_confirm` et `app_metadata.cree_par`, **sans** `password` : réussi. Un hachage est écrit
+  (bcrypt `2a`, coût 10, lu dans `auth.users` par la base de l'essai), l'e-mail est confirmé, aucun mail n'est parti
+  (`confirmation_sent_at` vide).
+- Connexion publique (`/auth/v1/token?grant_type=password`) avec un mot de passe vide, puis deviné : `400
+  invalid_credentials` (le script exige ce code : un `401` ou un `429` n'est pas un refus du compte).
+- `updateUserById` avec un mot de passe aléatoire de 64 caractères (minuscules, majuscules, chiffres, symboles) :
+  accepté, le hachage change (la **reprise** de S13 fonctionne). Contrôle positif (vérifié par le script) : avec ce mot
+  de passe, la connexion publique répond `200` avec une session, donc le refus précédent tenait bien au mot de passe
+  (la connexion par mot de passe est encore ouverte sur l'essai : sa coupure est 0.7).
+- Une deuxième création de la même adresse, puis de sa variante en majuscules : `422 email_exists` les deux fois (le script n'accepte pas d'autre code) ; un seul
+  compte porte l'adresse.
+- Le script supprime son compte dans un `finally` et balaie d'abord ceux d'une exécution interrompue ; il s'arrête au
+  premier écart (sortie 1) et n'agit que sur les comptes qui portent à la fois l'adresse `preuve-auth-<hex>@example.com`
+  et la marque `cree_par = preuve-auth-s1`.
+
+Reste : la politique de mot de passe de l'essai peut différer de celle de la prod (un seul mot de passe de 64
+caractères à quatre classes a été essayé) : la **répétition de la bascule** rejoue la même preuve sur la prod, par une
+variante relue du script, et écrit ici ce qu'elle relève. Le script actuel refuse tout autre projet que l'essai.
 
 ## Preuve 3 : Supavisor
 
