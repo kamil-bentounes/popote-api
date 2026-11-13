@@ -37,6 +37,10 @@ ETAT_SESSION_VALIDEE: Final = "session_validee"
 DEFI_D_AUTHENTIFICATION: Final = 'Cookie realm="popote"'
 # Le même texte pour tous les refus : la réponse n'apprend rien sur les jetons.
 PAS_DE_SESSION: Final = "Connecte-toi pour continuer."
+# `403`, jamais `401` : la session est valide, c'est le geste qui exige le mot de passe (le front ne se
+# déconnecte que sur `401`). Codes stables : `mot_de_passe_incorrect` et `reauthentification_requise`.
+MOT_DE_PASSE_INCORRECT: Final = "Mot de passe incorrect."
+REAUTHENTIFICATION_REQUISE: Final = "Saisis ton mot de passe pour continuer."
 CODE_AUTH_INDISPONIBLE = "auth_indisponible"
 CODE_COMPTE_EXISTANT = "compte_existant"
 TITRE_PAR_DEFAUT = "Erreur"

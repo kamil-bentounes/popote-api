@@ -302,6 +302,13 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `401` si `current` est déjà fermée ; `DELETE /me/sessions?scope=others` : `scope` obligatoire (`others`), sinon
   `422`. Les `DELETE` n'ont pas d'`Idempotency-Key` (exemption écrite : effet idempotent par nature, `Idempotency-Key`
   ne vaut que pour les `POST`). Détail : `docs/securite.md` § 4.6.
+- **`POST /api/v1/me/reauthentication`** (0.4 T10) : corps `{password}` (`extra="forbid"`, 256 caractères au plus) ;
+  `204` ; `403 mot_de_passe_incorrect` ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
+  (exemption écrite dans `tests/unit/test_posts_idempotents.py` : poser de nouveau l'instant est idempotent).
+  **`403 reauthentification_requise`** : rendu par la dépendance `exige_reauth` (`security/reauth.py`) à tout geste
+  sensible dont `reauth_at` date de plus de 300 s (horloge `app.state.horloge`, avancée à la main par les tests) ;
+  un `403` et non un `401` (session valide), le front ne se déconnecte que sur `401`. À déclarer sur la route avec
+  `reponses_erreur(403)`. Détail : `docs/securite.md` § 4.7.
 - **La session se lit au niveau du routeur `/api/v1`** (`api/v1.py`) : toute route qu'on y monte l'exige, sans
   que l'auteur de la route y pense. La dépendance `personne_connectee` (`security/session.py`) lit le cookie
   (`__Host-popote_session` ; en local le nom se règle par `POPOTE_SESSION_COOKIE_NAME`), en tire l'empreinte

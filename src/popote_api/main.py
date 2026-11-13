@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI
 from pydantic import SecretStr
@@ -88,6 +89,9 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
     app.state.debit = Debit(horloge)
     app.state.horloge_debit = horloge  # la même que le débit : les tests l'avancent à la main
     app.state.derniers_avertissements_internes = {}
+    app.state.horloge = lambda: datetime.now(
+        UTC
+    )  # l'instant des échéances de `reauth_at` ; les tests la remplacent
     app.state.horloge_unix = time.time  # l'instant de la signature interne ; les tests la remplacent
     app.state.sonde = SondeBase(base.repond if settings.database_url else None)
     app.state.auth_admin = auth_admin

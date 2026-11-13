@@ -36,6 +36,9 @@ def _entetes(methode: str) -> dict[str, str]:
     return {} if methode == "GET" else ECRITURE
 
 
+MOT_DE_PASSE_DE_MOI = "le-mot-de-passe-de-moi-1234"
+
+
 @dataclass(frozen=True)
 class Monde:
     """Deux foyers, une personne dans chacun."""
@@ -50,6 +53,7 @@ class Cas:
     chemin: Callable[[Monde], str]
     chez_moi: Callable[[Monde, httpx.Response], None]
     chez_un_autre_foyer: Callable[[Monde, httpx.Response], None]
+    corps: Callable[[Monde], dict[str, str]] | None = None  # le corps JSON d'une écriture, le même pour tous
 
 
 def _me_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
@@ -95,6 +99,17 @@ def _fermer_les_autres_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response
     assert reponse.status_code == 204
 
 
+def _reauth_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 204
+
+
+def _reauth_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Route « de soi » : la session de l'autre vérifie SON mot de passe, jamais celui de `moi`.
+    assert reponse.status_code == 403
+    assert reponse.json()["code"] == "mot_de_passe_incorrect"
+    assert str(monde.moi.id) not in reponse.text
+
+
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
     ("GET", "/api/v1/me/sessions"): Cas(
@@ -107,6 +122,12 @@ MATRICE: dict[tuple[str, str], Cas] = {
     ),
     ("DELETE", "/api/v1/me/sessions"): Cas(
         lambda _: "/api/v1/me/sessions?scope=others", _fermer_chez_moi, _fermer_les_autres_chez_un_autre_foyer
+    ),
+    ("POST", "/api/v1/me/reauthentication"): Cas(
+        lambda _: "/api/v1/me/reauthentication",
+        _reauth_chez_moi,
+        _reauth_chez_un_autre_foyer,
+        lambda _: {"password": MOT_DE_PASSE_DE_MOI},
     ),
 }
 
@@ -149,6 +170,12 @@ def test_une_route_sans_cas_est_vue_par_l_enumeration(monkeypatch: pytest.Monkey
 @pytest.fixture
 def monde(fabrique: Fabrique) -> Monde:
     moi = fabrique.personne(fabrique.foyer())
+    # Un mot de passe connu à `moi` seulement : la réauthentification de la matrice le vérifie en base.
+    fabrique.admin.execute(
+        "update auth.users set encrypted_password = extensions.crypt(%s, extensions.gen_salt('bf', 4)) "
+        "where id = %s",
+        (MOT_DE_PASSE_DE_MOI, moi.id),
+    )
     return Monde(moi=moi, autre=fabrique.personne(fabrique.foyer()), a_viser=fabrique.session(moi.id).id)
 
 
@@ -160,7 +187,10 @@ def _cas(methode: str, chemin: str) -> Cas:
 
 @pytest.fixture
 def client(base: Base, monkeypatch: pytest.MonkeyPatch) -> httpx.AsyncClient:
-    return client_de(application_de_test(base, monkeypatch))
+    # Le poivre : sans lui, la réauthentification refuse de compter. L'IP ne bloque pas la matrice.
+    return client_de(
+        application_de_test(base, monkeypatch, identity_pepper="p" * 32, connexion_essais_par_ip=10000)
+    )
 
 
 pytestmark = pytest.mark.integration
@@ -173,7 +203,10 @@ class TestMatriceParRoute:
     ) -> None:
         cas = _cas(methode, chemin)
         reponse = await client.request(
-            methode, cas.chemin(monde), headers=cookie(fabrique.session(monde.moi.id)) | _entetes(methode)
+            methode,
+            cas.chemin(monde),
+            headers=cookie(fabrique.session(monde.moi.id)) | _entetes(methode),
+            json=cas.corps(monde) if cas.corps else None,
         )
         cas.chez_moi(monde, reponse)
 
@@ -182,15 +215,22 @@ class TestMatriceParRoute:
     ) -> None:
         cas = _cas(methode, chemin)
         reponse = await client.request(
-            methode, cas.chemin(monde), headers=cookie(fabrique.session(monde.autre.id)) | _entetes(methode)
+            methode,
+            cas.chemin(monde),
+            headers=cookie(fabrique.session(monde.autre.id)) | _entetes(methode),
+            json=cas.corps(monde) if cas.corps else None,
         )
         cas.chez_un_autre_foyer(monde, reponse)
 
     async def test_sans_session(
         self, client: httpx.AsyncClient, monde: Monde, methode: str, chemin: str
     ) -> None:
+        cas = _cas(methode, chemin)
         reponse = await client.request(
-            methode, _cas(methode, chemin).chemin(monde), headers=_entetes(methode)
+            methode,
+            cas.chemin(monde),
+            headers=_entetes(methode),
+            json=cas.corps(monde) if cas.corps else None,
         )
         assert reponse.status_code == 401
         assert reponse.headers["www-authenticate"] == DEFI_D_AUTHENTIFICATION
