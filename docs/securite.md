@@ -575,3 +575,23 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   `libere_reprise` : `service_role` seul ; `etat_invitation` et `prend_un_creneau_invitation` : `popote_api` et
   `service_role`. `authenticated` et `anon` : rien. Le contexte service n'est ouvert que par
   `security/acceptation_invitation.py` (liste fermée de `base.service()`).
+
+### 4.11 Effacer ses données (0.4 T14a, migration 0145 ; la route `DELETE /me` est T14b)
+
+- **`public.efface_mes_donnees()`** : le corps de l'ancienne `delete_my_account()` sans la suppression de
+  `auth.users` (foyer verrouillé d'abord, charges propres retirées, saisies, comptes perso, profil, foyer du dernier
+  membre, repartage pour l'autre), plus : mise à `null` de `account_key` et `ip_hash` de **tous** les événements de la
+  personne (B7), suppression de ses lignes `login_session` (leur clé étrangère ne coule qu'avec `auth.users`, que la
+  fonction ne supprime pas) et de ses `auth.sessions` / `auth.refresh_tokens` (B9, `private.ferme_les_sessions_auth`),
+  puis l'événement `compte_supprime` dans la même transaction. Ses lignes `idempotency_key` partent en cascade avec son
+  profil (B8). `invite_link.created_by` et `accepted_by` passent à `null` (`on delete set null`) : un lien accepté reste.
+- **Journal** : `compte_supprime` ne porte aucune clé ; `person_id` passe à `null` quand `auth.users` est supprimé (clé
+  étrangère). Les événements `connexion_ratee` et `connexion_bloquee` (clés de compte) se purgent à 90 jours, le reste à 1 an
+  (0136).
+- **Idempotente** : sans profil elle ne fait que refermer des sessions et n'écrit pas un second `compte_supprime`
+  (nouvelle tentative après une panne d'Auth). `security definer`, `search_path = ''`, `execute` à `authenticated` seul
+  (`anon`, `public`, `service_role` : rien) ; la personne vient de `auth.uid()`, sans identité : `insufficient_privilege`.
+- **`delete_my_account()`** (appli en ligne) : même signature, mêmes droits, même effet ; appelle `efface_mes_donnees()` puis
+  supprime `auth.users`. Risque accepté : `efface_mes_donnees` est appelable directement (PostgREST) par une personne
+  connectée, sans réauthentification ; elle n'y gagne que ce qu'elle obtiendrait déjà par `delete_my_account`, et le compte
+  Auth reste (elle peut se reconnecter). La garde de réauth est celle de la route (T14b).

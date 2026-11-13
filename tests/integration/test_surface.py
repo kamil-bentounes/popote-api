@@ -69,6 +69,7 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.compte_pour_email(text)": {"service_role"},
     "public.reserve_reprise(bytea)": {"service_role"},
     "public.libere_reprise(bytea, uuid)": {"service_role"},
+    "public.efface_mes_donnees()": {"authenticated"},
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()
