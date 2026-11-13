@@ -1,0 +1,689 @@
+#!/usr/bin/env python3
+"""Prouve, sur l'essai seulement, qu'Auth hébergé écrit un compte sans mot de passe (plan 0.4bis, S1).
+
+Ce que le script établit, l'un après l'autre, et vérifie lui-même (sortie non nulle au premier écart) :
+1. `createUser` sans `password` réussit : un hachage est écrit en base, l'e-mail est confirmé, aucun mail
+   n'est parti (`confirmation_sent_at` vide) ;
+2. la connexion publique de GoTrue (`/auth/v1/token`, mot de passe vide ou deviné) est refusée pour lui ;
+3. `updateUserById` pose un mot de passe aléatoire de 64 caractères (minuscules, majuscules, chiffres,
+   symboles) : le hachage change ;
+4. une deuxième création de la même adresse, puis de sa variante en majuscules, rend `email_exists` ;
+5. à la fin, aucun compte de test ne reste, même si une étape a échoué.
+
+Usage :
+    set -a; . ~/.config/popote/secrets.env; set +a     # lu sans rien afficher
+    uv run python ops/preuve_auth_sans_mot_de_passe.py --a-blanc   # lectures seules, rien n'est écrit
+    uv run python ops/preuve_auth_sans_mot_de_passe.py             # la preuve, avec écritures sur l'essai
+
+Environnement : `ESSAI_REF` et `SUPABASE_ESSAI_TOKEN` (jeton de l'API de gestion). Les clés d'API de l'essai
+se lisent par l'API de gestion ; `ESSAI_SUPABASE_SECRET_KEY` et `ESSAI_SUPABASE_PUBLISHABLE_KEY`, si elles
+sont posées, les remplacent. Le script ne lit aucune autre variable.
+Réseau qui inspecte le TLS (WSL d'entreprise) : `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`, sinon la
+vérification du certificat de `<réf>.supabase.co` échoue (`ConnectError`, sortie 2). Rien n'est désactivé.
+Garde-fous : refuse la prod (référence écrite en dur) et tout projet qui ne s'appelle pas `popote-essai`.
+Il n'affiche aucune clé, adresse, identifiant, mot de passe ni hachage : seulement le préfixe et le coût du
+hachage, des statuts HTTP et des codes d'erreur d'Auth. Un compte de test porte une adresse
+`preuve-auth-<hex>@example.com` et la marque `app_metadata.cree_par = preuve-auth-s1` : le nettoyage ne
+touche que les comptes qui ont les deux.
+Codes de sortie : 0 preuve complète (ou à blanc réussi), 1 écart constaté ou compte de test restant,
+2 accès impossible ou refus d'un garde-fou.
+"""
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+import signal
+import ssl
+import string
+import sys
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import UUID
+
+import httpx
+from aligne_droits import FORBIDDEN_PROJECT_REF, PROJECT_REF_PATTERN
+
+API_DE_GESTION = "https://api.supabase.com"
+NOM_DU_PROJET_D_ESSAI = "popote-essai"
+# Empreinte SHA-256 de la référence de l'essai : le dépôt est public, la référence ne s'y écrit pas. Elle se
+# compare avant tout appel réseau ; le nom du projet ne suffit pas (n'importe quel projet peut le porter).
+EMPREINTE_DE_LA_REFERENCE_D_ESSAI = "cd07ddb85b47bfeddf25c7f20407278fc5aafb4977031d61ecd37c817c742e15"
+MARQUE = "preuve-auth-s1"
+PREFIXE_D_ADRESSE = "preuve-auth-"
+ADRESSE_DE_TEST = re.compile(r"preuve-auth-[0-9a-f]{12}@example\.com", re.IGNORECASE | re.ASCII)
+MOTIF_D_ADRESSE_EN_SQL = "preuve-auth-%@example.com"
+LONGUEUR_DU_MOT_DE_PASSE = 64
+SYMBOLES = "!#$%&*+-=?@^_"
+# Ce que l'essai a rendu le 13/11/2026 : 400 `invalid_credentials` à la connexion d'un compte sans mot de
+# passe connu, 422 `email_exists` à la deuxième création. Un 401 est une clé refusée, un 429 une limite de
+# débit : ni l'un ni l'autre ne dit rien du compte.
+REFUS_DE_CONNEXION = (400, "invalid_credentials")
+REFUS_DE_DOUBLON = (422, "email_exists")
+MOTS_DE_PASSE_DEVINES = ("", "motdepasse")
+FORME_D_UN_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+FORME_D_UN_PREFIXE = re.compile(r"\$(2[abxy])\$(\d{2})\$")
+DELAI_CONNEXION_S = 3.0
+DELAI_LECTURE_S = 20.0
+# Un appel entier : les délais d'httpx valent par morceau reçu, un serveur qui goutte à goutte les relance.
+DELAI_TOTAL_S = 30.0
+OCTETS_MAX_REPONSE = 256 * 1024
+
+Sortie = Callable[[str], None]
+
+
+class PreuveError(Exception):
+    """Base des erreurs du script. Le texte n'en contient ni clé, ni adresse, ni mot de passe."""
+
+
+class AccesError(PreuveError):
+    """Un accès est impossible ou un garde-fou refuse de continuer : sortie 2."""
+
+
+class EcartError(PreuveError):
+    """Une vérification de la preuve échoue : sortie 1."""
+
+
+@dataclass(frozen=True)
+class Acces:
+    """Où et avec quoi agir sur l'essai. Le jeton n'entre ni dans `repr` ni dans un message."""
+
+    ref: str
+    jeton: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class Reponse:
+    """Ce qu'un appel a rendu : le statut et le corps lu, déjà borné."""
+
+    status: int
+    corps: bytes = field(repr=False)
+
+    def objet(self) -> dict[str, Any]:
+        """Le corps s'il est un objet JSON, sinon un objet vide."""
+        try:
+            contenu: Any = json.loads(self.corps)
+        except (ValueError, RecursionError):
+            return {}
+        return contenu if isinstance(contenu, dict) else {}
+
+    def contenu(self) -> Any:
+        """Le corps décodé, ou `None` s'il n'est pas du JSON."""
+        try:
+            return json.loads(self.corps)
+        except (ValueError, RecursionError):
+            return None
+
+    def code(self) -> str | None:
+        """Le `error_code` d'Auth, s'il a la forme d'un code (jamais un message : il cite l'adresse)."""
+        code = self.objet().get("error_code")
+        return code if isinstance(code, str) and FORME_D_UN_CODE.fullmatch(code) else None
+
+    def decrit(self) -> str:
+        return f"HTTP {self.status}, code={self.code()}"
+
+
+@dataclass(frozen=True)
+class CompteLu:
+    """Un compte tel qu'Auth le rend : l'adresse (en minuscules) et la marque `cree_par`."""
+
+    email: str = field(repr=False)
+    marque: str | None
+
+
+@dataclass(frozen=True)
+class EtatDuCompte:
+    """Ce que la base de l'essai dit d'un compte. Le hachage n'est gardé que sous forme d'empreinte."""
+
+    empreinte: str = field(repr=False)
+    schema: str
+    cout: int | None
+    confirme: bool
+    mail_parti: bool
+
+    def decrit_le_hachage(self) -> str:
+        return f"{self.schema}, coût {self.cout}" if self.cout is not None else self.schema
+
+
+def acces_depuis(environnement: Mapping[str, str]) -> Acces:
+    """Lit l'essai dans l'environnement ; refuse la prod et toute référence autre que l'essai épinglé."""
+    ref = environnement.get("ESSAI_REF", "")
+    jeton = environnement.get("SUPABASE_ESSAI_TOKEN", "")
+    for nom, valeur in (("ESSAI_REF", ref), ("SUPABASE_ESSAI_TOKEN", jeton)):
+        if not valeur:
+            raise AccesError(f"Variable d'environnement absente : {nom}.")
+        exige_une_valeur_d_en_tete(nom, valeur)
+    if ref == FORBIDDEN_PROJECT_REF:
+        raise AccesError("La prod n'est jamais une cible.")
+    if not PROJECT_REF_PATTERN.fullmatch(ref):
+        raise AccesError("ESSAI_REF n'a pas la forme d'une référence de projet.")
+    empreinte = hashlib.sha256(ref.encode()).hexdigest()
+    if not hmac.compare_digest(empreinte, EMPREINTE_DE_LA_REFERENCE_D_ESSAI):
+        raise AccesError("ESSAI_REF n'est pas la référence de l'essai de Popote : refus.")
+    return Acces(ref, jeton)
+
+
+def exige_une_valeur_d_en_tete(nom: str, valeur: str) -> None:
+    """Un secret part dans un en-tête : sinon l'encodeur citerait un de ses caractères dans son message."""
+    if not (valeur.isascii() and valeur.isprintable() and " " not in valeur):
+        raise AccesError(
+            f"{nom} contient un caractère qu'un en-tête ne peut pas porter (espace, accent, retour)."
+        )
+
+
+def exige_les_cles_d_environnement(environnement: Mapping[str, str]) -> None:
+    for nom in ("ESSAI_SUPABASE_SECRET_KEY", "ESSAI_SUPABASE_PUBLISHABLE_KEY"):
+        exige_une_valeur_d_en_tete(nom, environnement.get(nom, ""))
+
+
+def mot_de_passe_aleatoire() -> str:
+    """64 caractères tirés par `secrets`, dont une minuscule, une majuscule, un chiffre et un symbole."""
+    classes = (string.ascii_lowercase, string.ascii_uppercase, string.digits, SYMBOLES)
+    tous = "".join(classes)
+    caracteres = [secrets.choice(classe) for classe in classes]
+    caracteres += [secrets.choice(tous) for _ in range(LONGUEUR_DU_MOT_DE_PASSE - len(caracteres))]
+    secrets.SystemRandom().shuffle(caracteres)
+    return "".join(caracteres)
+
+
+def adresse_de_test() -> str:
+    return f"{PREFIXE_D_ADRESSE}{secrets.token_hex(6)}@example.com"
+
+
+class Essai:
+    """Les appels à l'essai : API de gestion (clés, base) et Auth (administration, connexion publique).
+
+    Chaque réponse est rendue telle quelle ; aucun message d'erreur ne reprend un corps de réponse.
+    """
+
+    def __init__(
+        self,
+        acces: Acces,
+        http: httpx.Client,
+        environnement: Mapping[str, str],
+        horloge: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._acces = acces
+        self._http = http
+        self._horloge = horloge
+        self._url_d_auth = f"https://{acces.ref}.supabase.co"
+        self._cle_secrete = environnement.get("ESSAI_SUPABASE_SECRET_KEY", "")
+        self._cle_publiable = environnement.get("ESSAI_SUPABASE_PUBLISHABLE_KEY", "")
+
+    def __repr__(self) -> str:
+        return "Essai(<projet d'essai>)"
+
+    def _envoie(
+        self,
+        methode: str,
+        url: str,
+        en_tetes: dict[str, str],
+        corps: dict[str, Any] | None = None,
+        parametres: dict[str, str] | None = None,
+    ) -> Reponse:
+        echeance = self._horloge() + DELAI_TOTAL_S
+        lu = bytearray()
+        try:
+            with self._http.stream(methode, url, headers=en_tetes, json=corps, params=parametres) as reponse:
+                for morceau in reponse.iter_bytes():
+                    lu += morceau
+                    if len(lu) > OCTETS_MAX_REPONSE:
+                        raise AccesError("Réponse trop grosse : ce n'est pas le service attendu.")
+                    if self._horloge() > echeance:
+                        raise AccesError("Réponse trop lente : le délai total d'un appel est dépassé.")
+                return Reponse(reponse.status_code, bytes(lu))
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError) as erreur:
+            raise AccesError(f"Appel impossible ({type(erreur).__name__}).") from erreur
+
+    def _gestion(
+        self, methode: str, chemin: str, corps: dict[str, Any] | None = None, **parametres: str
+    ) -> Reponse:
+        en_tetes = {"Authorization": f"Bearer {self._acces.jeton}", "User-Agent": "popote-preuve-auth/1.0"}
+        return self._envoie(methode, API_DE_GESTION + chemin, en_tetes, corps, parametres or None)
+
+    def _administration(self, methode: str, chemin: str, corps: dict[str, Any] | None = None) -> Reponse:
+        en_tetes = {"apikey": self._cle_secrete, "Accept": "application/json"}
+        return self._envoie(methode, self._url_d_auth + chemin, en_tetes, corps)
+
+    # --- garde-fous et clés -------------------------------------------------------------------------
+
+    def exige_le_projet_d_essai(self) -> None:
+        reponse = self._gestion("GET", f"/v1/projects/{self._acces.ref}")
+        if reponse.status != 200:
+            raise AccesError(f"Le projet n'est pas lisible par l'API de gestion ({reponse.decrit()}).")
+        projet = reponse.objet()
+        if projet.get("ref") != self._acces.ref:
+            raise AccesError("L'API de gestion a répondu pour un autre projet : refus.")
+        if projet.get("name") != NOM_DU_PROJET_D_ESSAI:
+            raise AccesError(f"Le projet ne s'appelle pas {NOM_DU_PROJET_D_ESSAI} : refus.")
+
+    def charge_les_cles(self) -> None:
+        if self._cle_secrete and self._cle_publiable:
+            return
+        reponse = self._gestion("GET", f"/v1/projects/{self._acces.ref}/api-keys", reveal="true")
+        liste = reponse.contenu()
+        if reponse.status != 200 or not isinstance(liste, list):
+            raise AccesError(
+                f"Les clés de l'essai ne sont pas lisibles ({reponse.decrit()}) : poser "
+                "ESSAI_SUPABASE_SECRET_KEY et ESSAI_SUPABASE_PUBLISHABLE_KEY, ou donner au jeton le droit de "
+                "les lire."
+            )
+        cles = [entree for entree in liste if isinstance(entree, dict)]
+        self._cle_secrete = self._cle_secrete or _cle_de_type(cles, "secret")
+        self._cle_publiable = self._cle_publiable or _cle_de_type(cles, "publishable")
+        for nom, valeur in (("secrète", self._cle_secrete), ("publiable", self._cle_publiable)):
+            if not valeur:
+                raise AccesError(f"Aucune clé {nom} lisible pour l'essai.")
+
+    # --- la base de l'essai -------------------------------------------------------------------------
+
+    def _sql(self, requete: str) -> list[dict[str, Any]]:
+        reponse = self._gestion("POST", f"/v1/projects/{self._acces.ref}/database/query", {"query": requete})
+        lignes = reponse.contenu()
+        if reponse.status not in (200, 201) or not isinstance(lignes, list):
+            raise AccesError(f"Lecture de la base de l'essai impossible ({reponse.decrit()}).")
+        return [ligne for ligne in lignes if isinstance(ligne, dict)]
+
+    def comptes_de_test(self) -> list[UUID]:
+        """Les comptes qui portent à la fois l'adresse et la marque d'un compte de test."""
+        lignes = self._sql(
+            "select id, email from auth.users "  # noqa: S608 - constantes du module, aucune entrée
+            f"where lower(email) like '{MOTIF_D_ADRESSE_EN_SQL}' "
+            f"and raw_app_meta_data->>'cree_par' = '{MARQUE}'"
+        )
+        try:
+            # Le SQL est large (`like`) : seule l'adresse que le script fabrique désigne un compte à effacer.
+            return [
+                UUID(str(ligne["id"])) for ligne in lignes if ADRESSE_DE_TEST.fullmatch(str(ligne["email"]))
+            ]
+        except (KeyError, ValueError) as erreur:
+            raise AccesError("Réponse inattendue à la liste des comptes de test.") from erreur
+
+    def nombre_de_comptes_a_l_adresse(self, adresse: str) -> int:
+        _exige_une_adresse_de_test(adresse)
+        lignes = self._sql(
+            f"select count(*)::int as n from auth.users where lower(email) = lower('{adresse}')"  # noqa: S608 - adresse validée
+        )
+        if len(lignes) != 1 or not isinstance(lignes[0].get("n"), int):
+            raise AccesError("Réponse inattendue au comptage des comptes.")
+        return int(lignes[0]["n"])
+
+    def etat_du_compte(self, identifiant: UUID) -> EtatDuCompte:
+        if not isinstance(identifiant, UUID):
+            raise TypeError("L'identifiant d'un compte est un UUID.")
+        lignes = self._sql(
+            # Le hachage ne sort pas de la base : seuls son préfixe (schéma, coût) et son empreinte sortent.
+            "select left(coalesce(encrypted_password, ''), 7) as prefixe, "  # noqa: S608 - UUID typé
+            "md5(coalesce(encrypted_password, '')) as empreinte, "
+            "email_confirmed_at is not null as confirme, "
+            "confirmation_sent_at is not null as mail_parti "
+            f"from auth.users where id = '{identifiant}'"
+        )
+        if len(lignes) != 1:
+            raise EcartError("Le compte créé n'est pas dans la base de l'essai.")
+        prefixe, empreinte = lignes[0].get("prefixe"), lignes[0].get("empreinte")
+        if not isinstance(prefixe, str) or not isinstance(empreinte, str):
+            raise AccesError("Réponse inattendue à la lecture du compte.")
+        forme = FORME_D_UN_PREFIXE.match(prefixe)
+        if prefixe == "":
+            schema, cout = "vide", None
+        elif forme is None:
+            schema, cout = "inconnu", None
+        else:
+            schema, cout = forme.group(1), int(forme.group(2))
+        return EtatDuCompte(
+            empreinte=empreinte,
+            schema=schema,
+            cout=cout,
+            confirme=lignes[0].get("confirme") is True,
+            mail_parti=lignes[0].get("mail_parti") is True,
+        )
+
+    # --- Auth ---------------------------------------------------------------------------------------
+
+    def cree(self, adresse: str, mot_de_passe: str | None = None) -> Reponse:
+        _exige_une_adresse_de_test(adresse)
+        corps: dict[str, Any] = {
+            "email": adresse,
+            "email_confirm": True,
+            "app_metadata": {"cree_par": MARQUE},
+        }
+        if mot_de_passe is not None:
+            corps["password"] = mot_de_passe
+        return self._administration("POST", "/auth/v1/admin/users", corps)
+
+    def remplace_le_mot_de_passe(self, identifiant: UUID, mot_de_passe: str) -> Reponse:
+        return self._administration("PUT", f"/auth/v1/admin/users/{identifiant}", {"password": mot_de_passe})
+
+    def supprime(self, identifiant: UUID) -> Reponse:
+        return self._administration("DELETE", f"/auth/v1/admin/users/{identifiant}")
+
+    def lit_le_compte(self, identifiant: UUID) -> CompteLu | None:
+        """Relit un compte par son identifiant ; `None` s'il n'existe plus."""
+        reponse = self._administration("GET", f"/auth/v1/admin/users/{identifiant}")
+        if reponse.status == 404 and reponse.code() == "user_not_found":
+            return None
+        objet = reponse.objet()
+        email = objet.get("email")
+        if reponse.status != 200 or not isinstance(email, str):
+            raise AccesError(f"Un compte n'est pas lisible par l'administration d'Auth ({reponse.decrit()}).")
+        metadonnees = objet.get("app_metadata")
+        marque = metadonnees.get("cree_par") if isinstance(metadonnees, dict) else None
+        return CompteLu(email, marque if isinstance(marque, str) else None)
+
+    def lit_un_compte_au_hasard(self) -> Reponse:
+        """Une lecture d'administration (à blanc) : prouve que la clé secrète passe, sans rien écrire."""
+        return self._administration("GET", "/auth/v1/admin/users?per_page=1")
+
+    def connexion_publique(self, adresse: str, mot_de_passe: str) -> Reponse:
+        en_tetes = {"apikey": self._cle_publiable, "Accept": "application/json"}
+        return self._envoie(
+            "POST",
+            self._url_d_auth + "/auth/v1/token",
+            en_tetes,
+            {"email": adresse, "password": mot_de_passe},
+            {"grant_type": "password"},
+        )
+
+
+def _cle_de_type(cles: Sequence[Mapping[str, Any]], type_de_cle: str) -> str:
+    for entree in cles:
+        valeur = entree.get("api_key")
+        if entree.get("type") == type_de_cle and isinstance(valeur, str) and valeur:
+            return valeur
+    return ""
+
+
+def _exige_une_adresse_de_test(adresse: str) -> None:
+    """L'adresse entre dans une requête SQL : seule la forme que ce script fabrique passe."""
+    if not ADRESSE_DE_TEST.fullmatch(adresse):
+        raise ValueError("Ce n'est pas une adresse de test du script.")
+
+
+def est_un_compte_de_test(compte: CompteLu, demandee: str | None = None) -> bool:
+    """Adresse de test, marque du script et, si on la connaît, l'adresse que le script a demandée.
+
+    Auth enregistre les adresses en minuscules : la comparaison l'est aussi.
+    """
+    return (
+        ADRESSE_DE_TEST.fullmatch(compte.email) is not None
+        and compte.marque == MARQUE
+        and (demandee is None or compte.email.lower() == demandee.lower())
+    )
+
+
+def ouvre_une_session(reponse: Reponse) -> bool:
+    jeton = reponse.objet().get("access_token")
+    return reponse.status == 200 and isinstance(jeton, str) and jeton != ""
+
+
+def verifie(condition: bool, message: str) -> None:
+    if not condition:
+        raise EcartError(message)
+
+
+def _a_ete_cree(reponse: Reponse) -> UUID | None:
+    try:
+        return UUID(str(reponse.objet()["id"])) if reponse.status in (200, 201) else None
+    except (KeyError, ValueError):
+        return None
+
+
+@dataclass
+class Deroulement:
+    """Ce qu'une exécution a créé, pour que le nettoyage le retrouve même après un échec."""
+
+    essai: Essai
+    sortie: Sortie
+    comptes_crees: dict[UUID, str] = field(
+        default_factory=dict
+    )  # identifiant rendu par Auth -> adresse demandée
+    refus_de_supprimer: int = 0
+
+    def ok(self, message: str) -> None:
+        self.sortie(f"ok      {message}")
+
+    def cree(self, adresse: str, mot_de_passe: str | None = None) -> Reponse:
+        """Crée un compte et le note tout de suite : un `201` perdu plus loin ne le ferait pas oublier."""
+        reponse = self.essai.cree(adresse, mot_de_passe)
+        identifiant = _a_ete_cree(reponse)
+        if identifiant is not None:
+            self.comptes_crees[identifiant] = adresse
+        return reponse
+
+
+def etape_creation_sans_mot_de_passe(d: Deroulement, adresse: str) -> tuple[UUID, EtatDuCompte]:
+    reponse = d.cree(adresse)
+    verifie(
+        reponse.status in (200, 201),
+        f"createUser sans mot de passe est refusé ({reponse.decrit()}) : S13 enverra un mot de passe "
+        "aléatoire jeté (noter dans la doc).",
+    )
+    identifiant = _a_ete_cree(reponse)
+    if identifiant is None:
+        raise EcartError("createUser n'a pas rendu d'identifiant lisible.")
+    # Auth rend un identifiant : rien ne prouve qu'il soit celui du compte demandé avant de l'avoir relu.
+    compte = d.essai.lit_le_compte(identifiant)
+    verifie(
+        compte is not None and est_un_compte_de_test(compte, adresse),
+        "Le compte rendu par createUser n'est pas celui qui a été demandé.",
+    )
+    etat = d.essai.etat_du_compte(identifiant)
+    verifie(etat.schema != "vide", "Aucun hachage n'a été écrit pour le compte sans mot de passe.")
+    verifie(etat.confirme, "L'e-mail du compte créé n'est pas confirmé.")
+    verifie(not etat.mail_parti, "Auth a envoyé un mail de confirmation (confirmation_sent_at renseigné).")
+    d.ok(
+        f"création sans mot de passe : hachage écrit ({etat.decrit_le_hachage()}), "
+        "e-mail confirmé, aucun mail parti"
+    )
+    return identifiant, etat
+
+
+def etape_connexion_publique_refusee(d: Deroulement, adresse: str) -> None:
+    for essai in MOTS_DE_PASSE_DEVINES:
+        reponse = d.essai.connexion_publique(adresse, essai)
+        verifie(
+            reponse.status != 429, "La connexion publique répond 429 : la preuve est à reprendre plus tard."
+        )
+        verifie("access_token" not in reponse.objet(), "La connexion publique a ouvert une session.")
+        verifie(
+            (reponse.status, reponse.code()) == REFUS_DE_CONNEXION,
+            f"La connexion publique ne refuse pas comme attendu ({reponse.decrit()}).",
+        )
+    d.ok(f"connexion publique refusée pour mot de passe vide et deviné ({reponse.decrit()})")
+
+
+def etape_mot_de_passe_pose(d: Deroulement, identifiant: UUID, adresse: str, avant: EtatDuCompte) -> None:
+    mot_de_passe = mot_de_passe_aleatoire()
+    reponse = d.essai.remplace_le_mot_de_passe(identifiant, mot_de_passe)
+    verifie(reponse.status == 200, f"updateUserById refuse le mot de passe aléatoire ({reponse.decrit()}).")
+    apres = d.essai.etat_du_compte(identifiant)
+    verifie(apres.empreinte != avant.empreinte, "Le hachage n'a pas changé après la pose du mot de passe.")
+    d.ok(
+        f"mot de passe aléatoire de {LONGUEUR_DU_MOT_DE_PASSE} caractères posé : "
+        f"hachage changé ({apres.decrit_le_hachage()})"
+    )
+    # Contrôle positif : le refus plus haut ne vaut que si la même route ouvre une session avec le bon mot de
+    # passe (le compte existe sous cette adresse, la clé publiable est bonne). La coupure de cette route (0.7)
+    # le fera échouer : la preuve est celle d'avant la coupure.
+    controle = d.essai.connexion_publique(adresse, mot_de_passe)
+    verifie(
+        ouvre_une_session(controle),
+        f"La connexion avec le mot de passe posé n'est pas acceptée ({controle.decrit()}).",
+    )
+    d.ok(
+        "connexion publique avec le mot de passe posé : acceptée (le refus précédent tenait au mot de passe)"
+    )
+
+
+def etape_email_deja_pris(d: Deroulement, adresse: str) -> None:
+    for libelle, variante in (("même casse", adresse), ("autre casse", adresse.upper())):
+        # La variante en majuscules est aussi une adresse de test : l'expression est insensible à la casse.
+        reponse = d.cree(variante)
+        verifie(
+            (reponse.status, reponse.code()) == REFUS_DE_DOUBLON,
+            f"Une deuxième création ({libelle}) n'est pas refusée en email_exists ({reponse.decrit()}).",
+        )
+        d.ok(f"deuxième création, {libelle} : refusée ({reponse.decrit()})")
+    verifie(d.essai.nombre_de_comptes_a_l_adresse(adresse) == 1, "Plus d'un compte porte l'adresse de test.")
+    d.ok("un seul compte porte l'adresse, quelle que soit la casse")
+
+
+def _supprime_un_compte_de_test(d: Deroulement, identifiant: UUID, demandee: str | None) -> None:
+    """Relit le compte et ne le supprime que s'il est bien de test (et, si connue, à l'adresse demandée)."""
+    try:
+        compte = d.essai.lit_le_compte(identifiant)
+        if compte is None:
+            return
+        if not est_un_compte_de_test(compte, demandee):
+            d.refus_de_supprimer += 1
+            d.sortie("ÉCART   suppression refusée : un compte n'est pas celui que le script a créé.")
+            return
+        reponse = d.essai.supprime(identifiant)
+    except AccesError as erreur:
+        d.sortie(f"erreur  suppression d'un compte de test impossible : {erreur}")
+        return
+    supprime = reponse.status in (200, 204) or (reponse.status == 404 and reponse.code() == "user_not_found")
+    if not supprime:
+        d.sortie(f"erreur  suppression d'un compte de test refusée ({reponse.decrit()})")
+
+
+def nettoie(d: Deroulement) -> int:
+    """Supprime les comptes créés, puis balaie ceux qu'une exécution précédente a oubliés.
+
+    Les comptes créés partent d'abord : la base illisible ne doit pas les laisser en place. Chacun est relu
+    avant d'être supprimé. Rend le nombre de comptes de test qui restent.
+    """
+    for identifiant, adresse in dict(d.comptes_crees).items():
+        _supprime_un_compte_de_test(d, identifiant, adresse)
+    d.comptes_crees.clear()
+    for identifiant in set(d.essai.comptes_de_test()):
+        _supprime_un_compte_de_test(d, identifiant, None)
+    return len(d.essai.comptes_de_test())
+
+
+def exige_les_garde_fous(essai: Essai, sortie: Sortie) -> int:
+    """0 si l'essai est le projet visé et ses clés sont lues, sinon 2. Aucune écriture, aucun nettoyage."""
+    try:
+        essai.exige_le_projet_d_essai()
+        essai.charge_les_cles()
+    except AccesError as erreur:
+        sortie(f"ACCÈS   {erreur}")
+        return 2
+    return 0
+
+
+def joue_la_preuve(essai: Essai, sortie: Sortie) -> int:
+    # Hors du `try/finally` : un garde-fou qui refuse ne doit pas être suivi d'un nettoyage sur ce projet.
+    refus = exige_les_garde_fous(essai, sortie)
+    if refus:
+        return refus
+    d = Deroulement(essai, sortie)
+    code = 0
+    try:
+        anciens = len(essai.comptes_de_test())
+        if anciens:
+            sortie(f"info    {anciens} compte(s) de test d'une exécution précédente, balayé(s) d'abord")
+            nettoie(d)
+        adresse = adresse_de_test()
+        identifiant, avant = etape_creation_sans_mot_de_passe(d, adresse)
+        etape_connexion_publique_refusee(d, adresse)
+        etape_mot_de_passe_pose(d, identifiant, adresse, avant)
+        etape_email_deja_pris(d, adresse)
+    except EcartError as erreur:
+        sortie(f"ÉCART   {erreur}")
+        code = 1
+    except AccesError as erreur:
+        sortie(f"ACCÈS   {erreur}")
+        code = 2
+    finally:
+        try:
+            restants = nettoie(d)
+        except AccesError as erreur:
+            sortie(f"ACCÈS   nettoyage impossible : {erreur}")
+            restants = -1
+    if d.refus_de_supprimer:
+        sortie("ÉCART   un compte rendu par Auth n'était pas celui demandé : il n'a pas été supprimé.")
+        code = max(code, 1)
+    if restants != 0:
+        sortie("ÉCART   des comptes de test restent (ou leur liste est illisible) : relancer le script.")
+        return max(code, 1)
+    sortie("ok      aucun compte de test ne reste")
+    if code == 0:
+        sortie("PREUVE COMPLÈTE")
+    return code
+
+
+def joue_a_blanc(essai: Essai, sortie: Sortie) -> int:
+    """Lectures seules : garde-fous, clés, administration d'Auth et base. Rien n'est écrit sur l'essai."""
+    try:
+        essai.exige_le_projet_d_essai()
+        sortie(f"ok      le projet est bien {NOM_DU_PROJET_D_ESSAI}")
+        essai.charge_les_cles()
+        sortie("ok      clés secrète et publiable lues")
+        lecture = essai.lit_un_compte_au_hasard()
+        verifie(lecture.status == 200, f"L'administration d'Auth refuse la clé secrète ({lecture.decrit()}).")
+        sortie("ok      l'administration d'Auth accepte la clé secrète")
+        restants = len(essai.comptes_de_test())
+    except EcartError as erreur:
+        sortie(f"ÉCART   {erreur}")
+        return 1
+    except AccesError as erreur:
+        sortie(f"ACCÈS   {erreur}")
+        return 2
+    sortie(f"ok      {restants} compte(s) de test présent(s) avant la preuve")
+    sortie("A BLANC terminé : la preuve réelle créera un compte, le modifiera, puis le supprimera.")
+    return 0
+
+
+def cree_le_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
+    delais = httpx.Timeout(DELAI_LECTURE_S, connect=DELAI_CONNEXION_S, pool=DELAI_CONNEXION_S)
+    # trust_env=False : ni proxy ni certificats du poste ne détournent les clés ; aucune redirection suivie.
+    # Le magasin de certificats du système, pas celui de certifi : un réseau qui inspecte le TLS y pose son
+    # autorité (WSL d'entreprise). La vérification des certificats reste entière.
+    return httpx.Client(
+        timeout=delais,
+        transport=transport,
+        follow_redirects=False,
+        trust_env=False,
+        verify=ssl.create_default_context(),
+    )
+
+
+def _interrompt_sur_sigterm(_signal: int, _cadre: object) -> None:
+    raise KeyboardInterrupt
+
+
+def main(
+    argv: Sequence[str], environnement: Mapping[str, str], *, transport: httpx.BaseTransport | None = None
+) -> int:
+    analyseur = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    analyseur.add_argument(
+        "--a-blanc", action="store_true", help="lectures seules : rien n'est écrit sur l'essai"
+    )
+    arguments = analyseur.parse_args(argv)
+    try:
+        acces = acces_depuis(environnement)
+        exige_les_cles_d_environnement(environnement)
+    except AccesError as erreur:
+        print(f"ACCÈS   {erreur}", file=sys.stderr)
+        return 2
+    # SIGTERM contournerait le `finally` : on l'interrompt comme un Ctrl-C, qui, lui, nettoie.
+    precedent = signal.signal(signal.SIGTERM, _interrompt_sur_sigterm)
+    try:
+        with cree_le_client(transport) as http:
+            essai = Essai(acces, http, environnement)
+            if arguments.a_blanc:
+                return joue_a_blanc(essai, print)
+            return joue_la_preuve(essai, print)
+    finally:
+        signal.signal(signal.SIGTERM, precedent)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:], os.environ))
