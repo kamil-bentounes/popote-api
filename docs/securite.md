@@ -826,7 +826,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   n'existe que dans `_en_tetes_ou_rien` (nettoyage et contrôle de forme compris), le temps de construire les en-têtes ; la construction de l'envoi
   l'essaie une fois pour refuser une clé mal formée au démarrage, et l'erreur est levée hors de cette fonction. Le test d'architecture exige une seule
   lecture dans le module ; il refuse aussi `sentry_sdk.init` importé sous un alias, tout `capture_locals` autre que `False`, toute forme d'import
-  de `rich.traceback`, et la constante `"_cle_tem"` hors du module. `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
+  de `rich.traceback`, et la constante `"_cle_tem"` hors du module. **Limite dite** : ces gardes lisent l'arbre du code, elles ne suivent pas un alias posé par affectation, un `**{"capture_locals": True}` ni un nom de module ou d'attribut assemblé à l'exécution (revue de code). `ValidationError.errors()` ou `.json()` sur une erreur de réglages recopie la valeur de la clé (seuls `str` et `repr` la masquent) :
   ne jamais les appeler sur les réglages sans `include_input=False`. Sources, gestes de la
   clé, rotation et quota : `docs/exploitation.md`, « L'envoi réel ».
 - Tests : `tests/unit/test_mails.py`, `tests/unit/test_mails_durcis.py`, `tests/unit/test_mail_scaleway.py` (faux transport

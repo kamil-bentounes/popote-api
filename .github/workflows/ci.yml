@@ -415,7 +415,8 @@ jobs:
           # Attente bornée par $1 secondes (8 minutes par défaut), sondes de 10 s au plus (la sonde ne tient jamais le job).
           attendre_pret() {
             local statut fin=$((SECONDS + ${1:-480}))
-            while [ "$SECONDS" -lt "$fin" ]; do
+            # Une sonde (10 s) et un sommeil (5 s) ne commencent que s'il reste de quoi les finir : le budget est tenu.
+            while [ $((fin - SECONDS)) -gt 15 ]; do
               statut=$(scw "$conteneur" | jq -r '.status') || statut=inconnu
               echo "statut du conteneur : $statut"
               case "$statut" in
@@ -435,6 +436,8 @@ jobs:
             # La mise à jour redéploie d'elle-même : un POST /deploy en plus répond 409 (déploiement en cours).
             corps=$(jq -n --arg image "$1" --argjson variables "$2" \
               '{registry_image: $image, environment_variables: $variables, redeploy: true}') || return 1
+            # Le marqueur du rétablissement naît ici, juste avant la requête : une annulation plus tôt ne déclenche rien.
+            : > "$RUNNER_TEMP/retablir/patch-envoye"
             scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
           }
           deployer() {
@@ -539,7 +542,6 @@ jobs:
           printf '%s' "$precedente" > "$RUNNER_TEMP/retablir/image"
           printf '%s' "$anciennes" > "$RUNNER_TEMP/retablir/variables.json"
           printf '%s' "$noms_secrets" > "$RUNNER_TEMP/retablir/noms-secrets.json"
-          : > "$RUNNER_TEMP/retablir/patch-envoye"
           deployer "$REFERENCE" "$nouvelles"
           verifier_conteneur "$REFERENCE" "$nouvelles" "$noms_secrets"
           attendre_version
