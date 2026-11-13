@@ -72,3 +72,42 @@ async def prendre_un_creneau_de_reinitialisation(curseur: Curseur, cle: bytes, r
     if ligne is None:
         raise RuntimeError("prend_un_creneau_reinit n'a rien rendu")
     return int(ligne["attente_s"])
+
+
+async def prendre_les_creneaux_de_demande(
+    curseur: Curseur, cle_ip: bytes, cle_paire: bytes, cle_compte: bytes, reglages: Settings
+) -> int:
+    """0 si la demande de code peut aller plus loin, sinon l'attente en secondes (migration 0147).
+
+    L'IP d'abord, puis (adresse, IP), puis adresse : un refus n'use pas les suivants (B6). Sans escalade :
+    un refus ne compte pas et ne prolonge rien. Les clés viennent d'`Empreintes`.
+    """
+    await curseur.execute(
+        "select public.prend_les_creneaux_de_demande(%s, %s, %s, %s, %s, %s, %s, %s) as attente_s",
+        (
+            cle_ip,
+            cle_paire,
+            cle_compte,
+            reglages.code_demandes_par_ip,
+            reglages.code_demandes_par_paire,
+            reglages.code_demandes_par_compte,
+            reglages.code_fenetre_s,
+            reglages.code_fenetre_compte_s,
+        ),
+    )
+    ligne = await curseur.fetchone()
+    if ligne is None:  # une fonction scalaire rend toujours une ligne
+        raise RuntimeError("prend_les_creneaux_de_demande n'a rien rendu")
+    return int(ligne["attente_s"])
+
+
+async def prendre_un_envoi(curseur: Curseur, reglages: Settings) -> int:
+    """0 si le mail peut partir, sinon l'attente en secondes : le coupe-circuit global des mails (0147)."""
+    await curseur.execute(
+        "select public.prend_un_envoi(%s, %s) as attente_s",
+        (reglages.mail_global_par_fenetre, reglages.mail_global_fenetre_s),
+    )
+    ligne = await curseur.fetchone()
+    if ligne is None:
+        raise RuntimeError("prend_un_envoi n'a rien rendu")
+    return int(ligne["attente_s"])

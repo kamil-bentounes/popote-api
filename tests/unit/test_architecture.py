@@ -22,6 +22,7 @@ APPELANTS_DU_SERVICE: set[str] = {"security/acceptation_invitation.py"}
 APPELANTS_DE_LA_CONNEXION: set[str] = {
     "security/connexion.py",
     "security/acceptation_invitation.py",
+    "security/code_de_connexion.py",
 }
 
 SET_DE_SESSION = re.compile(r"(?is)^\s*set\s+(?!local\b)")  # `set x = …` sans `local`, en tête d'instruction

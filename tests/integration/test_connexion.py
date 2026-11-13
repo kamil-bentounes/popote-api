@@ -77,6 +77,7 @@ class Banc:
         self.fabrique.admin.execute(
             "delete from public.security_event where account_key = any(%s)", (self.cles,)
         )
+        self.fabrique.admin.execute("delete from public.login_code where account_key = any(%s)", (self.cles,))
 
 
 @pytest.fixture

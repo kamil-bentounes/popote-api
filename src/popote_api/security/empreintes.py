@@ -17,6 +17,7 @@ import hmac
 import secrets
 import unicodedata
 from ipaddress import IPv6Address, IPv6Network, ip_address
+from uuid import UUID
 
 from pydantic import SecretStr
 
@@ -28,6 +29,9 @@ ETIQUETTE_COMPTE = b"popote/compte/v1\x00"
 ETIQUETTE_IP = b"popote/ip/v1\x00"
 ETIQUETTE_REINITIALISATION = b"popote/reinit/v1\x00"
 ETIQUETTE_LIEN = b"popote/lien/v1\x00"
+ETIQUETTE_PAIRE_DE_CODE = b"popote/code-paire/v1\x00"
+# Le code se protège par une clé dérivée du poivre (`login-code/v1`), jamais par le poivre lui-même.
+ETIQUETTE_DU_CODE = b"popote/login-code/v1\x00"
 # Une requête sans adresse (relais absent ou invalide) : une clé commune, jamais « personne ».
 IP_ABSENTE = "sans-ip"
 PREFIXE_IPV6 = 64  # une IPv6 se regroupe par /64 : un foyer reçoit au moins un /64 (B12)
@@ -118,6 +122,32 @@ class Empreintes:
         if cle is None:
             raise PoivreAbsentError
         return cle
+
+    def cle_paire_de_code(self, email: str, ip: str | None) -> bytes | None:
+        """La clé du compteur de demandes de code : le COUPLE (e-mail, IP), jamais l'e-mail seul.
+
+        Un tiers qui connaît l'adresse n'épuise ainsi, par cette limite, que ses propres demandes.
+        """
+        return self._hmac(ETIQUETTE_PAIRE_DE_CODE, f"{email_normalise(email)}\x00{ip_canonique(ip)}")
+
+    def cle_paire_de_code_requise(self, email: str, ip: str | None) -> bytes:
+        cle = self.cle_paire_de_code(email, ip)
+        if cle is None:
+            raise PoivreAbsentError
+        return cle
+
+    def empreinte_du_code(self, code_request_id: UUID, cle_compte: bytes, code: str) -> bytes:
+        """L'empreinte d'un code de connexion : le HMAC de (identifiant de demande, clé du compte, code).
+
+        Un code de 10^6 valeurs ne se protège pas par un simple hachage : sans le poivre, la table ne permet
+        pas de le retrouver. Lier la demande et le compte fait qu'une empreinte ne vaut que pour sa demande.
+        Lève `PoivreAbsentError` sans poivre : on n'écrit jamais un code sans sa protection.
+        """
+        if self._poivre is None:
+            raise PoivreAbsentError
+        derive = hmac.new(self._poivre, ETIQUETTE_DU_CODE, hashlib.sha256).digest()
+        message = code_request_id.bytes + cle_compte + code.encode("ascii")
+        return hmac.new(derive, message, hashlib.sha256).digest()
 
     def cle_compte_requise(self, email: str) -> bytes:
         """Pour qui COMPTE par clé : sans poivre, refuser plutôt que compter sans clé (fail closed)."""

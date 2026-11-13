@@ -109,6 +109,16 @@ class Settings(BaseSettings):
     invitation_essais_par_lien: int = Field(default=10, ge=1, le=10000)
     invitation_fenetre_s: int = Field(default=900, ge=1, le=86400)
     connexion_attente_max_s: int = Field(default=3600, ge=1, le=86400)
+    # La demande de code par mail (`security/code_de_connexion.py`, migration 0147) : 10 demandes par IP et
+    # 3 par (adresse, IP) par fenêtre de 15 min, 6 par adresse par heure ; sans escalade (le créneau de trop
+    # attend la fin de la fenêtre). Le coupe-circuit global compte les mails envoyés, jamais les demandes.
+    code_demandes_par_ip: int = Field(default=10, ge=1, le=10000)
+    code_demandes_par_paire: int = Field(default=3, ge=1, le=10000)
+    code_demandes_par_compte: int = Field(default=6, ge=1, le=10000)
+    code_fenetre_s: int = Field(default=900, ge=1, le=86400)
+    code_fenetre_compte_s: int = Field(default=3600, ge=1, le=86400)
+    mail_global_par_fenetre: int = Field(default=60, ge=1, le=10000)
+    mail_global_fenetre_s: int = Field(default=3600, ge=1, le=86400)
     reinitialisation_essais: int = Field(default=3, ge=1, le=100)
     reinitialisation_fenetre_s: int = Field(default=3600, ge=1, le=86400)
     # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans

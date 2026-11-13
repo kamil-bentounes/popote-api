@@ -330,7 +330,7 @@ Limite connue (B9) : la force brute par le point `/auth/v1/token` de Supabase Au
 Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à une session réauthentifiée depuis moins de
 5 minutes, donc vue depuis moins de 5 minutes, et `session_courante` ne verrouille la ligne que passé ce délai.
 
-### 4.13 Code par mail : la demande, côté base (0.4bis S5a, migration 0147 ; la route `POST /api/v1/login-codes` est S5b)
+### 4.13 Code par mail : la demande (0.4bis S5, migration 0147 ; code : `api/codes.py`, `security/code_de_connexion.py`, `security/codes.py`)
 
 - **Table `public.login_code`** : le HMAC du code (jamais le code), 10 minutes au plus (`CHECK`), 5 essais, usage unique,
   révocable ; **un seul code actif par clé de compte** (index unique partiel : une demande révoque la précédente).
@@ -361,8 +361,24 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
 - **Ordre des verrous**, que S7 reprend : clé de compte, puis personne (la clé de `cree_session`), puis `auth.users` en `for key share`
   (le compte se relit une fois le verrou de la personne pris), puis les lignes `login_code`. `for key share` n'empêche pas un
   bannissement simultané : la vérification (S7) relit l'état du compte.
-- Tests : `tests/integration/test_demande_de_code_base.py` (dont 50 demandes simultanées par adresse connue et inconnue, un
-  test de dérive entre les portées du `CHECK` et celles que les fonctions emploient) et `test_surface.py`.
+- **La route `POST /api/v1/login-codes`** `{email}` (publique, `ROUTES_PUBLIQUES`). Ordre, qui est la sécurité de la route :
+  corps validé (e-mail 254, champs inconnus refusés) -> clés HMAC (sans poivre : `503`, rien ne se compte ni ne s'écrit sans
+  clé) -> code (`secrets.randbelow(10**6)`, six chiffres) et son empreinte (HMAC d'une clé dérivée du poivre, étiquette
+  `login-code/v1`, sur identifiant de demande, clé du compte et code : une empreinte ne vaut que pour sa demande) tirés **avant**
+  la base, que le compte existe ou non -> une transaction (`base.connexion()`, validée aussi sur un refus : le compteur reste) :
+  `prend_les_creneaux_de_demande`, puis `demande_un_code`. **Toujours `202 {code_request_id, expires_in_s: 600,
+  resend_after_s: 60, message}`**, même statut, même corps hors identifiant, mêmes en-têtes. Un refus de limite est `429` +
+  `Retry-After` pour tous, connus ou non. Une erreur de la base donne `503`, jamais `500`.
+- **Le mail** part APRÈS la réponse (`BackgroundTasks`), pour une personne réelle et un code neuf seulement : coupe-circuit global
+  (`prend_un_envoi`) puis `envoie_sans_remonter`. Un coupe-circuit ouvert ou illisible jette le mail (le code reste valable ; la
+  clé d'accès fonctionne) et se journalise sans adresse ni code ; un envoi qui échoue se journalise par son type seul.
+  Le code n'est ni dans une colonne (seul son HMAC l'est), ni dans un événement, ni dans un journal, ni dans l'objet du mail.
+  Sans `Idempotency-Key` : route publique, rejouer une réponse garderait un identifiant de demande.
+- Tests : `tests/integration/test_demande_de_code_base.py` (la base : 50 demandes simultanées, un test de dérive entre les portées du
+  `CHECK` et celles des fonctions), `test_demande_de_code.py` (la route : réponse et durée comparables, limites, coupe-circuit, journaux),
+  `tests/unit/test_codes.py` (code, empreinte, clés, envoi) et `test_surface.py`. Mutations rejouées : mail pour une adresse inconnue,
+  code en clair, même empreinte pour deux demandes, identifiant non effectif, créneaux seulement pour un compte connu, ordre des clés,
+  coupe-circuit retiré, code ou adresse dans un journal, validité, paire sans IP.
 
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
