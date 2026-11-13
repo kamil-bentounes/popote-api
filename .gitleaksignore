@@ -5,3 +5,6 @@ db8a0794c2a846b60fff34e3f10a2087934babd5:tests/rappels-service.test.ts:generic-a
 b3cbafd656f7be7ff9fe70a6a94e876fd377d319:.env.production:generic-api-key:5
 # L'exemple d'Idempotency-Key du brouillon (un UUID) pris pour une clé d'API, remplacé depuis.
 d6784627eb019c0896c335748b9ba329b1261cd3:docs/normes-api.md:generic-api-key:102
+# Valeur factice d'un test d'idempotence (secret d'essai), remplacée par 3448a60.
+73f70ba6f89cb5d3976da998c84d1c180034c495:tests/integration/test_idempotence_http.py:generic-api-key:548
+73f70ba6f89cb5d3976da998c84d1c180034c495:tests/integration/test_idempotence_http.py:generic-api-key:568
