@@ -459,9 +459,12 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   `ouvre_la_session` lèvent encore : garde de dernier recours).
 - **Hors de portée de ce test.** La comparaison des empreintes n'est pas à temps constant : c'est un HMAC à poivre, l'appelant n'en
   maîtrise pas le début. `ferme_les_autres_*` ne revérifient pas la session gardée (hérité de 0140 et 0141) : rien ici ne s'y appuie.
-- **Ordre des verrous avec Auth.** Pour une vraie ligne : verrou de personne, puis la ligne d'`auth.users` (`for key share`, comme
-  `demande_un_code`), puis la ligne du code : la suppression d'un compte par Auth tient le compte puis supprime le code en cascade ; prendre le
-  code d'abord ouvrirait un cycle (`40P01`). Testé : B attend le compte sans tenir de ligne.
+- **Ordre des verrous avec Auth et `delete_my_account`.** Pour une vraie ligne : verrou de personne, puis la session présentée (si elle
+  est valable, `for update`), puis la ligne d'`auth.users` (`for key share`, comme `demande_un_code`), puis la ligne du code. Deux
+  cycles évités : `delete_my_account` (0145) supprime les sessions puis le compte, donc prendre le compte avant la session présentée
+  ferait un `40P01` avec elle ; la suppression d'un compte par Auth tient le compte puis supprime le code en cascade, donc le code se
+  prend après le compte. Testé par deux courses déterministes (B attend sans tenir de ligne ; A supprime la session puis le compte
+  pendant que B attend : aucun cycle, B est refusé), chacune casse sans l'ordre.
 - **Risques acceptés (dits, pas résolus ici).** (1) `efface_mes_donnees` (0145) ne prend pas le verrou de personne avant S14 (0156) : une
   vérification qui a lu « peut entrer » avant l'effacement peut insérer sa session après lui (la clé étrangère vise `auth.users`, pas le
   profil), avec un événement `connexion_par_code` portant la clé de compte ; elle meurt à la suppression d'Auth. Même défaut que

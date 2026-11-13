@@ -35,14 +35,181 @@
 -- change que des compteurs, la seconde rend ce qu'elle rendait ; un CHECK élargi, aucune valeur retirée.
 --
 -- RETOUR ARRIÈRE (il perd `opened_with` et les événements `connexion_par_code` du journal ; les sessions et les codes
--- se rouvrent). Dans CET ordre ; les corps à recopier sont ceux des migrations citées, en entier :
+-- se rouvrent). Le SQL entre les deux repères s'exécute tel quel, une fois les « -- » retirés (rejoué sur la base locale) :
+-- >>> retour arrière
 --   drop function public.ouvre_une_session_par_code(uuid, bytea, bytea, bytea, text, text, bytea, text);
 --   drop function private.ouvre_une_session_par_code(uuid, bytea, bytea, bytea, text, text, bytea, timestamptz, text);
 --   drop function public.ouvre_la_session(uuid, bytea, text, text, bytea, text);
 --   drop function private.ouvre_la_session(uuid, bytea, text, text, bytea, text, timestamptz);
---   create or replace function public.demande_un_code(…) : le corps de 0147, en entier ;
+--   create or replace function public.demande_un_code(
+--     p_email text,
+--     p_account_key bytea,
+--     p_code_request_id uuid,
+--     p_code_hash bytea,
+--     p_ip_hash bytea,
+--     p_request_id text default null
+--   ) returns table (personne uuid, demande uuid, nouveau boolean)
+--   language plpgsql
+--   volatile
+--   security definer
+--   set search_path = ''
+--   as $$
+--   declare
+--     v_personne uuid;
+--     v_actif public.login_code%rowtype;
+--   begin
+--     -- `p_request_id` se contrôle ici, pour les deux branches : sinon seul un compte réel (qui écrit l'événement) le
+--     -- refuserait, et l'erreur de la base recopierait la ligne refusée.
+--     if p_email is null or p_account_key is null or p_code_request_id is null or p_code_hash is null
+--        or p_ip_hash is null or pg_catalog.octet_length(p_email) > 254
+--        or pg_catalog.octet_length(p_account_key) <> 32 or pg_catalog.octet_length(p_code_hash) <> 32
+--        or pg_catalog.octet_length(p_ip_hash) <> 32
+--        or (p_request_id is not null and p_request_id !~ '^[0-9a-f]{32}$') then
+--       raise exception 'Paramètres invalides.' using errcode = 'invalid_parameter_value';
+--     end if;
+--
+--     -- Deux demandes de la même adresse se suivent, connue ou non : l'index unique ne verrait jamais une course.
+--     perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('login_code'),
+--                                              pg_catalog.hashtext(pg_catalog.encode(p_account_key, 'hex')));
+--
+--     /* Le compte se lit DEUX fois : une première sans verrou pour connaître la personne, puis, le verrou de la personne
+--        pris, une seconde sous `for key share` (une suppression du compte attendrait, au lieu de casser l'insertion).
+--        L'ordre clé de compte, personne, lignes reste ainsi celui de toutes les autres fonctions : un `key share` pris
+--        avant le verrou de la personne ouvrirait un cycle avec qui tient la personne et attend `auth.users`.
+--        `instance_id` : seul l'index `users_instance_id_email_idx (instance_id, lower(email))` sert la recherche. Sans
+--        lui, un parcours complet de la table s'arrête à la première ligne trouvée : une adresse connue répondrait plus
+--        vite qu'une inconnue (mesuré : 4 ms contre 12 ms sur 20 000 comptes). Supabase pose toujours cette valeur.
+--        Un bannissement simultané n'attend pas le `key share` : la vérification (S7) relit l'état du compte. */
+--     select u.id into v_personne
+--       from auth.users u
+--      where u.instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+--        and pg_catalog.lower(u.email) = p_email
+--        and u.deleted_at is null
+--        and (u.banned_until is null or u.banned_until <= pg_catalog.now())
+--        and exists (select 1 from public.user_profile p where p.id = u.id)
+--      order by u.id  -- deux comptes à la casse près (l'index unique d'Auth la distingue) : toujours le même
+--      limit 1;
+--
+--     if v_personne is not null then
+--       -- La même clé que `cree_session` (0139) : un code ne se révoque pas pendant qu'une session s'ouvre.
+--       perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_personne::text, 0));
+--       select u.id into v_personne
+--         from auth.users u
+--        where u.id = v_personne
+--          and u.deleted_at is null
+--          and (u.banned_until is null or u.banned_until <= pg_catalog.now())
+--          and exists (select 1 from public.user_profile p where p.id = u.id)
+--          for key share of u;
+--     end if;
+--
+--     select * into v_actif
+--       from public.login_code c
+--      where c.account_key = p_account_key and c.used_at is null and c.revoked_at is null
+--        for update;
+--     -- Moins de 60 s : le code déjà parti reste le bon (un code mort, aux 5 essais faux, ne se rejoue pas).
+--     if found and v_actif.created_at > pg_catalog.now() - interval '60 seconds' and v_actif.attempts < 5 then
+--       return query select v_personne, v_actif.id, false;
+--       return;
+--     end if;
+--
+--     update public.login_code c
+--        set revoked_at = pg_catalog.now()
+--      where c.account_key = p_account_key and c.used_at is null and c.revoked_at is null;
+--     insert into public.login_code (id, account_key, person_id, code_hash)
+--     values (p_code_request_id, p_account_key, v_personne, p_code_hash);
+--
+--     -- Seulement pour un compte réel : une adresse inconnue n'écrit qu'une ligne purgée en un jour et un compteur
+--     -- purgé en 24 h, jamais une ligne de journal gardée 90 jours (sinon une IP remplirait la base).
+--     if v_personne is not null then
+--       perform private.ecrit_evenement('code_demande', v_personne, null, null, p_account_key, p_ip_hash, p_request_id);
+--     end if;
+--     return query select v_personne, p_code_request_id, true;
+--   end;
+--   $$;
 --   drop function private.personne_peut_entrer(uuid);
---   create or replace function private.prend_un_creneau(…) : le corps de 0138, en entier ;
+--   create or replace function private.prend_un_creneau(
+--     p_scope text,
+--     p_key bytea,
+--     p_limit integer,
+--     p_window_s integer,
+--     p_max_block_s integer,
+--     p_escalade boolean,
+--     p_now timestamptz
+--   ) returns table (attente_s integer, nouveau_blocage boolean)
+--   language plpgsql
+--   volatile
+--   security invoker
+--   set search_path = ''
+--   as $$
+--   declare
+--     v_ligne public.login_throttle%rowtype;
+--     v_fenetre constant interval := pg_catalog.make_interval(secs => p_window_s);
+--     v_attempts integer;
+--     v_strikes integer;
+--     v_duree integer;
+--   begin
+--     if p_key is null or pg_catalog.length(p_key) <> 32 then
+--       raise exception 'La clé de limite doit faire 32 octets.' using errcode = 'invalid_parameter_value';
+--     end if;
+--     -- Les bornes se vérifient ici, pour toutes les fonctions publiques : un appelant ne désactive pas la limite (limite
+--     -- énorme), ne pose pas un blocage de plusieurs années, et un paramètre nul ne passe pas (`null < 1` n'est pas vrai).
+--     if p_limit is null or p_window_s is null or p_max_block_s is null or p_escalade is null or p_now is null
+--        or p_limit not between 1 and 10000
+--        or p_window_s not between 1 and 86400
+--        or p_max_block_s not between p_window_s and 86400 then
+--       raise exception 'Limite, fenêtre ou plafond invalide.' using errcode = 'invalid_parameter_value';
+--     end if;
+--
+--     -- Créer la ligne si elle manque ET la verrouiller en une seule instruction : la purge nocturne ne peut pas
+--     -- l'effacer entre les deux (un `insert … do nothing` puis un `select … for update` laisserait cette fenêtre).
+--     insert into public.login_throttle as t (scope, key, window_start) values (p_scope, p_key, p_now)
+--     on conflict (scope, key) do update set window_start = t.window_start
+--     returning t.* into v_ligne;
+--
+--     -- Bloqué : l'attente restante, sans compter.
+--     if v_ligne.blocked_until is not null and v_ligne.blocked_until > p_now then
+--       return query select pg_catalog.ceil(extract(epoch from v_ligne.blocked_until - p_now))::integer, false;
+--       return;
+--     end if;
+--
+--     v_attempts := v_ligne.attempts;
+--     v_strikes := v_ligne.strikes;
+--     -- Les crans retombent après 24 h sans blocage.
+--     if v_ligne.last_block_at is not null and v_ligne.last_block_at <= p_now - interval '24 hours' then
+--       v_strikes := 0;
+--     end if;
+--     -- Fenêtre échue : on repart de zéro.
+--     if v_ligne.window_start <= p_now - v_fenetre then
+--       v_attempts := 0;
+--       v_ligne.window_start := p_now;
+--     end if;
+--
+--     if v_attempts < p_limit then
+--       update public.login_throttle
+--          set attempts = v_attempts + 1, strikes = v_strikes, window_start = v_ligne.window_start
+--        where scope = p_scope and key = p_key;
+--       return query select 0, false;
+--       return;
+--     end if;
+--
+--     if not p_escalade then
+--       -- Sans escalade : attendre la fin de la fenêtre, sans compter.
+--       update public.login_throttle set strikes = v_strikes, window_start = v_ligne.window_start
+--        where scope = p_scope and key = p_key;
+--       return query select pg_catalog.ceil(extract(epoch from v_ligne.window_start + v_fenetre - p_now))::integer, false;
+--       return;
+--     end if;
+--
+--     v_strikes := v_strikes + 1;
+--     -- 2^(strikes-1) : le 31e cran n'existe pas, le plafond tombe bien avant.
+--     v_duree := least(p_max_block_s::bigint, p_window_s::bigint * (1::bigint << least(v_strikes - 1, 30)))::integer;
+--     update public.login_throttle
+--        set attempts = 0, strikes = v_strikes, window_start = p_now, last_block_at = p_now,
+--            blocked_until = p_now + pg_catalog.make_interval(secs => v_duree)
+--      where scope = p_scope and key = p_key;
+--     return query select v_duree, true;
+--   end;
+--   $$;
 --   alter table public.login_session drop column opened_with;
 --   delete from public.security_event where kind = 'connexion_par_code';
 --   alter table public.security_event drop constraint security_event_kind_check, add constraint
@@ -52,6 +219,7 @@
 --       'mot_de_passe_change', 'reinitialisation_demandee', 'reinitialisation_utilisee',
 --       'invitation_creee', 'invitation_acceptee', 'invitation_revoquee',
 --       'compte_supprime', 'compte_repris', 'verification_fuites_indisponible', 'code_demande'));
+-- <<< retour arrière
 -- ═══════════════════════════════════════════════════════════════════════════
 set local lock_timeout = '5s';
 set local statement_timeout = '30s';
@@ -364,9 +532,17 @@ begin
 
   if v_titulaire is not null then
     perform private.verrouille_la_personne(v_titulaire, p_old_hash, p_now);
-    -- Comme `demande_un_code` : la ligne d'`auth.users` avant celle du code. La session s'insère sous un `key share`
-    -- sur elle ; la suppression d'un compte (Auth) tient la ligne puis supprime le code en cascade : prendre le code
-    -- d'abord ouvrirait un cycle (`40P01`) dont la victime pourrait être cette suppression.
+    -- Ordre : la session présentée, puis la ligne d'`auth.users`, puis celle du code.
+    -- (1) `delete_my_account` (0145) supprime les sessions PUIS le compte : prendre le compte avant la session
+    --     présentée ferait un cycle avec elle (`40P01`). La session ne se verrouille que si elle est encore valable.
+    -- (2) La suppression d'un compte par Auth tient le compte puis supprime le code en cascade : le code ne se prend
+    --     qu'après le compte (comme `demande_un_code`), jamais avant.
+    if p_old_hash is not null then
+      perform 1 from public.login_session s
+       where s.token_hash = p_old_hash and s.revoked_at is null
+         and s.expires_at > p_now and s.absolute_expires_at > p_now
+         for update;
+    end if;
     perform 1 from auth.users u where u.id = v_titulaire for key share;
   end if;
 

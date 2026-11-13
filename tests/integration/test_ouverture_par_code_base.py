@@ -687,6 +687,46 @@ class TestConcurrence:
                 a.rollback()  # B reprend
             assert (await tache)[0] is True
 
+    async def test_la_verification_prend_la_session_presentee_avant_le_compte_comme_delete_my_account(
+        self,
+        base: Base,
+        adresse_reelle: tuple[UUID, str],
+        fabrique: Fabrique,
+        cles: Cles,
+        admin: psycopg.Connection[Ligne],
+    ) -> None:
+        """A supprime la session présentée puis le compte (0145) ; B, qui la présente, ne tient pas le compte.
+
+        Sinon B tient le compte (`key share`) et attend la session que A a supprimée, pendant que A attend le
+        compte : `40P01`."""
+        personne, _ = adresse_reelle
+        presentee = fabrique.session(personne)
+        code = pose(admin, cles, personne)
+
+        async def b() -> Resultat:
+            async with base.connexion() as curseur:
+                valeurs = (code.id, code.cle, code.empreinte, token_bytes(32), "chrome", "linux")
+                await curseur.execute(OUVRE, (*valeurs, presentee.empreinte, None))
+                ligne = await curseur.fetchone()
+            assert ligne is not None
+            return ligne["ouverte"], ligne["session"], ligne["personne"]
+
+        with psycopg.connect(DSN_ADMIN) as a:
+            a.execute("delete from public.login_session where id = %s", (presentee.id,))
+            tache = asyncio.create_task(b())
+            try:
+                await attend_un_verrou(admin, "ouvre_une_session_par_code", a.info.backend_pid)
+                # La suite de `delete_my_account` : le profil, puis le compte. Sans cycle, rien à attendre.
+                a.execute("delete from public.user_profile where id = %s", (personne,))
+                a.execute("delete from auth.users where id = %s", (personne,))
+                a.commit()
+            except BaseException:
+                a.rollback()
+                tache.cancel()
+                await asyncio.gather(tache, return_exceptions=True)
+                raise
+            assert await tache == REFUS  # le compte et son code sont partis : un refus, pas une erreur
+
     def test_demande_verification_et_fermeture_entrelacees_ne_s_interbloquent_jamais(
         self,
         adresse_reelle: tuple[UUID, str],
