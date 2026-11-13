@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     connexion_essais_par_compte: int = Field(default=5, ge=1, le=1000)
     connexion_essais_par_ip: int = Field(default=20, ge=1, le=10000)
     connexion_fenetre_s: int = Field(default=900, ge=1, le=86400)
+    # Routes publiques d'invitation (B11) : par IP (/64 en IPv6) et par lien, par fenêtre, sans escalade.
+    invitation_essais_par_ip: int = Field(default=30, ge=1, le=10000)
+    invitation_essais_par_lien: int = Field(default=10, ge=1, le=10000)
+    invitation_fenetre_s: int = Field(default=900, ge=1, le=86400)
     connexion_attente_max_s: int = Field(default=3600, ge=1, le=86400)
     reinitialisation_essais: int = Field(default=3, ge=1, le=100)
     reinitialisation_fenetre_s: int = Field(default=3600, ge=1, le=86400)

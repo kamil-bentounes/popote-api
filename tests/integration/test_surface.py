@@ -18,7 +18,7 @@ ROLES = [*EMPRUNTABLES, "popote_api", "popote_internal"]
 PRIVILEGES_DE_TABLE = ["select", "insert", "update", "delete", "truncate", "references", "trigger"]
 
 # Les tables de 0.4 : aucun droit aux rôles applicatifs, RLS forcée, sans politique. Une migration en ajoute.
-TABLES = ["public.security_event", "public.login_throttle", "public.invite_link"]
+TABLES = ["public.security_event", "public.login_throttle", "public.invite_link", "public.reprise_en_cours"]
 
 # Les fonctions de 0.4 et les rôles qui peuvent les exécuter (rôle COURANT). Une migration en ajoute.
 EXECUTABLES_PAR: dict[str, set[str]] = {
@@ -61,6 +61,14 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.revoque_invitation(uuid)": {"authenticated"},
     "private.cree_invitation(uuid, bytea, timestamptz)": set(),
     "private.purge_invite_link(timestamptz, integer)": set(),
+    "public.prend_un_creneau_invitation(text, bytea, integer, integer)": {"popote_api", "service_role"},
+    "public.etat_invitation(bytea)": {"popote_api", "service_role"},
+    "public.consomme_invitation(bytea)": {"service_role"},
+    "public.rend_invitation(uuid)": {"service_role"},
+    "public.termine_invitation(uuid, uuid)": {"service_role"},
+    "public.compte_pour_email(text)": {"service_role"},
+    "public.reserve_reprise(bytea)": {"service_role"},
+    "public.libere_reprise(bytea)": {"service_role"},
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()
