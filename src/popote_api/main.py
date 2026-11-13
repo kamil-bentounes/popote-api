@@ -72,6 +72,15 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
             avertissements.warning(
                 "POPOTE_PUBLIC_BASE_URL absente : les liens des mails ne peuvent pas être écrits."
             )
+        if (
+            settings.public_base_url is not None
+            and settings.relais_exige
+            and str(settings.public_base_url).rstrip("/") not in settings.origines
+        ):
+            avertissements.warning(
+                "POPOTE_PUBLIC_BASE_URL n'est pas l'une des origines du front de l'environnement : "
+                "les liens d'invitation seront refusés à l'envoi."
+            )
         if not settings.secrets_internes:
             avertissements.warning(
                 "POPOTE_INTERNAL_SECRET absente : toute route /internal/* répond 404 (fermée par défaut)."
