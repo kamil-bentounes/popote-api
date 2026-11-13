@@ -488,6 +488,11 @@ configuration, journalisation, protection des données.
 
 - Données et traitements en Europe ; liste des sous-traitants tenue (Supabase, hébergeurs, fournisseurs de
   modèles, envoi de mails, Pwned Passwords) avec leurs conditions de conservation vérifiées.
+- **Scaleway Transactional Email** (sous-traitant, Paris, S4) : reçoit l'adresse du destinataire, l'objet, le texte (code ou lien
+  d'invitation) et l'adresse IP émettrice. Selon la documentation de Scaleway (relue le 13/11/2026) : le contenu est effacé à
+  l'acceptation par le serveur du destinataire, au premier rebond dur ou après 36 heures d'échecs, avec des sauvegardes chiffrées de
+  7 jours ; les métadonnées (dont l'adresse IP émettrice) sont gardées tant que le domaine d'envoi est actif. Le code n'est jamais dans
+  l'objet. Sources : `docs/exploitation.md`, « L'envoi réel ».
 - **Pwned Passwords** (`api.pwnedpasswords.com`, service de Have I Been Pwned) : reçoit les 5 premiers
   caractères hexadécimaux du SHA-1 d'un nouveau mot de passe, l'adresse IP du serveur de l'API et l'agent
   `popote`. Il ne reçoit ni e-mail, ni identifiant, ni compte, ni le mot de passe, ni le reste de l'empreinte :
@@ -638,10 +643,29 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   plus, une lettre visible au moins, sinon le repli « Quelqu'un » (« Bonjour, » pour l'invité). Limites dites : pas de contrôle de
   script mixte ni d'homoglyphes (« Mаrc » avec un a cyrillique passe) ; le ZWNJ des prénoms persans est refusé ; l'hôte choisit ses
   30 lettres (« Support Popote » passe) : le filtre réduit l'hameçonnage par prénom sans le supprimer (menace F6). Un prénom ne se garde jamais sans ce filtre : S12 l'applique aussi à la saisie.
-- **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`) ou `local`
-  (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs). L'envoi réel par Scaleway TEM vient
-  avec S4 ; hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage.
-- Tests : `tests/unit/test_mails.py`. `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
+- **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`), `local`
+  (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs) ou `scaleway` (S4, ci-dessous).
+  Hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage ; le refus de démarrer sans fournisseur
+  `scaleway` complet est armé en S7.
+- **L'envoi réel, `infra/mail_scaleway.py` (S4)** : Scaleway Transactional Email, `POST` vers une adresse **écrite en dur** (région
+  `fr-par`), clé dans `X-Auth-Token`. (1) **La clé n'est lue que par ce module** : test d'architecture (aucun autre fichier de
+  `src/` ne nomme `scaleway_tem_secret_key`, hors réglages et fabrique, ni n'en appelle `get_secret_value`) ; `SecretStr`, `repr`
+  des réglages et de l'envoi masqués, clé refusée à la construction si elle n'est pas transmissible dans un en-tête (sinon h11 la
+  recopierait dans son message). (2) **Aucune donnée dans les journaux ni les exceptions** : ni clé, ni adresse, ni objet, ni texte, ni
+  corps de réponse ; seuls le type de l'erreur et la classe du statut (`4xx`, `5xx`). (3) Délais finis (3 s, 5 s, 15 s au total),
+  aucune exception d'httpx chaînée (elle porte la requête entière : clé, adresse, texte ; on n'en garde que le type), redirections refusées, `trust_env=False`, réponse lue sur 64 Kio au plus, tout `Content-Encoding` refusé (`Accept-Encoding:
+  identity` : sans décompression, la borne porte sur les octets reçus). (4) **Une** reprise sur coupure, délai ou `5xx` (pause de
+  0,5 s, `Retry-After` entier respecté jusqu'à 3 s) ; **aucune** sur `4xx`, ni sous un `2xx` même illisible ou dont le corps se coupe : un mail déjà accepté
+  n'est jamais renvoyé par l'API ; au pire deux mails identiques (coupure après acceptation), jamais deux codes différents.
+  (5) Succès = premier mail `new`, `sending` ou `sent` : **accepté, pas remis** ; l'identifiant du mail n'est pas gardé (un rebond dur
+  ne se voit que dans la console TEM). (6) **Un code expiré n'est jamais livré** : `send_before` = heure d'envoi + validité, fixé avant
+  la première tentative et identique à la reprise. (7) L'annulation de la tâche n'est ni avalée ni reprise. **Marge dite** : l'heure de référence est celle de l'envoi, pas de
+  l'émission du code ; le délai entre les deux (une fraction de seconde, 25 s au plus : délai de la requête) peut laisser TEM livrer
+  un code encore un instant après son expiration, ce qui n'ouvre rien (le code expiré est refusé à la vérification). (8) **Sentry
+  (décidé le 13/11) :** la clé et l'adresse du destinataire sont des variables locales de `mail_scaleway.py` pendant l'envoi ; à
+  l'installation de Sentry, `include_local_variables=False` et `send_default_pii=False` sont **obligatoires**, avec un
+  `before_send` qui retire les `vars` des cadres de pile.
+- Tests : `tests/unit/test_mails.py`, `tests/unit/test_mail_scaleway.py` (faux transport `httpx.MockTransport` : aucun appel réel). `BoiteDeTest(en_panne=True)` simule un fournisseur qui ne répond plus. Mutations rejouées : le code dans l'objet, ne
   pas filtrer le prénom (hôte et invité), ne pas normaliser en NFC, marques et remplissages invisibles, avaler l'annulation,
   journaliser le message de l'erreur.
 

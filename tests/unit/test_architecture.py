@@ -5,6 +5,8 @@
    Garde-fou de relecture : il lit les chaînes littérales, pas celles qu'on assemblerait à l'exécution.
 2. `Base.service()` (le contournement de la RLS) n'est appelé que par les modules de la liste fermée.
 3. `Base.connexion()` (le rôle de connexion nu, pour les fonctions réservées à `popote_api`) de même.
+4. La clé d'envoi des mails (`scaleway_tem_secret_key`) n'est lue que par `infra/mail_scaleway.py` ; seuls les
+   réglages, la fabrique d'`EnvoiMail` et ce module la nomment (jamais pour la passer à un autre code).
 """
 
 import ast
@@ -132,3 +134,118 @@ def test_le_controle_attrape_un_appel_a_connexion() -> None:
     assert appels_a_connexion("async def f(base):\n    async with base.connexion() as c:\n        pass") == 1
     assert appels_a_connexion("async def f(base):\n    async with base.service() as c:\n        pass") == 0
     assert appels_a_connexion("async def f(base):\n    async with base.personne(p) as c:\n        pass") == 0
+
+
+# La clé d'envoi de Scaleway TEM : un seul module la lit (0.4bis S4). Les deux autres la nomment sans
+# la lire : les réglages la déclarent, la fabrique passe le `SecretStr` tel quel.
+CLE_TEM = "scaleway_tem_secret_key"
+LECTEUR_DE_LA_CLE_TEM = "infra/mail_scaleway.py"
+NOMMEURS_DE_LA_CLE_TEM: set[str] = {"config.py", "infra/mails.py", LECTEUR_DE_LA_CLE_TEM}
+
+
+def _nomme_la_cle_tem(noeud: ast.AST) -> bool:
+    return any(
+        (isinstance(n, ast.Attribute) and n.attr == CLE_TEM)
+        or (isinstance(n, ast.Name) and n.id == CLE_TEM)
+        or (isinstance(n, ast.Constant) and isinstance(n.value, str) and CLE_TEM in n.value)
+        for n in ast.walk(noeud)
+    )
+
+
+def nomme_la_cle_tem(source: str) -> bool:
+    return _nomme_la_cle_tem(ast.parse(source))
+
+
+def lit_la_cle_tem(source: str) -> bool:
+    """Vrai si un `.get_secret_value()` s'applique à une expression qui nomme la clé."""
+    return any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "get_secret_value"
+        and _nomme_la_cle_tem(n.func.value)
+        for n in ast.walk(ast.parse(source))
+    )
+
+
+def test_seul_le_module_d_envoi_lit_la_cle_tem() -> None:
+    lecteurs = {
+        str(chemin.relative_to(SRC)) for chemin in fichiers_source() if lit_la_cle_tem(chemin.read_text())
+    }
+    assert lecteurs <= {LECTEUR_DE_LA_CLE_TEM}
+
+
+def test_seuls_les_reglages_la_fabrique_et_le_module_d_envoi_nomment_la_cle_tem() -> None:
+    nommeurs = {
+        str(chemin.relative_to(SRC)) for chemin in fichiers_source() if nomme_la_cle_tem(chemin.read_text())
+    }
+    assert nommeurs <= NOMMEURS_DE_LA_CLE_TEM
+    assert LECTEUR_DE_LA_CLE_TEM in nommeurs  # le contrôle ne passe pas à vide
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "x = reglages.scaleway_tem_secret_key.get_secret_value()",
+        "x = (r.scaleway_tem_secret_key or None).get_secret_value()",
+        "secret = lambda: getattr(r, 'scaleway_tem_secret_key').get_secret_value()",
+        "scaleway_tem_secret_key.get_secret_value()",
+    ],
+)
+def test_le_controle_attrape_une_lecture_de_la_cle_tem(source: str) -> None:
+    assert lit_la_cle_tem(source) and nomme_la_cle_tem(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "x = reglages.supabase_secret_key.get_secret_value()",
+        "x = Envoi(reglages.scaleway_tem_secret_key)",
+        "x = self._cle.get_secret_value()",
+    ],
+)
+def test_le_controle_laisse_passer_ce_qui_ne_lit_pas_la_cle_tem(source: str) -> None:
+    assert not lit_la_cle_tem(source)
+
+
+def test_le_controle_attrape_un_autre_code_qui_recoit_la_cle_tem() -> None:
+    assert nomme_la_cle_tem("x = _secret(settings.scaleway_tem_secret_key)")
+    assert not nomme_la_cle_tem("x = _secret(settings.supabase_secret_key)")
+
+
+def lectures_de_secret_passees_a_un_appel(source: str, autorises: frozenset[str]) -> list[str]:
+    """Les appels qui reçoivent directement le résultat d'un `.get_secret_value()` (hors `autorises`)."""
+    fautes = []
+    for appel in (n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call)):
+        nom = appel.func.id if isinstance(appel.func, ast.Name) else getattr(appel.func, "attr", "")
+        arguments = [*appel.args, *(k.value for k in appel.keywords)]
+        if nom not in autorises and any(
+            isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "get_secret_value"
+            for a in arguments
+            for n in ast.walk(a)
+        ):
+            fautes.append(nom)
+    return fautes
+
+
+def test_le_module_d_envoi_ne_lit_la_cle_qu_a_deux_endroits_sans_la_passer_a_un_autre_code() -> None:
+    source = (SRC / LECTEUR_DE_LA_CLE_TEM).read_text()
+    # Le constructeur (nettoyage et contrôle) et l'en-tête de la requête : une troisième lecture se relit.
+    assert appels_a_la_methode(source, "get_secret_value") == 2
+    assert lectures_de_secret_passees_a_un_appel(source, frozenset({"SecretStr"})) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["journal.info('%s', self._cle.get_secret_value())", "valide(self._cle.get_secret_value().strip())"],
+)
+def test_le_controle_attrape_la_cle_passee_a_un_appel(source: str) -> None:
+    assert lectures_de_secret_passees_a_un_appel(source, frozenset({"SecretStr"})) != []
+
+
+def test_le_controle_laisse_passer_secretstr_et_les_methodes_de_chaine() -> None:
+    assert (
+        lectures_de_secret_passees_a_un_appel(
+            "x = SecretStr(c.get_secret_value().strip())", frozenset({"SecretStr"})
+        )
+        == []
+    )

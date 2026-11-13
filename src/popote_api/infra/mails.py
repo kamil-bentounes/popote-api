@@ -1,4 +1,4 @@
-"""L'envoi des mails, derrière une interface (0.4bis S3 ; l'envoi réel vient avec S4).
+"""L'envoi des mails, derrière une interface (0.4bis S3) ; l'envoi réel est dans `mail_scaleway.py` (S4).
 
 Le reste de l'application ne connaît que `EnvoiMail` : deux messages, le code de connexion et l'invitation.
 Un message ne se retrouve JAMAIS dans un journal : le code et le lien sont des secrets, l'adresse est une
@@ -21,7 +21,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, assert_never
 
 from popote_api.config import MailProvider, Settings
 
@@ -128,7 +128,18 @@ class MailAbsent:
 
 
 def cree_envoi_mail(reglages: Settings) -> EnvoiMail:
-    return BoiteDeTest() if reglages.mail_provider is MailProvider.local else MailAbsent()
+    match reglages.mail_provider:
+        case MailProvider.local:
+            return BoiteDeTest()
+        case MailProvider.scaleway:
+            # Import tardif : `mail_scaleway` importe ce module (exception, messages).
+            from popote_api.infra.mail_scaleway import cree_envoi_scaleway
+
+            return cree_envoi_scaleway(reglages)
+        case MailProvider.aucun:
+            return MailAbsent()
+        case _:
+            assert_never(reglages.mail_provider)
 
 
 async def envoie_sans_remonter[Message: (MessageCode, MessageInvitation)](

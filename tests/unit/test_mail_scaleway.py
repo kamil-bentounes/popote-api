@@ -1,0 +1,693 @@
+"""L'envoi réel par Scaleway TEM (0.4bis S4), contre un faux transport : aucun appel réseau, jamais."""
+
+import asyncio
+import gzip
+import json
+import logging
+import traceback
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+import httpx
+import pytest
+from _commun import reglages
+from pydantic import SecretStr, ValidationError
+
+from popote_api.config import MailProvider, Settings
+from popote_api.infra import mail_scaleway, mails_textes
+from popote_api.infra.mail_scaleway import (
+    EnvoiScaleway,
+    Expediteur,
+    cree_envoi_scaleway,
+)
+from popote_api.infra.mails import (
+    EnvoiMail,
+    MailIndisponible,
+    MessageCode,
+    MessageInvitation,
+    cree_envoi_mail,
+    envoie_sans_remonter,
+)
+from popote_api.main import create_app
+
+URL = "https://api.scaleway.com/transactional-email/v1alpha1/regions/fr-par/emails"
+CLE = "11111111-aaaa-bbbb-cccc-" + "d" * 12
+PROJET = UUID("22222222-3333-4444-5555-666666666666")
+EXPEDITEUR = Expediteur("bonjour@notre-popote.fr", "Popote")
+ADRESSE = "claire@example.org"
+CODE = "482916"
+LIEN = "https://essai.notre-popote.fr/invitation#jeton-secret"
+MAINTENANT = datetime(2026, 11, 13, 9, 30, 15, 987654, tzinfo=UTC)
+# Ce que TEM recopie dans ses réponses : l'adresse du destinataire. Elle ne doit sortir nulle part.
+ACCEPTE = {"emails": [{"id": "e1", "status": "new", "mail_rcpt": ADRESSE, "status_details": ADRESSE}]}
+
+Reponse = Callable[[httpx.Request], httpx.Response]
+
+
+def message_code(validite_min: int = 10) -> MessageCode:
+    return MessageCode(ADRESSE, CODE, validite_min)
+
+
+def message_invitation() -> MessageInvitation:
+    return MessageInvitation(ADRESSE, "Claire", "Marc", LIEN, datetime(2026, 11, 20, 10, 30, tzinfo=UTC))
+
+
+def ok(statut: str = "new") -> httpx.Response:
+    return httpx.Response(200, json={"emails": [{"id": "e1", "status": statut, "mail_rcpt": ADRESSE}]})
+
+
+def envoi(
+    reponse: Reponse, pauses: list[float] | None = None, cle: str = CLE
+) -> tuple[EnvoiScaleway, list[httpx.Request]]:
+    """Un envoi branché sur un faux TEM ; la liste reçoit chaque requête vue ; `pauses`, chaque attente."""
+    vues: list[httpx.Request] = []
+
+    def gestionnaire(requete: httpx.Request) -> httpx.Response:
+        vues.append(requete)
+        return reponse(requete)
+
+    async def pause(secondes: float) -> None:
+        if pauses is not None:
+            pauses.append(secondes)
+
+    return (
+        EnvoiScaleway(
+            SecretStr(cle),
+            PROJET,
+            EXPEDITEUR,
+            transport=httpx.MockTransport(gestionnaire),
+            maintenant=lambda: MAINTENANT,
+            pause=pause,
+        ),
+        vues,
+    )
+
+
+def reponses_dans_l_ordre(*reponses: Reponse | httpx.Response) -> Reponse:
+    """Chaque appel reçoit la réponse suivante ; une exception de transport se lève au lieu de se rendre."""
+    suite = iter(reponses)
+
+    def suivante(requete: httpx.Request) -> httpx.Response:
+        reponse = next(suite)
+        if callable(reponse):
+            return reponse(requete)
+        return reponse
+
+    return suivante
+
+
+def coupure(requete: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("coupure", request=requete)
+
+
+def delai(requete: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("trop lent", request=requete)
+
+
+def corps(requete: httpx.Request) -> dict[str, Any]:
+    contenu: dict[str, Any] = json.loads(requete.content)
+    return contenu
+
+
+# --- La charge utile -----------------------------------------------------------------------------------
+
+
+async def test_le_code_part_avec_la_charge_utile_exacte() -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message_code())
+    (requete,) = vues
+    assert requete.method == "POST"
+    assert str(requete.url) == URL
+    assert requete.headers["X-Auth-Token"] == CLE
+    assert requete.headers["Content-Type"] == "application/json"
+    assert corps(requete) == {
+        "from": {"email": "bonjour@notre-popote.fr", "name": "Popote"},
+        "to": [{"email": ADRESSE}],
+        "subject": "Ton code de connexion Popote",
+        "text": "Ton code Popote est 482916. Il est valable 10 minutes. "
+        "Si tu n'as rien demandé, ignore ce message.",
+        "project_id": str(PROJET),
+        "send_before": "2026-11-13T09:40:15Z",
+    }
+
+
+async def test_l_invitation_part_avec_la_charge_utile_exacte_et_sans_send_before() -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_l_invitation(message_invitation())
+    (requete,) = vues
+    assert str(requete.url) == URL
+    assert requete.headers["X-Auth-Token"] == CLE
+    assert corps(requete) == {
+        "from": {"email": "bonjour@notre-popote.fr", "name": "Popote"},
+        "to": [{"email": ADRESSE}],
+        "subject": "Invitation à rejoindre un foyer sur Popote",
+        "text": mails_textes.texte_de_l_invitation(message_invitation()),
+        "project_id": str(PROJET),
+    }
+
+
+@pytest.mark.parametrize(("minutes", "attendu"), [(10, "09:40:15"), (7, "09:37:15"), (1, "09:31:15")])
+async def test_send_before_vaut_l_heure_d_envoi_plus_la_validite_du_code(minutes: int, attendu: str) -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message_code(minutes))
+    assert corps(vues[0])["send_before"] == f"2026-11-13T{attendu}Z"
+
+
+async def test_send_before_est_tronque_a_la_seconde_jamais_arrondi_vers_le_haut() -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message_code())
+    # 09:30:15,987654 + 10 min : la seconde entamée n'est pas comptée, le code n'est jamais livré trop tard.
+    assert corps(vues[0])["send_before"].endswith("09:40:15Z")
+
+
+async def test_un_objet_de_moins_de_dix_caracteres_est_refuse_avant_l_appel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mails_textes, "OBJET_DU_CODE", "Code")
+    boite, vues = envoi(lambda _: ok())
+    with pytest.raises(ValueError, match="objet"):
+        await boite.envoie_le_code(message_code())
+    assert vues == []
+
+
+# --- Ce qui vaut un succès ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("statut", ["new", "sending", "sent"])
+async def test_un_mail_accepte_par_le_fournisseur_est_un_succes(statut: str) -> None:
+    boite, vues = envoi(lambda _: ok(statut))
+    await boite.envoie_le_code(message_code())
+    assert len(vues) == 1
+
+
+@pytest.mark.parametrize(
+    "reponse",
+    [
+        httpx.Response(200, json={"emails": [{"id": "e1", "status": "failed"}]}),
+        httpx.Response(200, json={"emails": [{"id": "e1", "status": "canceled"}]}),
+        httpx.Response(200, json={"emails": [{"id": "e1", "status": "unknown"}]}),
+        httpx.Response(200, json={"emails": [{"id": "e1"}]}),
+        httpx.Response(200, json={"emails": [{"id": "e1", "status": ["new"]}]}),
+        httpx.Response(200, json={"emails": [{"id": "e1", "status": "NEW"}]}),
+        httpx.Response(200, json={"emails": []}),
+        httpx.Response(200, json={"emails": {"status": "new"}}),
+        httpx.Response(200, json={"emails": ["new"]}),
+        httpx.Response(200, json={"status": "new"}),
+        httpx.Response(200, json=[{"status": "new"}]),
+        httpx.Response(200, content=b"<html>portail captif</html>"),
+        httpx.Response(200, content=b""),
+        httpx.Response(200, content=b"[" * 200_000),
+        httpx.Response(204),
+    ],
+)
+async def test_une_reponse_qui_n_est_pas_un_mail_accepte_leve_sans_reprise(reponse: httpx.Response) -> None:
+    boite, vues = envoi(lambda _: reponse)
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 1  # un mail peut déjà être parti : jamais de reprise après un 2xx
+
+
+async def test_une_reponse_trop_grosse_leve_et_n_est_pas_lue_en_entier() -> None:
+    lus = 0
+
+    async def flux() -> Any:
+        nonlocal lus
+        for _ in range(1000):
+            lus += 1
+            yield b"x" * 1024
+
+    boite, vues = envoi(lambda _: httpx.Response(200, content=flux()))
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 1
+    assert lus <= mail_scaleway.OCTETS_MAX_REPONSE // 1024 + 2
+
+
+class CorpsQuiCasse(httpx.AsyncByteStream):
+    """Un corps annoncé (statut et en-têtes reçus) qui se coupe ou expire au milieu."""
+
+    def __init__(self, erreur: Exception) -> None:
+        self._erreur = erreur
+
+    async def __aiter__(self) -> Any:
+        yield b'{"emails": [{"sta'
+        raise self._erreur
+
+
+@pytest.mark.parametrize("statut", [200, 202, 400, 404])
+@pytest.mark.parametrize(
+    "erreur",
+    [httpx.ReadError("coupé"), httpx.ReadTimeout("trop lent"), httpx.RemoteProtocolError("incomplet")],
+)
+async def test_un_corps_qui_casse_sous_un_2xx_ou_un_4xx_ne_se_reprend_jamais(
+    statut: int, erreur: Exception
+) -> None:
+    boite, vues = envoi(lambda _: httpx.Response(statut, stream=CorpsQuiCasse(erreur)))
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 1  # le mail a pu partir : envoyer deux fois est pire que d'échouer
+
+
+async def test_un_corps_qui_casse_sous_un_5xx_se_reprend_une_fois() -> None:
+    erreur = httpx.ReadError("coupé")
+    boite, vues = envoi(reponses_dans_l_ordre(httpx.Response(502, stream=CorpsQuiCasse(erreur)), ok()))
+    await boite.envoie_le_code(message_code())
+    assert len(vues) == 2
+
+
+@pytest.mark.parametrize("encodage", ["gzip", "br", "deflate", "GZIP"])
+async def test_une_reponse_compressee_est_refusee_sans_etre_decompressee(encodage: str) -> None:
+    boite, vues = envoi(
+        lambda _: httpx.Response(
+            200, headers={"Content-Encoding": encodage}, stream=httpx.ByteStream(b"\x1f\x8b corrompu")
+        )
+    )
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 1
+
+
+async def test_une_reponse_compressee_valide_n_est_pas_decompressee_non_plus() -> None:
+    corps_valide = gzip.compress(json.dumps(ACCEPTE).encode())
+    boite, vues = envoi(
+        lambda _: httpx.Response(
+            200, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(corps_valide)
+        )
+    )
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 1
+
+
+async def test_la_requete_demande_l_identite_et_le_client_ignore_l_environnement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Avec un faux transport, httpx ne monte de toute façon aucun proxy : on lit donc les arguments du client.
+    reglages_du_client: dict[str, Any] = {}
+    vrai_client = httpx.AsyncClient
+
+    def client_espion(**kwargs: Any) -> httpx.AsyncClient:
+        reglages_du_client.update(kwargs)
+        return vrai_client(**kwargs)
+
+    monkeypatch.setattr(mail_scaleway.httpx, "AsyncClient", client_espion)
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message_code())
+    assert reglages_du_client["trust_env"] is False
+    assert reglages_du_client["follow_redirects"] is False
+    assert vues[0].headers["Accept-Encoding"] == "identity"
+
+
+async def test_un_retour_a_la_ligne_de_fin_ne_fait_pas_partie_de_la_cle() -> None:
+    boite, vues = envoi(lambda _: ok(), cle=CLE + "\n")
+    await boite.envoie_le_code(message_code())
+    assert vues[0].headers["X-Auth-Token"] == CLE
+
+
+# --- Les reprises ---------------------------------------------------------------------------------------
+
+
+async def test_un_503_puis_un_200_envoie_un_seul_mail_en_deux_appels_au_meme_send_before() -> None:
+    boite, vues = envoi(reponses_dans_l_ordre(httpx.Response(503), ok()))
+    await boite.envoie_le_code(message_code())
+    assert len(vues) == 2
+    assert corps(vues[0]) == corps(vues[1])  # même `send_before` : la reprise ne prolonge pas la vie du code
+
+
+@pytest.mark.parametrize("statut", [500, 502, 503, 504])
+async def test_un_5xx_deux_fois_leve_mail_indisponible(statut: int) -> None:
+    boite, vues = envoi(lambda _: httpx.Response(statut, text=ADRESSE))
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 2
+
+
+@pytest.mark.parametrize("statut", [301, 302, 307, 400, 401, 403, 404, 408, 409, 422, 429])
+async def test_ni_4xx_ni_redirection_ne_se_reprend(statut: int) -> None:
+    boite, vues = envoi(lambda _: httpx.Response(statut, headers={"Location": "https://pirate.example/"}))
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 1  # une redirection n'est pas suivie : la clé ne quitte pas api.scaleway.com
+
+
+@pytest.mark.parametrize("panne", [coupure, delai])
+async def test_une_coupure_ou_un_delai_se_reprend_une_fois(panne: Reponse) -> None:
+    boite, vues = envoi(reponses_dans_l_ordre(panne, ok()))
+    await boite.envoie_l_invitation(message_invitation())
+    assert len(vues) == 2
+
+
+@pytest.mark.parametrize("panne", [coupure, delai])
+async def test_une_coupure_ou_un_delai_deux_fois_leve_en_gardant_la_cause(panne: Reponse) -> None:
+    boite, vues = envoi(lambda requete: panne(requete))
+    with pytest.raises(MailIndisponible) as erreur:
+        await boite.envoie_le_code(message_code())
+    assert len(vues) == 2
+    # La cause garde le type de l'erreur d'httpx, jamais l'erreur (elle porte la requête entière).
+    assert str(erreur.value.__cause__) in {"ConnectError", "ReadTimeout"}
+
+
+async def test_la_reprise_attend_une_demi_seconde_par_defaut() -> None:
+    pauses: list[float] = []
+    boite, _ = envoi(reponses_dans_l_ordre(httpx.Response(503), ok()), pauses)
+    await boite.envoie_le_code(message_code())
+    assert pauses == [mail_scaleway.ATTENTE_AVANT_LA_REPRISE_S]
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "attendu"), [("2", 2.0), ("0", 0.0), ("999", mail_scaleway.ATTENTE_MAX_S)]
+)
+async def test_la_reprise_respecte_retry_after_dans_la_limite(retry_after: str, attendu: float) -> None:
+    pauses: list[float] = []
+    reponse = httpx.Response(503, headers={"Retry-After": retry_after})
+    boite, _ = envoi(reponses_dans_l_ordre(reponse, ok()), pauses)
+    await boite.envoie_le_code(message_code())
+    assert pauses == [attendu]
+
+
+@pytest.mark.parametrize("retry_after", ["demain", "-5", "", "Wed, 21 Oct 2026 07:28:00 GMT", "1e3", "٣"])
+async def test_un_retry_after_illisible_vaut_l_attente_par_defaut(retry_after: str) -> None:
+    pauses: list[float] = []
+    reponse = httpx.Response(503, headers={"Retry-After": retry_after.encode()})
+    boite, _ = envoi(reponses_dans_l_ordre(reponse, ok()), pauses)
+    await boite.envoie_le_code(message_code())
+    assert pauses == [mail_scaleway.ATTENTE_AVANT_LA_REPRISE_S]
+
+
+async def test_chaque_etape_a_un_delai_fini() -> None:
+    boite, vues = envoi(lambda _: ok())
+    await boite.envoie_le_code(message_code())
+    assert vues[0].extensions["timeout"] == {"connect": 3.0, "read": 5.0, "write": 5.0, "pool": 3.0}
+
+
+# --- Le délai total et l'annulation ----------------------------------------------------------------------
+
+
+async def test_le_delai_total_borne_l_envoi_pause_comprise(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
+    appels: list[httpx.Request] = []
+
+    def lent(requete: httpx.Request) -> httpx.Response:
+        appels.append(requete)
+        return httpx.Response(503)
+
+    async def pause_sans_fin(_: float) -> None:
+        await asyncio.Event().wait()
+
+    boite = EnvoiScaleway(
+        SecretStr(CLE),
+        PROJET,
+        EXPEDITEUR,
+        transport=httpx.MockTransport(lent),
+        maintenant=lambda: MAINTENANT,
+        pause=pause_sans_fin,
+    )
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+    assert len(appels) == 1  # la pause n'a pas fini : pas de seconde tentative
+
+
+async def test_une_reponse_qui_ne_vient_pas_est_coupee_par_le_delai_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mail_scaleway, "DELAI_TOTAL_S", 0.05)
+
+    class Muet(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            await asyncio.Event().wait()
+            raise AssertionError("jamais atteint")
+
+    boite = EnvoiScaleway(SecretStr(CLE), PROJET, EXPEDITEUR, transport=Muet(), maintenant=lambda: MAINTENANT)
+    with pytest.raises(MailIndisponible):
+        await boite.envoie_le_code(message_code())
+
+
+async def test_l_annulation_de_la_tache_n_est_ni_avalee_ni_reprise() -> None:
+    entre = asyncio.Event()
+    appels = 0
+
+    class Bloque(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            nonlocal appels
+            appels += 1
+            entre.set()
+            await asyncio.Event().wait()
+            raise AssertionError("jamais atteint")
+
+    boite = EnvoiScaleway(
+        SecretStr(CLE), PROJET, EXPEDITEUR, transport=Bloque(), maintenant=lambda: MAINTENANT
+    )
+    tache = asyncio.create_task(boite.envoie_le_code(message_code()))
+    await entre.wait()
+    tache.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tache
+    assert tache.cancelled()
+    assert appels == 1
+
+
+async def test_envoie_sans_remonter_rend_faux_sur_un_echec_de_tem_et_vrai_sur_un_succes() -> None:
+    boite, _ = envoi(lambda _: httpx.Response(400))
+    assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), "code") is False
+    boite, _ = envoi(lambda _: ok())
+    assert await envoie_sans_remonter(boite.envoie_le_code, message_code(), "code") is True
+
+
+# --- Le secret, l'adresse, le code : nulle part ----------------------------------------------------------
+
+PANNES: dict[str, Reponse] = {
+    "succes": lambda _: ok(),
+    "400": lambda _: httpx.Response(400, json={"message": f"invalid {ADRESSE} {CODE} {CLE}"}),
+    "503": lambda _: httpx.Response(503, text=f"{ADRESSE} {CODE}"),
+    "failed": lambda _: httpx.Response(200, json={"emails": [{"status": "failed", "mail_rcpt": ADRESSE}]}),
+    "illisible": lambda _: httpx.Response(200, text=f"<html>{ADRESSE} {CODE}</html>"),
+    "coupure": coupure,
+    "delai": delai,
+}
+
+
+def la_chaine_des_erreurs(erreur: BaseException) -> list[BaseException]:
+    """L'erreur, ses causes et ses contextes, sans boucle."""
+    vues: list[BaseException] = []
+    file: list[BaseException | None] = [erreur]
+    while file:
+        courante = file.pop()
+        if courante is None or any(courante is v for v in vues):
+            continue
+        vues.append(courante)
+        file += [courante.__cause__, courante.__context__]
+    return vues
+
+
+def tout_ce_qui_sort(erreur: BaseException) -> str:
+    return "\n".join([str(erreur), repr(erreur), *traceback.format_exception(erreur)])
+
+
+@pytest.mark.parametrize("panne", PANNES)
+async def test_ni_la_cle_ni_l_adresse_ni_le_code_ne_sortent_ni_en_journal_ni_en_exception(
+    panne: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    boite, _ = envoi(PANNES[panne])
+    sortie = ""
+    with caplog.at_level(logging.DEBUG):
+        await envoie_sans_remonter(boite.envoie_le_code, message_code(), "code")
+        await envoie_sans_remonter(boite.envoie_l_invitation, message_invitation(), "invitation")
+        for appel in (boite.envoie_le_code(message_code()), boite.envoie_l_invitation(message_invitation())):
+            try:
+                await appel
+            except MailIndisponible as erreur:
+                sortie += tout_ce_qui_sort(erreur)
+    for secret in (CLE, ADRESSE, CODE, LIEN, "jeton-secret", "Claire"):
+        assert secret not in sortie + caplog.text
+
+
+@pytest.mark.parametrize("panne", [p for p in PANNES if p != "succes"])
+async def test_la_chaine_d_une_erreur_ne_porte_aucune_requete_ni_aucune_erreur_d_httpx(panne: str) -> None:
+    # `httpx.HTTPError.request` tient la requête entière : en-tête de clé, adresse, texte (code ou lien).
+    boite, _ = envoi(PANNES[panne])
+    with pytest.raises(MailIndisponible) as erreur:
+        await boite.envoie_le_code(message_code())
+    for maillon in la_chaine_des_erreurs(erreur.value):
+        assert not isinstance(maillon, httpx.HTTPError)
+        assert not hasattr(maillon, "request")
+        for secret in (CLE, ADRESSE, CODE):
+            assert secret not in repr(vars(maillon)) + repr(maillon.args)
+
+
+async def test_un_5xx_se_reprend_meme_si_son_corps_est_enorme_ou_compresse() -> None:
+    enorme = httpx.Response(503, content=b"x" * (mail_scaleway.OCTETS_MAX_REPONSE * 4))
+    compresse = httpx.Response(
+        502, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(b"\x1f\x8b corrompu")
+    )
+    boite, vues = envoi(reponses_dans_l_ordre(enorme, ok()))
+    await boite.envoie_le_code(message_code())
+    assert len(vues) == 2
+    boite, vues = envoi(reponses_dans_l_ordre(compresse, ok()))
+    await boite.envoie_le_code(message_code())
+    assert len(vues) == 2
+
+
+async def test_un_echec_journalise_la_classe_du_statut_et_rien_d_autre(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    boite, _ = envoi(lambda _: httpx.Response(403, json={"message": f"{ADRESSE} {CLE}"}))
+    with caplog.at_level(logging.DEBUG, logger=mail_scaleway.__name__):
+        with pytest.raises(MailIndisponible):
+            await boite.envoie_le_code(message_code())
+    assert "4xx" in caplog.text
+    assert "403" not in caplog.text
+    assert ADRESSE not in caplog.text and CLE not in caplog.text
+
+
+def test_la_cle_n_est_ni_dans_le_repr_de_l_envoi_ni_dans_celui_des_reglages() -> None:
+    boite, _ = envoi(lambda _: ok())
+    config = reglages("local", scaleway_tem_secret_key=CLE, scaleway_tem_project_id=str(PROJET))
+    for texte in (
+        repr(boite),
+        str(boite),
+        repr(vars(boite)),
+        repr(config),
+        str(config),
+        config.model_dump_json(),
+    ):
+        assert CLE not in texte
+    assert CLE not in repr(config.model_dump())
+
+
+@pytest.mark.parametrize(
+    "cle", ["", "avec espace" + "x" * 20, "clé-" + "x" * 20, "ligne\nsuivante", "tab\tulation"]
+)
+def test_une_cle_non_transmissible_dans_un_en_tete_est_refusee_sans_etre_recopiee(cle: str) -> None:
+    with pytest.raises(ValueError, match="Clé") as erreur:
+        EnvoiScaleway(SecretStr(cle), PROJET, EXPEDITEUR)
+    assert not cle or cle not in tout_ce_qui_sort(erreur.value)
+
+
+# --- Les réglages ----------------------------------------------------------------------------------------
+
+COMPLET = {
+    "mail_provider": "scaleway",
+    "scaleway_tem_secret_key": CLE,
+    "scaleway_tem_project_id": str(PROJET),
+}
+
+
+@pytest.mark.parametrize("env", ["local", "essai", "prod"])
+def test_le_fournisseur_scaleway_complet_est_admis_partout(env: str) -> None:
+    config = reglages(env, **COMPLET)
+    assert config.mail_provider == "scaleway"
+    assert config.scaleway_tem_project_id == PROJET
+    assert config.mail_from_address == "bonjour@notre-popote.fr"
+    assert config.mail_from_name == "Popote"
+
+
+@pytest.mark.parametrize("manquant", ["scaleway_tem_secret_key", "scaleway_tem_project_id"])
+@pytest.mark.parametrize("vide", [None, ""])
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_le_fournisseur_scaleway_sans_cle_ou_sans_projet_refuse_de_demarrer(
+    env: str, vide: str | None, manquant: str
+) -> None:
+    valeurs = dict(COMPLET)
+    valeurs[manquant] = vide  # type: ignore[assignment]
+    with pytest.raises(ValidationError, match=manquant):
+        reglages(env, **valeurs)
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+async def test_sans_fournisseur_l_application_demarre_encore_et_avertit(
+    env: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # S4 : le refus de démarrer sans fournisseur complet n'est armé qu'en S7.
+    app = create_app(reglages(env))
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert "POPOTE_MAIL_PROVIDER=aucun" in caplog.text
+
+
+async def test_avec_scaleway_complet_le_demarrage_n_avertit_pas_du_mail(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(reglages("essai", **COMPLET))
+    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert "MAIL_PROVIDER" not in caplog.text
+    assert type(app.state.mails) is EnvoiScaleway
+
+
+def test_un_projet_qui_n_est_pas_un_uuid_est_refuse_sans_recopier_la_cle() -> None:
+    with pytest.raises(ValidationError) as erreur:
+        reglages("local", **(COMPLET | {"scaleway_tem_project_id": "pas-un-uuid"}))
+    assert CLE not in tout_ce_qui_sort(erreur.value)
+
+
+@pytest.mark.parametrize(
+    "adresse",
+    [
+        "", "sans-arobase", "deux@@notre-popote.fr", "a b@notre-popote.fr",
+        "a@notre-popote.fr\r\nBcc: x@y.fr",
+        "a..b@notre-popote.fr", ".a@notre-popote.fr", "a.@notre-popote.fr", "a@", "@notre-popote.fr",
+        "a@notre popote.fr", "é@notre-popote.fr", "<a@notre-popote.fr>", "x" * 65 + "@notre-popote.fr",
+    ],
+)  # fmt: skip
+def test_une_adresse_d_expedition_mal_formee_est_refusee(adresse: str) -> None:
+    with pytest.raises(ValidationError, match="mail_from_address"):
+        reglages("local", mail_from_address=adresse)
+
+
+@pytest.mark.parametrize(
+    "nom", ["", "Po\npote", "Po\x00pote", "x" * 61, "   ", 'Po"pote', "Po<pote>", "Po,pote", "Po;pote"]
+)
+def test_un_nom_d_expediteur_mal_forme_est_refuse(nom: str) -> None:
+    with pytest.raises(ValidationError, match="mail_from_name"):
+        reglages("local", mail_from_name=nom)
+
+
+def test_l_expediteur_se_regle() -> None:
+    config = reglages("local", mail_from_address="hello@notre-popote.fr", mail_from_name="Popote & Cie")
+    assert (config.mail_from_address, config.mail_from_name) == ("hello@notre-popote.fr", "Popote & Cie")
+
+
+# --- Le choix de la réalisation ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["local", "essai", "prod"])
+def test_le_fournisseur_scaleway_choisit_la_realisation_scaleway(env: str) -> None:
+    config = reglages(env, **COMPLET)
+    assert type(cree_envoi_mail(config)) is EnvoiScaleway
+    assert type(cree_envoi_scaleway(config)) is EnvoiScaleway
+
+
+def test_la_realisation_scaleway_est_un_envoi_mail() -> None:
+    boite: EnvoiMail = cree_envoi_scaleway(reglages("local", **COMPLET))
+    assert boite is not None
+
+
+@pytest.mark.parametrize("manquant", ["scaleway_tem_secret_key", "scaleway_tem_project_id"])
+def test_la_fabrique_refuse_des_reglages_incomplets(manquant: str) -> None:
+    valeurs = {"mail_provider": MailProvider.scaleway} | {
+        "scaleway_tem_secret_key": SecretStr(CLE),
+        "scaleway_tem_project_id": PROJET,
+    }
+    valeurs[manquant] = None  # type: ignore[assignment]
+    config = Settings.model_construct(**valeurs)  # contourne la validation des réglages
+    with pytest.raises(ValueError, match="scaleway"):
+        cree_envoi_scaleway(config)
+
+
+def test_la_fabrique_refuse_un_autre_fournisseur() -> None:
+    config = Settings.model_construct(
+        mail_provider=MailProvider.aucun,
+        scaleway_tem_secret_key=SecretStr(CLE),
+        scaleway_tem_project_id=PROJET,
+    )
+    with pytest.raises(ValueError, match="scaleway"):
+        cree_envoi_scaleway(config)
+
+
+def test_le_chemin_est_celui_de_la_region_de_paris_et_ne_se_regle_pas() -> None:
+    assert mail_scaleway.URL_DES_MAILS == URL
+    assert "scaleway_tem_url" not in Settings.model_fields
