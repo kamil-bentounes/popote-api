@@ -437,7 +437,7 @@ jobs:
             corps=$(jq -n --arg image "$1" --argjson variables "$2" \
               '{registry_image: $image, environment_variables: $variables, redeploy: true}') || return 1
             # Le marqueur du rétablissement naît ici, juste avant la requête : une annulation plus tôt ne déclenche rien.
-            : > "$RUNNER_TEMP/retablir/patch-envoye"
+            : > "$RUNNER_TEMP/retablir/patch-envoye" || return 1 # sous `if`, `set -e` ne joue pas : pas de marqueur, pas de PATCH
             scw --request PATCH --header 'Content-Type: application/json' --data "$corps" "$conteneur" > /dev/null
           }
           deployer() {
