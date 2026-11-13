@@ -13,14 +13,17 @@ from popote_api.main import create_app
 NOM_DU_COOKIE = "__Host-popote_session"
 
 
-def application_de_test(base: Base, monkeypatch: pytest.MonkeyPatch, *routeurs: APIRouter) -> FastAPI:
+def application_de_test(
+    base: Base, monkeypatch: pytest.MonkeyPatch, *routeurs: APIRouter, **reglages: object
+) -> FastAPI:
     """L'application, ses routes de `/api/v1` remplacées par `routeurs` si on en donne, sur la base du test.
 
-    `base` vient de la fixture du conftest : ses pools sont déjà ouverts, l'application ne gère pas leur vie.
+    `reglages` complète ceux du test (le poivre, par exemple). `base` vient de la fixture du conftest :
+    ses pools sont déjà ouverts, l'application ne gère pas leur vie.
     """
     if routeurs:
         monkeypatch.setattr(v1, "SOUS_ROUTEURS", routeurs)
-    app = create_app(Settings.model_validate({"env": "local", "json_logs": False}))
+    app = create_app(Settings.model_validate({"env": "local", "json_logs": False} | reglages))
     app.state.base = base
     return app
 

@@ -274,6 +274,27 @@ refusent de démarrer avec autre chose que `hibp`.
   d'un paramètre. Les événements s'écrivent dans la même transaction que la fermeture. Sans `Idempotency-Key` :
   un `DELETE` est idempotent par nature.
 
+### 4.7 La réauthentification (0.4 T10 ; code : `api/reauthentification.py`, `security/connexion.py`, `security/reauth.py`)
+
+- **`POST /api/v1/me/reauthentication`** `{password}` : la route lit l'adresse de la personne sous sa session
+  (`mon_email()`, comme `GET /me`) ; elle ne vient jamais du client. `tente_la_reauthentification` prend les
+  **mêmes créneaux que la connexion** (`_prend_les_creneaux` : l'IP d'abord, puis le compte de la personne, clé issue de
+  son e-mail normalisé ; un blocage s'écrit une seule fois par fenêtre, B21), puis appelle
+  `verifie_mot_de_passe_de` avec les mêmes candidats que la connexion (T2) : un seul `crypt()` par candidat, aucun
+  pour un créneau refusé. Une session volée ne peut donc pas forcer le mot de passe : cinq essais faux bloquent aussi
+  la connexion de ce compte (risque accepté, comme B5).
+- **Succès** : `libere_compte` (le compte, jamais l'IP), `marque_reauth` sur **sa** session seulement (la fonction
+  vérifie la session ET la personne), événement `reauthentification_reussie`, `204`. **Échec** : événement
+  `reauthentification_ratee` (clé de compte, jamais l'IP), `403 mot_de_passe_incorrect`. Bloqué : `429` + `Retry-After`.
+- **Deux transactions** : la dépendance de session garde sa transaction « personne » (lecture de l'adresse), la
+  vérification et les écritures passent par `base.connexion()` et se valident aussi sur un refus (compteur et
+  événement). Entorse à « une transaction par requête » (A16) : `verifie_mot_de_passe_de` n'est exécutable que par
+  `popote_api`. Une requête tient donc deux connexions du pool un instant ; sous charge l'attente du pool finit en
+  `503`, sans interblocage durable.
+- **`exige_reauth`** : lit `reauth_at` de la session déjà lue (aucun appel de plus) ; à plus de 300 s de
+  `app.state.horloge()` : `403 reauthentification_requise`. 300 s exactement passe. Posé par la connexion, donc un
+  changement juste après la connexion n'exige rien. Aucune route ne l'utilise encore (T11, T14).
+
 ## 5.1 Qui exécute quoi (extrait du § 5)
 
 | Contexte | Rôle de connexion | Rôle emprunté | Identité posée | Sert à |
