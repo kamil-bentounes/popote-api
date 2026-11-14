@@ -751,4 +751,5 @@ def test_les_portees_de_la_base_sont_celles_que_les_fonctions_emploient(
     assert PORTEES_DE_S5 <= employees <= autorisees
     assert autorisees == {
         "account", "ip", "reset", "invitation_ip", "invitation_link", *PORTEES_DE_S5,
+        "couple", "compte_entier",
     }  # fmt: skip
