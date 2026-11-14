@@ -35,13 +35,20 @@ class Personne:
         self.id, self.email = banc.compte(mot_de_passe)
         self.session = banc.fabrique.session(self.id)
         self.cle = banc.empreintes.cle_compte(self.email)
+        self.cle_couple = banc.suit(self.email)
         banc.cles += [c for c in (self.cle, banc.empreintes.cle_ip(banc.ip)) if c]
 
     async def reauthentifie(
-        self, corps: dict[str, Any] | None = None, *, session: SessionDeTest | None = None
+        self,
+        corps: dict[str, Any] | None = None,
+        *,
+        session: SessionDeTest | None = None,
+        ip: str | None = None,
     ) -> httpx.Response:
         envoi = {"password": MOT_DE_PASSE} if corps is None else corps
-        return await self.banc.client().post(
+        if ip is not None:
+            self.banc.suit(self.email, ip)
+        return await self.banc.client(ip).post(
             ROUTE, json=envoi, headers=cookie(session or self.session) | ECRITURE
         )
 
@@ -60,8 +67,8 @@ class Personne:
     def essais(self) -> int:
         (ligne,) = self.banc.lignes(
             "select coalesce(sum(attempts), 0) from public.login_throttle "
-            "where scope = 'account' and key = %s",
-            self.cle,
+            "where scope = 'couple' and key = %s",
+            self.cle_couple,
         )
         return int(ligne[0])
 
@@ -147,17 +154,40 @@ class TestReauthentification:
         connexion = await moi.banc.connecte_par_code(moi.email, moi.id)  # même compteur : bloquée aussi
         assert connexion.status_code == 429
 
-    async def test_le_blocage_de_24_heures_vaut_aussi_pour_la_reauthentification(self, moi: Personne) -> None:
-        """Le compteur est partagé avec la connexion par code : son plafond est de 24 h pour les deux."""
+    async def test_le_blocage_de_24_heures_d_un_couple_vaut_aussi_pour_la_reauthentification(
+        self, moi: Personne
+    ) -> None:
+        """Le compteur du couple est partagé avec la connexion par code : plafond de 24 h pour les deux."""
         moi.banc.fabrique.admin.execute(
             "insert into public.login_throttle (scope, key, window_start, attempts, strikes, last_block_at,"
-            " blocked_until) values ('account', %s, now(), 5, 7, now() - interval '25 hours',"
+            " blocked_until) values ('couple', %s, now(), 5, 7, now() - interval '25 hours',"
             " now() - interval '1 second')",
-            (moi.cle,),
+            (moi.cle_couple,),
         )
         reponse = await moi.reauthentifie({"password": FAUX})
         assert reponse.status_code == 429
         assert int(reponse.headers["retry-after"]) == 86400
+
+    async def test_l_ip_d_un_tiers_ne_bloque_pas_la_reauthentification_de_la_personne(
+        self, moi: Personne
+    ) -> None:
+        for _ in range(5):
+            assert (await moi.reauthentifie({"password": FAUX}, ip="198.51.100.77")).status_code == 403
+        assert (await moi.reauthentifie({"password": FAUX}, ip="198.51.100.77")).status_code == 429
+        assert (await moi.reauthentifie()).status_code == 204  # chez elle, avec le bon mot de passe
+
+    async def test_vingt_refus_de_quatre_ip_bloquent_aussi_la_reauthentification_soixante_minutes(
+        self, moi: Personne, verifications: list[UUID]
+    ) -> None:
+        for rang in range(4):
+            for _ in range(5):
+                faux = await moi.reauthentifie({"password": FAUX}, ip=f"198.51.100.{80 + rang}")
+                assert faux.status_code == 403
+        avant = len(verifications)
+        reponse = await moi.reauthentifie()  # le bon, d'une cinquième IP
+        assert reponse.status_code == 429
+        assert int(reponse.headers["retry-after"]) == 3600
+        assert len(verifications) == avant
 
     async def test_cinq_faux_a_la_connexion_bloquent_aussi_la_reauthentification(self, moi: Personne) -> None:
         for _ in range(5):
@@ -170,6 +200,9 @@ class TestReauthentification:
         assert moi.essais() == 3
         assert (await moi.reauthentifie()).status_code == 204
         assert moi.essais() == 0
+        assert moi.banc.lignes(
+            "select attempts from public.login_throttle where scope = 'compte_entier' and key = %s", moi.cle
+        ) == [(3,)]  # le succès n'est pas un refus : son essai est rendu
 
     async def test_une_ip_bloquee_ne_consomme_pas_les_creneaux_du_compte(
         self, fabrique_de_banc: Callable[..., Personne]

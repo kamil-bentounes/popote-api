@@ -187,27 +187,37 @@ refusent de démarrer avec autre chose que `hibp`.
   (contexte service, où le rôle COURANT est `service_role`), jamais par `authenticated` ni `popote_internal` : une
   personne ne forge pas d'événement. Le droit se lit sur le rôle courant : les tests jouent `set local role`.
 
-### 4.3 Limites de connexion comptées en base (0.4, migration 0138 ; code : `security/limites_base.py`)
+### 4.3 Limites de connexion comptées en base (0.4, migration 0138, couple en 0151 ; code : `security/limites_base.py`)
 
-- **Une fonction atomique.** `public.prend_les_creneaux(compte, ip)` : l'IP d'abord, le compte ne compte que si l'IP
-  passe (une IP bloquée n'épuise pas les créneaux d'un compte). Les deux lignes de `login_throttle` se verrouillent
-  toujours dans cet ordre : aucun interblocage entre deux connexions croisées.
-- **Valeurs** (`config.py`) : 5 essais par compte et 20 par IP en 15 min ; au créneau de trop, blocage de 15 min, puis
-  30, puis 60 (plafond) ; les crans retombent après 24 h sans blocage. Bloqué, la fonction rend l'attente **sans
-  compter** : insister ne prolonge rien. Un succès remet le compte à zéro (`libere_compte`), jamais l'IP.
+- **Une fonction atomique.** `public.prend_les_creneaux_de_connexion(couple, compte, ip)` (0151 ; `prend_les_creneaux` de 0138 reste
+  pour l'appli encore en ligne, retirée en S15) : l'IP, puis le compte entier **lu** (bloqué : son attente, sans rien compter), puis le
+  couple, puis le compte entier **compté**. Un créneau refusé n'use jamais les suivants (une IP bloquée n'épuise ni couple ni compte ; un
+  compte entier bloqué n'use pas le couple de la personne). Les lignes de `login_throttle` se verrouillent toujours dans l'ordre IP, couple,
+  compte : aucun interblocage entre deux connexions croisées.
+- **Valeurs** (`config.py`) : 20 essais par IP et **5 par couple (compte, IP)** en 15 min ; au créneau de trop, blocage de 15 min qui double
+  (30, 60, ... jusqu'à 24 h, `connexion_attente_max_s`) ; les crans retombent 24 h après la fin du dernier blocage. **Compte entier, toutes
+  IP confondues : 20 refus en 24 h, puis 60 min, sans escalade** (`private.prend_un_creneau_fixe`, scope `compte_entier`). Bloqué, la
+  fonction rend l'attente **sans compter** : insister ne prolonge rien. Un succès remet le couple à zéro et rend un essai au compte entier
+  (`libere_le_couple` : un succès n'est pas un refus), jamais l'IP. La réauthentification prend les mêmes créneaux (§ 4.7).
 - **Réinitialisation** (route retirée en 0.4bis S3, scope `reset` retiré en S15) : 3 par heure et par couple **(e-mail, IP)**
   (`Empreintes.cle_reinitialisation`), sans escalade.
 - **Clés** : HMAC de 32 octets (poivre), l'e-mail sous sa forme `email_normalise`, l'IPv6 regroupée par /64 ; jamais
-  d'adresse en base. Une clé de compte inconnue se comporte comme une connue (la fonction ne lit pas `auth.users`).
-- **Journal** : `prend_les_creneaux` rend aussi quelle clé vient de passer en blocage ; seul ce drapeau déclenche
-  `connexion_bloquee` : un événement par (clé, fenêtre de blocage), pas un par essai refusé.
+  d'adresse en base. La clé du couple est le HMAC de (e-mail, IP) sous sa propre étiquette (`cle_couple_de_connexion_requise`). Une clé de compte inconnue se comporte comme une connue (la fonction ne lit pas `auth.users`).
+- **Journal** : la fonction rend aussi quelle clé vient de passer en blocage (`ip`, `couple`, `account`) ; seul ce drapeau déclenche
+  `connexion_bloquee` : un événement par (clé, fenêtre de blocage), pas un par essai refusé. Le couple et le compte entier s'écrivent
+  tous deux sous la clé du compte, sans l'IP : le journal ne les distingue pas (limite connue).
 - **Bornes** : la base refuse une limite nulle ou hors bornes (limite 1 à 10 000, fenêtre 1 à 86 400 s, plafond entre la
   fenêtre et 86 400 s) : un appelant ne désactive pas une limite. `config.py` refuse un plafond sous la fenêtre.
 - **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
   nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h.
-- **Risque accepté : blocage par un tiers (B5).** Qui connaît l'adresse d'une personne peut ralentir **sa** connexion en
-  épuisant ses 5 essais : au plus 60 min par blocage (plafond), « mot de passe oublié » restant ouvert jusqu'à S5 (code par mail). Accepté pour
-  un foyer de deux personnes ; l'alternative (ne pas limiter par compte) laisserait la force brute ouverte.
+- **Blocage par un tiers (B5), réduit en S7c.** Avant 0151, cinq refus bloquaient le compte entier jusqu'à 24 h : qui connaissait l'adresse
+  gardait la personne dehors. Depuis, ses cinq refus ne bloquent que **son** couple (adresse, IP) : la personne se connecte de chez elle.
+  Une IP seule ne pèse que 5 refus sur le compte entier : les essais d'un couple déjà passé en blocage n'y comptent plus (et un succès ne
+  rend un essai que si le sien a compté). **Risque résiduel accepté** : un tiers qui dispose d'au moins quatre IP (20 refus en 24 h) bloque
+  le compte entier 60 min, et peut recommencer à chaque fin de blocage (les crans du compte entier ne montent pas). Pour la connexion par
+  code, les limites de la demande (6 codes par heure et par adresse, 5 essais par code) bornent la force brute à 30 essais par heure. La
+  réauthentification par mot de passe (jusqu'à S11) n'a que cette limite : environ 480 essais par jour pour qui tient une session volée
+  et au moins quatre IP. L'alternative (ne pas limiter le compte entier) les laisserait sans plafond.
 
 ### 4.4 Sessions côté base (0.4, migration 0139 ; code : `security/sessions_base.py`, `security/appareil.py`)
 
@@ -232,8 +242,9 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Le corps.** `{method: "email_code", email, code_request_id, code}` : six chiffres ASCII exactement, champs inconnus refusés (`422`) ;
   la connexion par mot de passe est retirée (rupture du contrat, `docs/ruptures-admises/`). La réauthentification par mot de passe reste
   jusqu'à S11.
-- **Ordre, qui est la sécurité de la route.** Corps validé -> clés HMAC (`email_normalise`, B24) et empreinte du code -> `prend_les_creneaux`
-  (IP d'abord, B6 ; plafond de blocage 24 h) -> `ouvre_une_session_par_code` (un seul appel SQL, § 4.15). Un créneau refusé (`429` +
+- **Ordre, qui est la sécurité de la route.** Corps validé -> clés HMAC (`email_normalise`, B24) et empreinte du code ->
+  `prend_les_creneaux_de_connexion` (IP, compte entier lu, couple, compte entier compté : § 4.3 ; plafond de blocage du couple 24 h) ->
+  `ouvre_une_session_par_code` (un seul appel SQL, § 4.15). Un créneau refusé (`429` +
   `Retry-After`) n'appelle **jamais** la vérification : le code n'est pas touché. Les créneaux se prennent avant les verrous de la clé de compte
   et de la personne (ordre : limites, puis personne). Sans poivre, la route répond `503` : on ne compte pas sans clé (le poivre manque encore sur
   l'essai : le conteneur démarre, la route répond `503`).
@@ -254,13 +265,13 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Journal.** `connexion_par_code` (personne, session, clé de compte ; écrit par la base), `connexion_ratee` (clé de compte seule),
   `connexion_bloquee` (la clé qui vient de bloquer ; jamais e-mail, IP ni agent en clair). Un blocage s'écrit une fois par fenêtre et par clé
   (B21). Ni le code, ni l'adresse, ni `code_request_id`, ni le jeton dans un journal applicatif (testé par `caplog`).
-- **Succès.** `libere_compte` remet le compteur du compte à zéro, jamais celui de l'IP.
+- **Succès.** `libere_le_couple` remet le couple à zéro et rend un essai au compte entier, jamais l'IP.
 - **Envoi des mails obligatoire hors local.** `essai` et `prod` refusent de démarrer sans `POPOTE_MAIL_PROVIDER=scaleway` complet (clé d'envoi et
   projet) : le code par mail est la seule première connexion. `local` garde `aucun` et `local`.
 - **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait un jeton en base ; chaque succès
   ouvre une session neuve, chaque échec se compte.
-- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus 24 h par blocage, sans autre entrée avant
-  la clé d'accès (S9) ni l'invitation par mail (voir le risque accepté du § 4.3).
+- **Risque résiduel (B5).** Les refus d'un tiers ne bloquent que son couple (adresse, IP) ; seul le compte entier, après 20 refus en 24 h
+  venus d'IP différentes, se bloque, 60 min (voir § 4.3).
 
 ### 4.6 Les appareils et la déconnexion (0.4, migration 0140 ; code : `api/appareils.py`, `security/cookie.py`)
 
@@ -283,12 +294,12 @@ refusent de démarrer avec autre chose que `hibp`.
 
 - **`POST /api/v1/me/reauthentication`** `{password}` : la route lit l'adresse de la personne sous sa session
   (`mon_email()`, comme `GET /me`) ; elle ne vient jamais du client. `tente_la_reauthentification` prend les
-  **mêmes créneaux que la connexion** (`_prend_les_creneaux` : l'IP d'abord, puis le compte de la personne, clé issue de
-  son e-mail normalisé ; un blocage s'écrit une seule fois par fenêtre, B21), puis appelle
+  **mêmes créneaux que la connexion** (`_prend_les_creneaux` : l'IP, le compte entier, puis le couple (e-mail normalisé de la personne, IP) ;
+  un blocage s'écrit une seule fois par fenêtre, B21), puis appelle
   `verifie_mot_de_passe_de` avec les mêmes candidats que la connexion (T2) : un seul `crypt()` par candidat, aucun
-  pour un créneau refusé. Une session volée ne peut donc pas forcer le mot de passe : cinq essais faux bloquent aussi
-  la connexion de ce compte (risque accepté, comme B5).
-- **Succès** : `libere_compte` (le compte, jamais l'IP), `marque_reauth` sur **sa** session seulement (la fonction
+  pour un créneau refusé. Une session volée ne peut donc pas forcer le mot de passe, et son IP ne bloque que **son** couple (adresse, IP) :
+  la personne se réauthentifie de chez elle (S7c).
+- **Succès** : `libere_le_couple` (le couple, jamais l'IP), `marque_reauth` sur **sa** session seulement (la fonction
   vérifie la session ET la personne), événement `reauthentification_reussie`, `204`. **Échec** : événement
   `reauthentification_ratee` (clé de compte, jamais l'IP), `403 mot_de_passe_incorrect`. Bloqué : `429` + `Retry-After`.
 - **Deux transactions** : la dépendance de session garde sa transaction « personne » (lecture de l'adresse), la
@@ -296,9 +307,10 @@ refusent de démarrer avec autre chose que `hibp`.
   événement). Entorse à « une transaction par requête » (A16) : `verifie_mot_de_passe_de` n'est exécutable que par
   `popote_api`. Une requête tient donc deux connexions du pool un instant ; sous charge l'attente du pool finit en
   `503`, sans interblocage durable.
-- **Compteur partagé.** La réauthentification prend les mêmes créneaux que la connexion (compte, puis IP) : cinq mots de passe faux, ou cinq
-  requêtes d'un tiers qui connaît l'adresse, bloquent aussi la connexion par code ET la réauthentification (donc le changement de mot de
-  passe et la suppression du compte de la personne déjà connectée), jusqu'à 24 h par blocage depuis S7 (§ 4.3, risque accepté).
+- **Compteurs partagés.** La réauthentification prend les mêmes créneaux que la connexion (IP, compte entier lu, couple, compte entier
+  compté) : cinq mots de passe faux depuis une IP bloquent le **couple** (adresse, IP) pour la connexion par code ET la
+  réauthentification, jusqu'à 24 h ; 20 refus en 24 h venus d'IP différentes bloquent le **compte entier** 60 min, y compris le changement de
+  mot de passe et la suppression du compte de la personne déjà connectée (§ 4.3, risque résiduel).
 - **`exige_reauth`** : lit `reauth_at` de la session déjà lue (aucun appel de plus) ; à plus de 300 s de
   `app.state.horloge()` : `403 reauthentification_requise`. 300 s exactement passe. Posé par la connexion, donc un
   changement juste après la connexion n'exige rien. Aucune route ne l'utilise encore (T11, T14).

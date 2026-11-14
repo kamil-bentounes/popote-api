@@ -19,7 +19,7 @@ from popote_api.infra.db import Base
 from popote_api.security.empreintes import Empreintes
 from popote_api.security.limites_base import (
     CleBloquee,
-    liberer_le_compte,
+    liberer_le_couple,
     prendre_les_creneaux,
     prendre_un_creneau_de_reinitialisation,
 )
@@ -413,27 +413,27 @@ def reglages() -> Settings:
 async def test_prendre_les_creneaux_rend_l_attente_et_le_blocage(
     base: Base, reglages: Settings, cles: list[bytes]
 ) -> None:
-    compte, ip = neuve(cles), neuve(cles)
+    couple, compte, ip = neuve(cles), neuve(cles), neuve(cles)
     async with base.connexion() as curseur:
         for _ in range(5):
-            assert (await prendre_les_creneaux(curseur, compte, ip, reglages)).passe
-        sixieme = await prendre_les_creneaux(curseur, compte, ip, reglages)
-        septieme = await prendre_les_creneaux(curseur, compte, ip, reglages)
-    assert (sixieme.attente_s, sixieme.nouveau_blocage, sixieme.passe) == (900, CleBloquee.compte, False)
+            assert (await prendre_les_creneaux(curseur, couple, compte, ip, reglages)).passe
+        sixieme = await prendre_les_creneaux(curseur, couple, compte, ip, reglages)
+        septieme = await prendre_les_creneaux(curseur, couple, compte, ip, reglages)
+    assert (sixieme.attente_s, sixieme.nouveau_blocage, sixieme.passe) == (900, CleBloquee.couple, False)
     assert septieme.nouveau_blocage is None
     assert 0 < septieme.attente_s <= 900
 
 
-async def test_liberer_le_compte_et_la_reinitialisation_par_le_contexte_service(
+async def test_liberer_le_couple_et_la_reinitialisation_par_le_contexte_service(
     base: Base, reglages: Settings, cles: list[bytes], admin: psycopg.Connection[Ligne]
 ) -> None:
-    compte, ip, cle_reset = neuve(cles), neuve(cles), neuve(cles)
+    couple, compte, ip, cle_reset = neuve(cles), neuve(cles), neuve(cles), neuve(cles)
     async with base.service() as curseur:
-        await prendre_les_creneaux(curseur, compte, ip, reglages)
-        await liberer_le_compte(curseur, compte)
+        await prendre_les_creneaux(curseur, couple, compte, ip, reglages)
+        await liberer_le_couple(curseur, couple, compte)
         attentes = [
             await prendre_un_creneau_de_reinitialisation(curseur, cle_reset, reglages) for _ in range(4)
         ]
-    assert ligne_de(admin, "account", compte)["attempts"] == 0
+    assert ligne_de(admin, "couple", couple)["attempts"] == 0
     assert attentes[:3] == [0, 0, 0]
     assert attentes[3] > 0

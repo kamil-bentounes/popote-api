@@ -195,18 +195,25 @@ class Settings(BaseSettings):
     # conteneur d'essai ne l'a pas : sans lui hors local, les clés manquent (journal sans clés, avertissement
     # au démarrage) ; en local il est tiré au hasard par processus. Posé, il fait 32 caractères au moins.
     identity_pepper: SecretStr | None = None
-    # Les limites de connexion, comptées en base (`security/limites_base.py`, migration 0138). Les défauts
-    # sont ceux de la spec § 3.6 : 5 essais par compte et 20 par IP en 15 min, blocage de 15 min qui double
-    # jusqu'à 24 h ; `reinitialisation_*` : 3 demandes par heure, réglage mort retiré en S15.
-    connexion_essais_par_compte: int = Field(default=5, ge=1, le=1000)
+    # Les limites de connexion, comptées en base (`security/limites_base.py`, migrations 0138 et
+    # 0151). Par IP : 20 essais par fenêtre de 15 min ; par COUPLE (compte, IP) : 5 essais par
+    # fenêtre ; au créneau de trop, blocage de la fenêtre qui double jusqu'à
+    # `connexion_attente_max_s` (24 h). Le COMPTE ENTIER, toutes IP confondues, ne se bloque
+    # qu'après 20 refus en 24 h, pour 60 min (S7c) : un tiers qui connaît l'adresse ne garde pas la
+    # personne dehors. `reinitialisation_*` : 3 demandes par heure, réglage mort retiré en S15.
+    connexion_essais_par_couple: int = Field(default=5, ge=1, le=1000)
     connexion_essais_par_ip: int = Field(default=20, ge=1, le=10000)
     connexion_fenetre_s: int = Field(default=900, ge=1, le=86400)
+    connexion_essais_compte_entier: int = Field(default=20, ge=1, le=10000)
+    connexion_fenetre_compte_entier_s: int = Field(default=86400, ge=1, le=86400)
+    connexion_blocage_compte_entier_s: int = Field(default=3600, ge=1, le=86400)
     # Routes publiques d'invitation (B11) : par IP (/64 en IPv6) et par lien, par fenêtre, sans escalade.
     invitation_essais_par_ip: int = Field(default=30, ge=1, le=10000)
     invitation_essais_par_lien: int = Field(default=10, ge=1, le=10000)
     invitation_fenetre_s: int = Field(default=900, ge=1, le=86400)
-    # Plafond du blocage : 24 h (S7). Les crans retombent 24 h après sa fin (0149) ; avec 60 min, cinq essais
-    # par 15 min auraient laissé près de vingt essais par jour sur un code de six chiffres.
+    # Plafond du blocage d'un couple ou d'une IP : 24 h (S7). Les crans retombent 24 h après sa fin
+    # (0149) ; avec 60 min, cinq essais par 15 min auraient laissé près de vingt essais par jour sur
+    # un code de six chiffres.
     connexion_attente_max_s: int = Field(default=86400, ge=1, le=86400)
     # La demande de code par mail (`security/code_de_connexion.py`, migration 0147) : 10 demandes par IP et
     # 3 par (adresse, IP) par fenêtre de 15 min, 6 par adresse par heure ; sans escalade (le créneau de trop
