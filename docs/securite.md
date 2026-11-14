@@ -204,8 +204,8 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Clés** : HMAC de 32 octets (poivre), l'e-mail sous sa forme `email_normalise`, l'IPv6 regroupée par /64 ; jamais
   d'adresse en base. La clé du couple est le HMAC de (e-mail, IP) sous sa propre étiquette (`cle_couple_de_connexion_requise`). Une clé de compte inconnue se comporte comme une connue (la fonction ne lit pas `auth.users`).
 - **Journal** : la fonction rend aussi quelle clé vient de passer en blocage (`ip`, `couple`, `account`) ; seul ce drapeau déclenche
-  `connexion_bloquee` : un événement par (clé, fenêtre de blocage), pas un par essai refusé. Le couple et le compte entier s'écrivent
-  tous deux sous la clé du compte, sans l'IP : le journal ne les distingue pas (limite connue).
+  `connexion_bloquee` : un événement par (clé, fenêtre de blocage), pas un par essai refusé. Un blocage de couple porte la clé du compte
+  et l'empreinte de l'IP, un blocage du compte entier la clé du compte seule : le journal les distingue.
 - **Bornes** : la base refuse une limite nulle ou hors bornes (limite 1 à 10 000, fenêtre 1 à 86 400 s, plafond entre la
   fenêtre et 86 400 s) : un appelant ne désactive pas une limite. `config.py` refuse un plafond sous la fenêtre.
 - **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
@@ -213,11 +213,15 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Blocage par un tiers (B5), réduit en S7c.** Avant 0151, cinq refus bloquaient le compte entier jusqu'à 24 h : qui connaissait l'adresse
   gardait la personne dehors. Depuis, ses cinq refus ne bloquent que **son** couple (adresse, IP) : la personne se connecte de chez elle.
   Une IP seule ne pèse que 5 refus sur le compte entier : les essais d'un couple déjà passé en blocage n'y comptent plus (et un succès ne
-  rend un essai que si le sien a compté). **Risque résiduel accepté** : un tiers qui dispose d'au moins quatre IP (20 refus en 24 h) bloque
-  le compte entier 60 min, et peut recommencer à chaque fin de blocage (les crans du compte entier ne montent pas). Pour la connexion par
-  code, les limites de la demande (6 codes par heure et par adresse, 5 essais par code) bornent la force brute à 30 essais par heure. La
-  réauthentification par mot de passe (jusqu'à S11) n'a que cette limite : environ 480 essais par jour pour qui tient une session volée
-  et au moins quatre IP. L'alternative (ne pas limiter le compte entier) les laisserait sans plafond.
+  rend un essai que si le sien a compté).
+- **Le couple connu (0152).** Un couple (compte, IP) qui a réussi une connexion il y a moins de 30 jours (`login_throttle.last_success_at`,
+  posée par `libere_le_couple`) n'est pas arrêté par le blocage du compte entier et n'y compte plus ; sa propre limite (5) et celle de l'IP
+  restent. Sans cela, 5 refus depuis 4 IP neuves (quatre /64 IPv6, presque gratuites) bloquaient la personne partout, et le tiers
+  recommençait avec 4 autres. La ligne d'un couple connu survit 30 jours à la purge : une clé HMAC et une date, ni l'adresse ni l'IP.
+  **Risque résiduel accepté** : une IP neuve de la personne (autre réseau, première connexion) est bloquée 60 min tant que 20 refus
+  d'IP différentes courent sur son compte ; son appareil habituel entre. Pour la connexion par code, les limites de la demande (6 codes
+  par heure et par adresse, 5 essais par code) bornent la force brute à 30 essais par heure. La réauthentification par mot de passe
+  (jusqu'à S11) n'a que la limite du compte entier : environ 480 essais par jour pour qui tient une session volée et au moins quatre IP.
 
 ### 4.4 Sessions côté base (0.4, migration 0139 ; code : `security/sessions_base.py`, `security/appareil.py`)
 

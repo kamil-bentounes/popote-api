@@ -406,6 +406,30 @@ async def test_vingt_refus_venus_de_quatre_ip_bloquent_le_compte_entier_soixante
     assert len(verifications) == avant
 
 
+async def test_la_personne_sur_son_appareil_habituel_entre_malgre_le_blocage_du_compte_entier(
+    banc_avec: Callable[..., Banc],
+) -> None:
+    banc = banc_avec(connexion_essais_par_ip=10000)
+    personne, email = banc.personne()
+    assert (await banc.connecte_par_code(email, personne)).status_code == 201  # son couple devient connu
+    for rang in range(4):
+        ip = f"198.51.100.{90 + rang}"
+        banc.suit(email, ip)
+        for _ in range(5):
+            await banc.connecte_par_code(email, personne, faux=True, client=banc.client(ip))
+    ailleurs = banc.client("198.51.100.99")
+    banc.suit(email, "198.51.100.99")
+    assert (
+        await banc.connecte_par_code(email, personne, client=ailleurs)
+    ).status_code == 429  # IP neuve : bloquée
+    assert (await banc.connecte_par_code(email, personne)).status_code == 201  # son IP habituelle : entre
+    blocages = banc.lignes(
+        "select ip_hash from public.security_event where kind = 'connexion_bloquee' and account_key = %s",
+        banc.empreintes.cle_compte(email),
+    )
+    assert blocages == [(None,)]  # le compte entier ne porte pas d'IP, un couple en porte une
+
+
 async def test_le_blocage_d_un_couple_monte_jusqu_a_24_heures(banc: Banc) -> None:
     """Cinq essais faits, sept crans, blocage échu : le prochain faux code bloque 24 h, plafond compris."""
     personne, email = banc.personne()
@@ -608,9 +632,13 @@ async def test_les_evenements_de_connexion(banc_avec: Callable[..., Banc]) -> No
         "where kind = 'connexion_bloquee' and account_key = %s",
         cle,
     )
+    cle_ip = banc.empreintes.cle_ip(banc.ip)
     assert len(ratees) == 5  # le succès a remis le compte à zéro : cinq faux comptés, les autres refusés
     assert len(bloquees) == 1  # B21 : un événement par fenêtre de blocage, pas un par essai refusé
-    assert all(ligne == (None, None) for ligne in ratees + bloquees)  # clé de compte seule
+    assert all(ligne == (None, None) for ligne in ratees)  # clé de compte seule
+    assert [(bytes(ip), personne) for ip, personne in bloquees] == [
+        (cle_ip, None)
+    ]  # un couple : compte et IP
 
 
 async def test_un_cookie_valide_present_est_revoque_par_la_nouvelle_connexion(

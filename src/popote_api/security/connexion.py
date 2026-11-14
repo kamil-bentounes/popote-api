@@ -233,13 +233,14 @@ async def _prend_les_creneaux(
     # Un seul événement par fenêtre de blocage (B21) : 100 essais refusés n'en écrivent qu'un.
     if creneaux.nouveau_blocage is not None:
         # La clé qui vient de bloquer, et elle seule : un blocage d'IP ne marque pas le compte visé ;
-        # le couple et le compte entier s'écrivent sous la clé du compte (sans l'empreinte de l'IP).
+        # le couple s'écrit avec la clé du compte et celle de l'IP, le compte entier avec celle du compte.
         par_ip = creneaux.nouveau_blocage is CleBloquee.ip
+        avec_ip = creneaux.nouveau_blocage in (CleBloquee.ip, CleBloquee.couple)
         await journalise_sans_lever(
             curseur,
             Evenement.connexion_bloquee,
             cle_compte=None if par_ip else cle_compte,
-            cle_ip=cle_ip if par_ip else None,
+            cle_ip=cle_ip if avec_ip else None,
             request_id=request_id,
         )
     return Bloquee(creneaux.attente_s)
