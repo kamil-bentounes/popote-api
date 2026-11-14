@@ -25,6 +25,9 @@ TABLES = [
     "public.reprise_en_cours",
     "public.password_reset",
     "public.login_code",
+    "public.webauthn_user",
+    "public.webauthn_credential",
+    "public.webauthn_challenge",
 ]
 
 I7 = ", integer" * 7
@@ -109,6 +112,21 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
         "private.ouvre_une_session_par_code(uuid, bytea, bytea, bytea, text, text, bytea, timestamptz, text)"
     ): set(),
     "private.personne_peut_entrer(uuid)": set(),
+    "public.mon_identifiant_webauthn(bytea)": {"authenticated"},
+    "public.mes_identifiants_de_cle()": {"authenticated"},
+    "public.cree_un_defi(uuid, text, bytea)": {"authenticated"},
+    "public.consomme_un_defi(uuid, text, bytea)": {"authenticated"},
+    (
+        "public.enregistre_une_cle"
+        "(uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text)"
+    ): {"authenticated"},
+    "private.cree_un_defi(uuid, uuid, text, bytea, timestamptz)": set(),
+    "private.consomme_un_defi(uuid, uuid, text, bytea, timestamptz)": set(),
+    (
+        "private.enregistre_une_cle"
+        "(uuid, uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text, timestamptz)"
+    ): set(),
+    "private.purge_webauthn_challenge(timestamptz, integer)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

@@ -6,7 +6,7 @@ routeur, et s'écrivent dans la liste blanche de `tests/unit/test_routes_fermees
 
 from fastapi import APIRouter
 
-from popote_api.api import appareils, invitations_hote, moi, reauthentification
+from popote_api.api import appareils, cles, invitations_hote, moi, reauthentification
 from popote_api.security.session import COOKIE_DU_CONTRAT, EXIGE_UNE_PERSONNE, REPONSES_DE_SESSION
 
 # Les routes de chaque domaine, ajoutées au fil des étapes ; lue à la construction de l'application.
@@ -15,6 +15,8 @@ SOUS_ROUTEURS: tuple[APIRouter, ...] = (
     appareils.router,
     reauthentification.router,
     invitations_hote.router,
+    cles.routeur_des_defis,
+    cles.routeur_des_cles,
 )
 
 
