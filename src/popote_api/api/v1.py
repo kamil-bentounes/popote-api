@@ -17,6 +17,7 @@ SOUS_ROUTEURS: tuple[APIRouter, ...] = (
     invitations_hote.router,
     cles.routeur_des_defis,
     cles.routeur_des_cles,
+    cles.routeur_de_gestion,
 )
 
 

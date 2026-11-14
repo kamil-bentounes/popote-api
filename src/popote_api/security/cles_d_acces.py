@@ -38,6 +38,7 @@ class Refus(StrEnum):
     preuve_perimee = "preuve_perimee"
     trop_de_cles = "trop_de_cles"
     cle_deja_enregistree = "cle_deja_enregistree"
+    inconnue = "inconnue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,17 @@ class CleAjoutee:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class CleSupprimee:
+    sessions_fermees: int
+    session_courante_fermee: bool
+
+
+LISTE_DES_CLES = (
+    "select id, name, created_at, last_used_at, device_type, backed_up, transports from public.mes_cles()"
+)
+RENOMME = "select public.renomme_ma_cle(%s, %s) as trouvee"
+SUPPRIME = "select etat, sessions_fermees, courante_fermee from public.supprime_ma_cle(%s, %s, %s)"
 MON_IDENTIFIANT = "select public.mon_identifiant_webauthn(%s) as identifiant"
 MES_CLES = "select identifiant, transports from public.mes_identifiants_de_cle()"
 CREE_UN_DEFI = "select public.cree_un_defi(%s, %s, %s) as etat"
@@ -134,4 +146,25 @@ async def enregistre_la_cle(
     )
     if ligne["etat"] == "creee":
         return CleAjoutee(ligne["id"], ligne["created_at"])
+    return Refus(ligne["etat"])
+
+
+async def liste_les_cles(curseur: Curseur) -> list[dict[str, Any]]:
+    """Les clés de la personne du contexte, dix au plus, de la plus ancienne à la plus récente."""
+    await curseur.execute(LISTE_DES_CLES)
+    return list(await curseur.fetchall())
+
+
+async def renomme_la_cle(curseur: Curseur, *, identifiant: UUID, nom: str) -> bool:
+    """Vrai si la clé est à la personne du contexte ; faux sinon (celle d'une autre est inconnue)."""
+    return bool((await _une_ligne(curseur, RENOMME, (identifiant, nom)))["trouvee"])
+
+
+async def supprime_la_cle(
+    curseur: Curseur, *, empreinte_de_session: bytes, identifiant: UUID, request_id: str | None
+) -> CleSupprimee | Refus:
+    """Supprime la clé, ferme les sessions qu'elle a ouvertes, sous le verrou de personne (`Refus` sinon)."""
+    ligne = await _une_ligne(curseur, SUPPRIME, (empreinte_de_session, identifiant, request_id))
+    if ligne["etat"] == "supprimee":
+        return CleSupprimee(ligne["sessions_fermees"], ligne["courante_fermee"])
     return Refus(ligne["etat"])

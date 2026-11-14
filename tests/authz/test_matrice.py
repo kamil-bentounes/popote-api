@@ -52,6 +52,7 @@ class Monde:
     autre: Personne
     a_viser: UUID  # une session de `moi`, autre que celle qui sert de cookie
     invitation: UUID  # un lien en attente du foyer de `moi`
+    cle: UUID  # une clé d'accès de `moi`
 
 
 @dataclass(frozen=True)
@@ -198,6 +199,36 @@ def _cle_refusee_pour_les_deux(monde: Monde, reponse: httpx.Response) -> None:
     assert str(monde.moi.id) not in reponse.text
 
 
+def _cles_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 200
+    assert [c["id"] for c in reponse.json()["items"]] == [str(monde.cle)]
+
+
+def _cles_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Liste « de soi » : l'autre personne n'a aucune clé, et la mienne n'apparaît pas.
+    assert reponse.status_code == 200
+    assert reponse.json()["items"] == []
+    assert str(monde.cle) not in reponse.text
+
+
+def _cle_renommee_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 200
+    assert reponse.json()["id"] == str(monde.cle)
+    assert reponse.json()["name"] == "Renommée"
+
+
+def _cle_introuvable_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Une clé désignée par son identifiant : introuvable, sans dire qu'elle existe (restée intacte : gardé
+    # en base par `test_gestion_des_cles.py`).
+    assert reponse.status_code == 404
+    assert reponse.json()["code"] == "cle_introuvable"
+    assert str(monde.cle) not in reponse.text
+
+
+def _cle_supprimee_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 204
+
+
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
     ("DELETE", "/api/v1/me"): Cas(
@@ -247,6 +278,21 @@ MATRICE: dict[tuple[str, str], Cas] = {
         _cle_refusee_pour_les_deux,
         lambda _: {"credential": {}},
         avec_cle_d_idempotence=True,
+    ),
+    ("GET", "/api/v1/me/passkeys"): Cas(
+        lambda _: "/api/v1/me/passkeys", _cles_chez_moi, _cles_chez_un_autre_foyer
+    ),
+    ("PATCH", "/api/v1/me/passkeys/{id}"): Cas(
+        lambda monde: f"/api/v1/me/passkeys/{monde.cle}",
+        _cle_renommee_chez_moi,
+        _cle_introuvable_chez_un_autre_foyer,
+        lambda _: {"name": "Renommée"},
+        avec_cle_d_idempotence=True,
+    ),
+    ("DELETE", "/api/v1/me/passkeys/{id}"): Cas(
+        lambda monde: f"/api/v1/me/passkeys/{monde.cle}",
+        _cle_supprimee_chez_moi,
+        _cle_introuvable_chez_un_autre_foyer,
     ),
     ("DELETE", "/api/v1/me/invitations/{id}"): Cas(
         lambda monde: f"/api/v1/me/invitations/{monde.invitation}",
@@ -323,6 +369,7 @@ def monde(fabrique: Fabrique) -> Monde:
         autre=fabrique.personne(fabrique.foyer()),
         a_viser=fabrique.session(moi.id).id,
         invitation=lien[0],
+        cle=fabrique.cle(moi.id),
     )
 
 

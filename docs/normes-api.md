@@ -311,6 +311,12 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `POST /api/v1/me/passkeys` `{credential, name?}` : `201 {id, name, created_at}` ; `403 reauthentification_requise` ; `409 trop_de_cles` |
   `cle_deja_enregistree` ; `422 cle_refusee` (un seul message pour toute réponse refusée ou défi inutilisable) ; `Idempotency-Key` obligatoire. Détail :
   `docs/securite.md` § 4.16.
+- **La gestion des clés d'accès** (0.4bis S10, session) : `GET /api/v1/me/passkeys` : `200 {items, next_cursor: null}` (dix clés au plus ; `id`, `name`,
+  `created_at`, `last_used_at`, `device_type`, `backed_up`, `transports`, jamais la clé publique ni son identifiant). `PATCH /api/v1/me/passkeys/{id}`
+  (`application/merge-patch+json`, `Idempotency-Key` obligatoire) : `200` la clé ; `404 cle_introuvable` ; `422` ; ni `If-Match` ni `ETag` (une personne édite
+  ses clés). `DELETE /api/v1/me/passkeys/{id}` : `204` (cookie vidé si la session courante avait été ouverte par la clé) ; `403 reauthentification_requise` ;
+  `404 cle_introuvable` ; `422` ; sans `Idempotency-Key` (naturellement idempotent, exemption comme les appareils). Supprimer une clé ferme les sessions
+  qu'elle a ouvertes. `GET /api/v1/me/sessions` gagne `opened_with` (`code`, `cle`, `invitation`, `autre` : ajout compatible). Détail : `docs/securite.md` § 4.18.
 - **La connexion par clé d'accès** (0.4bis S9, publique) : `POST /api/v1/passkey-challenges` (sans corps) : `200 {options}` (options de
   `navigator.credentials.get()`, sans clé nommée ni nom) ; `403 cle_origine_non_admise` ; `429` + `Retry-After` (60 défis par IP et par 15 minutes, plafond de défis vivants) ;
   `503`. `POST /api/v1/sessions` `{method: "passkey", credential}` (16 Kio au plus) : `201 {id}` + cookie ; `401 cle_refusee` (un seul message pour tout refus) ; `422` ;

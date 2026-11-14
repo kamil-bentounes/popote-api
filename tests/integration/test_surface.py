@@ -128,6 +128,11 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
         "(uuid, uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text, timestamptz)"
     ): set(),
     "private.purge_webauthn_challenge(timestamptz, integer)": set(),
+    "public.mes_appareils(integer, timestamptz, uuid)": {"authenticated"},
+    "public.mes_cles()": {"authenticated"},
+    "public.renomme_ma_cle(uuid, text)": {"authenticated"},
+    "public.supprime_ma_cle(bytea, uuid, text)": {"authenticated"},
+    "private.supprime_ma_cle(uuid, uuid, uuid, text, timestamptz)": set(),
     "public.cree_un_defi_anonyme(bytea, integer)": {"popote_api"},
     "public.consomme_un_defi_anonyme(bytea)": {"popote_api"},
     "public.prend_un_creneau_de_cle(text, bytea, integer, integer, integer)": {"popote_api"},

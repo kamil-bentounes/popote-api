@@ -8,6 +8,7 @@ from popote_api.schemas.base import Sortie
 
 Navigateur = Literal["chrome", "firefox", "safari", "edge", "autre"]
 Systeme = Literal["windows", "macos", "linux", "android", "ios", "autre"]
+OuvertureDeSession = Literal["code", "cle", "invitation", "autre"]
 
 
 class Appareil(Sortie):
@@ -18,4 +19,7 @@ class Appareil(Sortie):
     os: Systeme = Field(description="Famille de système (`autre` si non reconnue).")
     created_at: datetime = Field(description="Ouverture de la session.")
     last_seen_at: datetime = Field(description="Dernière activité.")
+    opened_with: OuvertureDeSession = Field(
+        description="Ouverte par : `code` (mail), `cle` (clé d'accès), `invitation` ou `autre`."
+    )
     current: bool = Field(description="Vrai pour la session qui fait cette requête (une seule par page).")
