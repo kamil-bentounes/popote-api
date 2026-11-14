@@ -14,6 +14,7 @@ Un cas dit, pour sa route, quel chemin vise la ressource de mon foyer et ce que 
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -58,7 +59,7 @@ class Cas:
     chemin: Callable[[Monde], str]
     chez_moi: Callable[[Monde, httpx.Response], None]
     chez_un_autre_foyer: Callable[[Monde, httpx.Response], None]
-    corps: Callable[[Monde], dict[str, str]] | None = None  # le corps JSON d'une écriture, le même pour tous
+    corps: Callable[[Monde], dict[str, Any]] | None = None  # le corps JSON d'une écriture, le même pour tous
     avec_cle_d_idempotence: bool = False  # un `POST` à effet exige `Idempotency-Key`
 
 
@@ -176,6 +177,27 @@ def _revoque_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
     assert reponse.json()["status"] == 404
 
 
+def _defi_de_cle_chez_moi(monde: Monde, reponse: httpx.Response) -> None:
+    assert reponse.status_code == 200
+    assert len(reponse.json()["options"]["user"]["id"]) == 86  # 64 octets en base64url, sans remplissage
+
+
+def _defi_de_cle_chez_un_autre_foyer(monde: Monde, reponse: httpx.Response) -> None:
+    # Route « de soi » : les options portent l'identifiant et l'adresse de l'autre, jamais ceux de `moi`.
+    assert reponse.status_code == 200
+    assert str(monde.moi.id) not in reponse.text
+    assert str(monde.moi.foyer_id) not in reponse.text
+
+
+def _cle_refusee_pour_les_deux(monde: Monde, reponse: httpx.Response) -> None:
+    # Sans défi demandé par CETTE session, la réponse est refusée de la même façon pour tout le monde : une
+    # clé ne s'enregistre jamais sur un défi qu'une autre personne ou une autre session a demandé
+    # (gardé en base par `test_enregistrement_de_cle.py`).
+    assert reponse.status_code == 422
+    assert reponse.json()["code"] == "cle_refusee"
+    assert str(monde.moi.id) not in reponse.text
+
+
 MATRICE: dict[tuple[str, str], Cas] = {
     ("GET", "/api/v1/me"): Cas(lambda _: "/api/v1/me", _me_chez_moi, _me_chez_un_autre_foyer),
     ("DELETE", "/api/v1/me"): Cas(
@@ -212,6 +234,19 @@ MATRICE: dict[tuple[str, str], Cas] = {
     ),
     ("GET", "/api/v1/me/invitations"): Cas(
         lambda _: "/api/v1/me/invitations", _invitations_chez_moi, _invitations_chez_un_autre_foyer
+    ),
+    ("POST", "/api/v1/me/passkey-challenges"): Cas(
+        lambda _: "/api/v1/me/passkey-challenges",
+        _defi_de_cle_chez_moi,
+        _defi_de_cle_chez_un_autre_foyer,
+        lambda _: {"purpose": "registration"},
+    ),
+    ("POST", "/api/v1/me/passkeys"): Cas(
+        lambda _: "/api/v1/me/passkeys",
+        _cle_refusee_pour_les_deux,
+        _cle_refusee_pour_les_deux,
+        lambda _: {"credential": {}},
+        avec_cle_d_idempotence=True,
     ),
     ("DELETE", "/api/v1/me/invitations/{id}"): Cas(
         lambda monde: f"/api/v1/me/invitations/{monde.invitation}",

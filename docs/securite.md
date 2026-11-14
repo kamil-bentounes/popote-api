@@ -908,7 +908,7 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
 
 ### 4.13 Les clés d'accès : le socle (0.4bis S8a ; code : `infra/webauthn.py`, `config.py`)
 
-Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9) et la gestion (S10) s'appuient sur elle.
+Partie sans base : ni table, ni route. L'enregistrement (S8b, § 4.16), la connexion (S9) et la gestion (S10) s'appuient sur elle.
 
 - **RP ID et origines** (`WEBAUTHN_PAR_ENV`, surchargeables par `POPOTE_WEBAUTHN_RP_ID` et `POPOTE_WEBAUTHN_ORIGINS`, liste séparée
   par des virgules) : prod `notre-popote.fr` et `https://notre-popote.fr` ; essai `essai.notre-popote.fr` et
@@ -967,3 +967,61 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b), la connexion (S9)
   d'utilisateur vide, RP ID des options, clés exclues, et dans la configuration : suffixe, frontière de point, `http`, `localhost`,
   RP ID sans point : chacune fait échouer un test.
 - **Retour arrière** : retirer `infra/webauthn.py`, les réglages `webauthn_*` et la dépendance (`uv remove webauthn`).
+
+### 4.16 Les clés d'accès : l'enregistrement (0.4bis S8b, migration 0153 ; code : `api/cles.py`, `security/cles_d_acces.py`, `schemas/cles.py`)
+
+- **Deux routes** (session, contexte « personne » : les fonctions SQL lisent `auth.uid()`, jamais un identifiant donné par la route).
+  `POST /api/v1/me/passkey-challenges` `{purpose: "registration"}` rend `{options}` (défi de 32 octets valable 10 minutes, clé découvrable,
+  vérification exigée, attestation `none`, clés déjà enregistrées exclues). `POST /api/v1/me/passkeys` `{credential, name?}` vérifie la
+  réponse et écrit la clé : `201 {id, name, created_at}`. Sans nom : « Clé du JJ/MM/AAAA » (date de Paris). Nom : NFC, 1 à 40 caractères,
+  ni contrôle ni invisible ni séparateur de ligne (`422` à pointeur `/name`).
+- **Preuve de moins de 5 minutes, aux deux étapes** (`exige_reauth` : passe à 300 s, refuse à 301), **puis relue par la base** sous le
+  verrou de personne avec la session, d'après l'horloge de la base : `403 reauthentification_requise`. Le message de ce `403` parle encore
+  de mot de passe jusqu'à S11, qui le réécrit avec la réauthentification par clé ou par code.
+- **Ordre de l'enregistrement** : garde de preuve, lecture du défi annoncé par la réponse, `consomme_un_defi` (verrou de personne, puis
+  `delete … returning` lié à la personne, à la session, au but, valable 10 minutes : un défi d'une autre personne, d'une autre session,
+  d'un autre but ou échu n'est ni rendu ni brûlé), vérification en Python **contre le défi que la base a rendu** (pas contre celui de la
+  réponse), `enregistre_une_cle` (session non fermée ni échue, preuve de 300 s, dix clés au plus, identifiant de clé unique **pour tout le
+  monde**, événement `cle_ajoutee`). Aucun appel réseau ne se fait pendant que le verrou est tenu ; la vérification coûte quelques
+  millisecondes. Un refus (`Refus`) est un **résultat** de la fonction SQL ; la route le traduit en `Probleme`, donc la transaction
+  s'annule : **un défi dont la réponse est refusée redevient valable jusqu'à son échéance** (la classe de route idempotente exige qu'une
+  erreur lève), seule une clé écrite le consomme. Rien d'autre à deviner pour un attaquant qui détient déjà la session et une preuve fraîche.
+- **La session se désigne par l'empreinte de son cookie**, jamais par son identifiant : `cree_un_defi`, `consomme_un_defi` et `enregistre_une_cle`
+  prennent `p_token_hash` (celui de `lit_la_session`) et en tirent la session de la personne du contexte (`private.session_du_jeton`). L'identifiant d'une
+  session se lit par `mes_sessions` avec un simple jeton d'accès GoTrue (PostgREST reste ouvert jusqu'à J+2) : sans cela, un jeton volé suffisait à écrire une
+  clé permanente, sans cookie, sans défi et sans vérification de signature (relevé par la revue adverse). Un identifiant ou une empreinte d'une autre
+  personne : `session_perimee`, rien d'écrit, défi intact (testé). Reste, par construction : qui appelle la fonction **directement** avec le cookie
+  d'une session à preuve fraîche saute la vérification WebAuthn ; il détient alors déjà le cookie, donc la session.
+- **Codes** : `403 cle_origine_non_admise` (l'`Origin` n'est pas dans la liste WebAuthn : aperçus de fusion), `403
+  reauthentification_requise`, `401 pas_de_session` (session fermée entre la lecture et le verrou), `409 trop_de_cles` (dès le défi, et à
+  l'écriture si une course a pris la dixième), `409 cle_deja_enregistree`, `422 cle_refusee` (réponse fausse, défi inconnu, échu, déjà servi, d'une
+  autre personne ou d'une autre session : un seul message), `Idempotency-Key` obligatoire sur `/me/passkeys` (rejeu : même réponse, rien de
+  refait) et **exemptée** sur `/me/passkey-challenges` (défi à usage unique : rejouer en crée un autre).
+- **L'identifiant d'utilisateur** (`webauthn_user`, 64 octets tirés par `secrets`, sans lien avec l'e-mail ni l'identifiant) se crée par
+  `mon_identifiant_webauthn` (`insert … on conflict do nothing` puis `select`) sous le verrou de personne, **avant** de bâtir les options :
+  deux premières demandes en parallèle rendent le même. `user.name` est l'adresse de la personne et `displayName` son prénom : l'appareil les
+  montre dans sa liste de clés, la personne les reçoit à elle seule.
+- **Le défi est gardé tel quel** (pas son SHA-256 comme le disait le plan : la vérification de S8a se fait contre le défi que la base rend, ce
+  qu'un hachage interdirait). Ce n'est pas un secret : il sort dans les options ; il est à usage unique, lié, et vit 10 minutes. Purge : échéance + 1 jour
+  (`private.purge_webauthn_challenge`, pg_cron `webauthn-challenge-purge`, 03 h 51 UTC).
+- **Fermer toutes les sessions ne retire pas les clés** (la clé est un facteur de la personne, pas de la session) : S10 les liste et les supprime.
+  Ce qui est fermé ici, c'est l'**enregistrement en vol** : une session volée qui lance l'enregistrement puis une fermeture de toutes les sessions
+  ne laissent pas la clé de l'attaquant (course testée, A tient le verrou, B est refusé `401` ou `session_perimee`, aucune clé).
+- **Risque accepté, comme § 4.15 (1)** : `efface_mes_donnees` (0145) ne prend pas le verrou de personne avant S14 (0156) ; un enregistrement qui a
+  lu « peut entrer » avant l'effacement peut écrire sa clé après lui (la clé étrangère vise `webauthn_user` puis `auth.users`). Elle meurt avec le
+  compte Auth. **S14 efface codes, défis, clés et identifiant sous les trois verrous.**
+- **Limites dites.** (1) Une clé publique COSE de plus de 1 Kio est refusée **en Python** (`422 cle_refusee`), comme la contrainte de la table ; la RSA de
+  4096 bits en fait environ 550. (2) Le nom refuse les catégories Unicode C* et les séparateurs de ligne ou de paragraphe, **pas** les caractères « blancs » des
+  catégories Lo, So et Mn (U+3164, U+2800, U+115F…) : un nom peut s'afficher vide, à la seule personne qui l'a choisi ; les émojis à ZWJ (Cf) sont refusés.
+  (3) Le nombre de défis en attente n'est pas borné par personne (30 écritures par minute et par personne, purge à l'échéance + 1 jour). (4) `now()` est
+  celui du début de la transaction : une preuve ou une session peut passer quelques millisecondes après sa limite.
+- **Journaux** : jamais la réponse, l'identifiant de clé, la clé publique ni le défi ; un refus écrit `type_de_la_cause` seul (testé par
+  `caplog` sur un refus, un succès et un défi servi). L'événement `cle_ajoutee` porte la personne, la session et l'identifiant de requête.
+- **Données** : tables `webauthn_user`, `webauthn_credential`, `webauthn_challenge` (RLS forcée, aucun droit) ; `transports` borné aux sept valeurs
+  de WebAuthn, compteur de 0 à 2^32-1, BS suppose BE, nom de 1 à 40 caractères. Cinq fonctions publiques pour `authenticated` seul (pas d'horloge),
+  trois variantes à `p_now` dans `private`.
+- Tests : `tests/integration/test_enregistrement_de_cle.py` (HTTP, authentificateur logiciel : options, indicateurs, refus, défi à usage unique, liaison à la
+  personne et à la session, dix clés dont douze enregistrements parallèles, preuve à 299 et 301 s aux deux étapes, horloge de l'API en retard, session fermée, rejeu,
+  journaux, deux courses), `tests/integration/test_cles_base.py` (base : bornes de 300 s et de 10 minutes, quinze enregistrements parallèles, course avec une fermeture
+  de toutes les sessions, contraintes, purge), `test_surface.py`, `tests/authz/test_matrice.py`.
+- **Retour arrière** : en tête de `0153_cles_d_acces.sql` (supprime les clés enregistrées : la personne se reconnecte par code et les recrée).

@@ -38,6 +38,7 @@ class Evenement(StrEnum):
     verification_fuites_indisponible = "verification_fuites_indisponible"
     code_demande = "code_demande"
     connexion_par_code = "connexion_par_code"
+    cle_ajoutee = "cle_ajoutee"
 
 
 async def journalise(

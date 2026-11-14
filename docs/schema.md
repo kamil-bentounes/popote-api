@@ -392,6 +392,18 @@ gagne `code_ip`, `code_paire`, `code_compte`, `mail_global` ; `security_event.ki
 vérification et la session sont S7a (0149, `docs/securite.md` § 4.15 : `login_session.opened_with`, `ouvre_la_session`, `ouvre_une_session_par_code`, `private.personne_peut_entrer`). Objets neufs, deux `CHECK` élargis : compatible avec l'appli en ligne. Retour arrière :
 en tête de la migration. Voir `docs/securite.md` § 4.13.
 
+### `webauthn_user`, `webauthn_credential`, `webauthn_challenge` : les clés d'accès (0153, étape 0.4bis S8b)
+
+`webauthn_user` : `person_id` (`auth.users`, cascade), `user_handle` (**64 octets aléatoires, sans donnée personnelle**, unique), `created_at`.
+`webauthn_credential` : `id`, `person_id` (`webauthn_user`, cascade, indexée), `credential_id` (**unique pour tout le monde**, 16 à 1023 octets),
+`public_key` (COSE), `sign_count` (0 à 2^32-1), `transports` (sept valeurs de WebAuthn), `backup_eligible`, `backup_state` (BS suppose BE),
+`uv_initialized`, `aaguid`, `name` (1 à 40 caractères), `created_at`, `last_used_at`. `webauthn_challenge` : `challenge` (32 octets, clé primaire :
+pas un secret), `purpose` (`registration`), `person_id` et `session_id` (cascade, indexées), `created_at`, `expires_at` (`CHECK` : 10 minutes au plus).
+Aucun droit, RLS forcée, sans politique. Cinq fonctions pour `authenticated` seul (`mon_identifiant_webauthn`, `mes_identifiants_de_cle`,
+`cree_un_defi`, `consomme_un_defi`, `enregistre_une_cle`), trois variantes à `p_now` dans `private`. `private.purge_webauthn_challenge` : échéance +
+1 jour (`pg_cron` `webauthn-challenge-purge`, 03 h 51 UTC). `security_event.kind` gagne `cle_ajoutee`. Objets neufs, un `CHECK` élargi : compatible
+avec l'appli en ligne. Retour arrière : en tête de la migration. Voir `docs/securite.md` § 4.16.
+
 ### `invite_link` : les invitations par lien (0142 et 0143, étape 0.4 T12)
 
 `id`, `household_id` (cascade), `created_by` et `accepted_by` (`on delete set null`, indexées : un compte supprimé laisse
