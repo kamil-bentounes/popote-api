@@ -42,8 +42,10 @@ serveur. Popote n'est pas un client OAuth ; c'est le principe qui est repris.
     le tronquer** (une troncature accepterait un mot de passe qui n'est pas le bon) ;
   - cherche l'e-mail sous la forme de l'API (`email_normalise`, la même que la clé de limite : B24), en égalité
     après `lower(btrim())`, jamais en motif (`ilike`) ;
-  - `popote_api` seul l'exécute (`Base.connexion()`) ; la variante `verifie_mot_de_passe_de(personne, mot de
-    passe)` sert la réauthentification. Une fonction interne (`private.mot_de_passe_correspond`) porte le `crypt()`.
+  - **aucun rôle applicatif n'exécute la variante par adresse depuis 0150** (S7c : sans appelant, ni dans l'API, ni
+    dans l'ancienne appli, ni dans une migration ; la fonction reste, seul le droit de `popote_api` est retiré) ; la
+    variante `verifie_mot_de_passe_de(personne, mot de passe)` sert la réauthentification et reste exécutable par
+    `popote_api` seul (`Base.connexion()`). Une fonction interne (`private.mot_de_passe_correspond`) porte le `crypt()`.
 - **Comptes sans mot de passe** (nés d'un lien magique, qui disparaît) : ils passent par « mot de passe
   oublié » pour en choisir un. Leur nombre est compté sur la copie de la prod pendant la répétition, et Kamil
   est prévenu s'il y en a dans le foyer.

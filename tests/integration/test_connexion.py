@@ -124,15 +124,13 @@ class Banc:
         return await self.poste(email, identifiant, envoye, client=client, **plus)
 
     async def mot_de_passe_est_bon(self, email: str, mot_de_passe: str) -> bool:
-        """Le mot de passe de ce compte est-il celui-là ? (`verifie_mot_de_passe`, par adresse)."""
-        async with self.app.state.base.connexion() as curseur:
-            for candidat in candidats_de_connexion(mot_de_passe):
-                await curseur.execute(
-                    "select public.verifie_mot_de_passe(%s, %s) as personne", (email, candidat)
-                )
-                ligne = await curseur.fetchone()
-                if ligne is not None and ligne["personne"] is not None:
-                    return True
+        """Le mot de passe de ce compte est-il celui-là ? (variante par adresse, en propriétaire : 0150)."""
+        for candidat in candidats_de_connexion(mot_de_passe):
+            ligne = self.fabrique.admin.execute(
+                "select public.verifie_mot_de_passe(%s, %s)", (email, candidat)
+            ).fetchone()
+            if ligne is not None and ligne[0] is not None:
+                return True
         return False
 
     def lignes(self, requete: str, *args: object) -> list[tuple[Any, ...]]:
