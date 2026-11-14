@@ -8,6 +8,7 @@ from typing import Final
 
 CONNEXION: Final = "/api/v1/sessions"
 CODES_DE_CONNEXION: Final = "/api/v1/login-codes"
+DEFIS_DE_CONNEXION: Final = "/api/v1/passkey-challenges"
 INSPECTION: Final = "/api/v1/invitations/inspections"
 ACCEPTATION: Final = "/api/v1/invitations/acceptances"
 
@@ -16,6 +17,8 @@ ROUTES_PUBLIQUES: Final[dict[str, str]] = {
     "/api/readyz": "la base répond, sans donnée ; sert au réveil quotidien du projet",
     CODES_DE_CONNEXION: "demander un code par mail : sans session ; limitée en base avant tout envoi, "
     "même réponse pour un compte connu et inconnu",
+    DEFIS_DE_CONNEXION: "demander les options d'une connexion par clé d'accès : sans session ni nom "
+    "d'utilisateur ; limitée par IP et par plafond de défis vivants",
     CONNEXION: "la connexion : sans session, par définition ; limitée en base avant tout bcrypt",
     INSPECTION: "lire un lien d'invitation : sans compte encore ; sans effet, limitée par IP",
     ACCEPTATION: "accepter un lien : crée le compte ; limitée par IP et par lien avant tout appel externe",

@@ -413,3 +413,12 @@ RLS activée et forcée, sans politique : on n'y passe que par les fonctions `se
 created_at desc)` (quota) et un index partiel des liens en attente (liste de T12b). Table neuve : l'ancienne `invitation`
 et les fonctions Edge `invite` / `accept-invite` ne bougent pas jusqu'à la contraction. Retour arrière : en tête de la
 migration.
+
+### La connexion par clé d'accès (0154, étape 0.4bis S9a)
+
+`login_session.opened_with_credential` (uuid, nulle, **sans clé étrangère** : supprimer une clé ferme ses sessions, S10 ; index partiel). `webauthn_challenge` : `person_id` et
+`session_id` deviennent nullables, `purpose` accepte `authentication`, un `CHECK` lie but, personne et session (un défi de connexion n'a ni l'une ni l'autre) ; index partiel des
+défis de connexion sur `expires_at`. `login_throttle.scope` gagne `cle_ip` et `cle_defi_ip` ; `security_event.kind` gagne `connexion_par_cle` et `cle_suspecte`. Cinq fonctions
+publiques pour `popote_api` seul (`cree_un_defi_anonyme`, `consomme_un_defi_anonyme`, `prend_un_creneau_de_cle`, `cle_pour_connexion`, `ouvre_une_session_par_cle`), quatre variantes à
+`p_now` et `private.purge_defis_anonymes` dans `private` (pg_cron `webauthn-defis-anonymes-purge`, chaque heure). Objets neufs, trois `CHECK` élargis, une colonne nulle : compatible avec
+l'appli en ligne. Retour arrière : en tête de la migration. Voir `docs/securite.md` § 4.17.

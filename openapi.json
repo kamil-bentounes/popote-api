@@ -185,6 +185,30 @@
         "title": "CodeDemandeAccepte",
         "type": "object"
       },
+      "ConnexionParCle": {
+        "additionalProperties": false,
+        "description": "L'ouverture par clé d'accès : la réponse de `navigator.credentials.get()`, sans adresse ni nom.",
+        "properties": {
+          "credential": {
+            "additionalProperties": true,
+            "description": "La réponse de `navigator.credentials.get()`, par `PublicKeyCredential.toJSON()` (16 Kio au plus).",
+            "title": "Credential",
+            "type": "object"
+          },
+          "method": {
+            "const": "passkey",
+            "description": "La preuve présentée : une clé d'accès.",
+            "title": "Method",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "credential"
+        ],
+        "title": "ConnexionParCle",
+        "type": "object"
+      },
       "ConnexionParCode": {
         "additionalProperties": false,
         "description": "L'ouverture par le code reçu par mail : la demande (`code_request_id`), l'adresse, les six chiffres.",
@@ -522,6 +546,21 @@
           "options"
         ],
         "title": "OptionsDeCle",
+        "type": "object"
+      },
+      "OptionsDeConnexion": {
+        "properties": {
+          "options": {
+            "additionalProperties": true,
+            "description": "Les options de `navigator.credentials.get()`, en JSON WebAuthn niveau 3 : à passer à `PublicKeyCredential.parseRequestOptionsFromJSON`. Aucune clé n'est nommée : l'appareil propose les siennes.",
+            "title": "Options",
+            "type": "object"
+          }
+        },
+        "required": [
+          "options"
+        ],
+        "title": "OptionsDeConnexion",
         "type": "object"
       },
       "Page_Appareil_": {
@@ -4412,15 +4451,228 @@
         ]
       }
     },
+    "/api/v1/passkey-challenges": {
+      "post": {
+        "description": "Rend les options de `navigator.credentials.get()` : défi de 32 octets valable 10 minutes, aucune clé nommée, vérification de l'utilisateur exigée. Sans compte ni nom : la réponse ne dit rien d'un compte. Une page de Popote dont l'adresse n'admet pas les clés d'accès reçoit `403 cle_origine_non_admise` (les aperçus de fusion n'offrent que le code). 60 défis par IP et par 15 minutes, et un plafond de défis vivants : `429`. Sans `Idempotency-Key` (route publique).",
+        "operationId": "create_passkey_challenge",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptionsDeConnexion"
+                }
+              }
+            },
+            "description": "Les options à passer au navigateur.",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Requête mal formée",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Corps trop gros",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Type de contenu non supporté",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Demander les options pour se connecter avec une clé d'accès",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
     "/api/v1/sessions": {
       "post": {
-        "description": "Ouvre une session avec le code à six chiffres demandé par `POST /login-codes` (`method` : `email_code`). Le jeton n'est jamais dans le corps : il est posé dans le cookie `__Host-popote_session` (HttpOnly, Secure, SameSite=Lax). Un seul refus pour tout ce qui n'est pas un code valable (`401 code_incorrect` : mêmes statut, corps et en-têtes, jamais de cookie) ; cinq essais par compte et par code, un code ne sert qu'une fois ; au-delà des limites, `429` sans aucune vérification. Sans `Idempotency-Key` : chaque connexion réussie ouvre une session neuve.",
+        "description": "Ouvre une session avec le code à six chiffres demandé par `POST /login-codes` (`method` : `email_code`) ou avec la réponse de `navigator.credentials.get()` aux options de `POST /passkey-challenges` (`method` : `passkey`, 16 Kio au plus, aucune adresse). Le jeton n'est jamais dans le corps : il est posé dans le cookie `__Host-popote_session` (HttpOnly, Secure, SameSite=Lax). Un seul refus pour tout ce qui n'est pas un code valable (`401 code_incorrect` : mêmes statut, corps et en-têtes, jamais de cookie) ; cinq essais par compte et par code, un code ne sert qu'une fois ; une seule réponse aussi pour tout ce qui n'est pas une clé valable (`401 cle_refusee`) ; au-delà des limites (20 vérifications de clé par IP et par 15 minutes), `429` sans aucune vérification. Sans `Idempotency-Key` : chaque connexion réussie ouvre une session neuve.",
         "operationId": "create_session",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ConnexionParCode"
+                "discriminator": {
+                  "mapping": {
+                    "email_code": "#/components/schemas/ConnexionParCode",
+                    "passkey": "#/components/schemas/ConnexionParCle"
+                  },
+                  "propertyName": "method"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ConnexionParCode"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ConnexionParCle"
+                  }
+                ],
+                "title": "Corps"
               }
             }
           },
@@ -4656,7 +4908,7 @@
             }
           }
         },
-        "summary": "Se connecter par le code reçu par mail",
+        "summary": "Se connecter par le code reçu par mail ou par une clé d'accès",
         "tags": [
           "sessions"
         ]

@@ -225,6 +225,15 @@ class Settings(BaseSettings):
     code_fenetre_compte_s: int = Field(default=3600, ge=1, le=86400)
     mail_global_par_fenetre: int = Field(default=60, ge=1, le=10000)
     mail_global_fenetre_s: int = Field(default=3600, ge=1, le=86400)
+    # La connexion par clé d'accès (`security/connexion_par_cle.py`, migration 0154). Par IP : 20
+    # vérifications par fenêtre de 15 min, avec escalade jusqu'à 1 h (`cle_attente_max_s`) ; 60 défis demandés
+    # par fenêtre, sans escalade (la page de connexion en demande un à chaque chargement, pour le remplissage
+    # automatique). Au plus `cle_defis_anonymes_max` défis vivants, toutes IP confondues (plafond souple).
+    cle_essais_par_ip: int = Field(default=20, ge=1, le=10000)
+    cle_defis_par_ip: int = Field(default=60, ge=1, le=10000)
+    cle_fenetre_s: int = Field(default=900, ge=1, le=86400)
+    cle_attente_max_s: int = Field(default=3600, ge=1, le=86400)
+    cle_defis_anonymes_max: int = Field(default=5000, ge=1, le=1000000)
     reinitialisation_essais: int = Field(default=3, ge=1, le=100)
     reinitialisation_fenetre_s: int = Field(default=3600, ge=1, le=86400)
     # Clés de signature des routes `/internal/*` (spec § 3.10). Facultatives pour l'instant : sans
@@ -425,6 +434,10 @@ class Settings(BaseSettings):
                 raise ValueError(f"webauthn_origins : {erreur}.") from erreur
             if hote != rp_id and not hote.endswith(f".{rp_id}"):
                 raise ValueError("webauthn_rp_id : l'hôte de chaque origine, ou un domaine parent.")
+        if self.cle_attente_max_s < self.cle_fenetre_s:
+            # `prend_un_creneau` refuse un plafond plus court que la fenêtre : mieux vaut échouer au
+            # démarrage.
+            raise ValueError("cle_attente_max_s : au moins cle_fenetre_s.")
         return self
 
     @property

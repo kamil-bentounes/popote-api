@@ -25,9 +25,11 @@ from popote_api.infra.webauthn import (
     CleExistante,
     CleStockeeIllisible,
     CompteurDeCleRegresse,
+    EligibiliteDeCleChangee,
     OptionsDeCeremonie,
     PartieDeConfiance,
     ReponseDeCleRefusee,
+    SignalDeClonage,
     defi_de_la_reponse,
     identifiant_de_la_cle,
     options_d_enregistrement,
@@ -450,8 +452,9 @@ def test_l_eligibilite_a_la_sauvegarde_ne_change_jamais(
     eligible_en_base: bool, be_de_la_reponse: bool
 ) -> None:
     authentificateur, enregistree = une_cle_enregistree(peut_etre_sauvegardee=eligible_en_base)
-    with pytest.raises(ReponseDeCleRefusee, match="éligibilité"):
+    with pytest.raises(EligibiliteDeCleChangee, match="éligibilité") as erreur:
         connecte(authentificateur, cle_de_connexion(enregistree), be=be_de_la_reponse, bs=False)
+    assert isinstance(erreur.value, SignalDeClonage)
 
 
 def test_la_connexion_refuse_une_cle_sauvegardee_sans_etre_eligible() -> None:

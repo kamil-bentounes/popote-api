@@ -3,7 +3,8 @@
 import importlib
 import inspect
 import pkgutil
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 import pytest
 from _commun import reglages
@@ -47,6 +48,13 @@ def objets_ouverts(schema: Any) -> list[str]:
     return ouverts
 
 
+def membres_du_corps(modele: Any) -> tuple[Any, ...]:
+    """Les modèles d'un corps : lui-même, ou chaque membre d'une union (corps à plusieurs formes)."""
+    if get_origin(modele) in (Union, UnionType):
+        return get_args(modele)
+    return (modele,)
+
+
 def corps_ouverts(app: FastAPI) -> list[str]:
     """Les routes dont le corps ne descend pas d'`Entree` ou accepte un champ inconnu, à toute profondeur."""
     fautes: list[str] = []
@@ -56,7 +64,7 @@ def corps_ouverts(app: FastAPI) -> list[str]:
             continue
         modele = champ.field_info.annotation
         nom = f"{sorted(route.methods or [])[0]} {route.path}"
-        if not (inspect.isclass(modele) and issubclass(modele, Entree)):
+        if not all(inspect.isclass(m) and issubclass(m, Entree) for m in membres_du_corps(modele)):
             fautes.append(f"{nom} : le corps ne descend pas d'Entree")
             continue
         schema = TypeAdapter(modele).json_schema()

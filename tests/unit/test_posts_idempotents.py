@@ -13,6 +13,7 @@ from popote_api.security.idempotence import METHODES_A_CLE, RouteIdempotente
 # pas de personne, donc pas de clé d'idempotence, et rejouer sa réponse garderait un jeton en base.
 LISTE_BLANCHE: dict[str, str] = {
     "/api/v1/sessions": "connexion par code : publique ; un succès ouvre une session, un échec se compte",
+    "/api/v1/passkey-challenges": "défi de connexion par clé : public ; rejouer en crée un autre",
     "/api/v1/login-codes": "demande de code : publique ; rejouer garderait un identifiant de demande",
     "/api/v1/invitations/inspections": "inspection d'un lien : publique ; lecture sans effet, sans clé",
     "/api/v1/invitations/acceptances": "acceptation d'un lien : publique ; le lien n'entre pas en base",

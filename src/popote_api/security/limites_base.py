@@ -64,6 +64,21 @@ async def prendre_les_creneaux(
     return Creneaux(ligne["attente_s"], CleBloquee(bloquee) if bloquee is not None else None)
 
 
+async def prendre_un_creneau_de_cle(
+    curseur: Curseur, scope: str, cle_ip: bytes, *, limite: int, fenetre_s: int, attente_max_s: int
+) -> Creneaux:
+    """Un créneau de connexion par clé pour une IP (migration 0154) : `cle_ip` (vérifications, avec escalade
+    jusqu'à `attente_max_s`) ou `cle_defi_ip` (défis demandés, sans escalade). La clé vient d'`Empreintes`."""
+    await curseur.execute(
+        "select attente_s, nouveau_blocage from public.prend_un_creneau_de_cle(%s, %s, %s, %s, %s)",
+        (scope, cle_ip, limite, fenetre_s, attente_max_s),
+    )
+    ligne = await curseur.fetchone()
+    if ligne is None:  # une fonction `returns table` qui rend une ligne : jamais vide
+        raise RuntimeError("prend_un_creneau_de_cle n'a rendu aucune ligne")
+    return Creneaux(ligne["attente_s"], CleBloquee.ip if ligne["nouveau_blocage"] else None)
+
+
 async def liberer_le_couple(curseur: Curseur, cle_couple: bytes, cle_compte: bytes) -> None:
     """Après un succès : le couple à zéro, un refus de moins sur le compte entier, jamais l'IP."""
     await curseur.execute("select public.libere_le_couple(%s, %s)", (cle_couple, cle_compte))

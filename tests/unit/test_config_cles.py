@@ -198,3 +198,19 @@ def test_en_local_le_port_par_defaut_ne_s_ecrit_pas_et_un_rp_id_sans_point_echou
         reglages("local", webauthn_rp_id="localhost", webauthn_origins="https://localhost:443")
     with pytest.raises(ValidationError, match="webauthn_rp_id"):
         reglages("local", webauthn_rp_id="fr", webauthn_origins="https://notre-popote.fr")
+
+
+def test_les_reglages_de_connexion_par_cle_ont_les_valeurs_du_plan() -> None:
+    configuration = reglages("local")
+    assert (
+        configuration.cle_essais_par_ip,
+        configuration.cle_fenetre_s,
+        configuration.cle_attente_max_s,
+        configuration.cle_defis_anonymes_max,
+    ) == (20, 900, 3600, 5000)
+
+
+def test_un_plafond_d_attente_plus_court_que_la_fenetre_echoue_au_demarrage() -> None:
+    with pytest.raises(ValidationError, match="cle_attente_max_s"):
+        reglages("local", cle_fenetre_s=900, cle_attente_max_s=899)
+    assert reglages("local", cle_fenetre_s=900, cle_attente_max_s=900).cle_attente_max_s == 900

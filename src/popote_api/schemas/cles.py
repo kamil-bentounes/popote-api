@@ -52,6 +52,17 @@ class OptionsDeCle(Sortie):
     )
 
 
+class OptionsDeConnexion(Sortie):
+    options: dict[str, Any] = Field(
+        description=(
+            "Les options de `navigator.credentials.get()`, en JSON WebAuthn niveau 3 : à passer à "
+            "`PublicKeyCredential.parseRequestOptionsFromJSON`. Aucune clé n'est nommée : l'appareil "
+            "propose les siennes."
+        ),
+        repr=False,
+    )
+
+
 class EnregistrementDeCle(Entree):
     credential: dict[str, Any] = Field(
         description="La réponse de `navigator.credentials.create()`, par `PublicKeyCredential.toJSON()`.",

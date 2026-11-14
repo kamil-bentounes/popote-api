@@ -128,6 +128,22 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
         "(uuid, uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text, timestamptz)"
     ): set(),
     "private.purge_webauthn_challenge(timestamptz, integer)": set(),
+    "public.cree_un_defi_anonyme(bytea, integer)": {"popote_api"},
+    "public.consomme_un_defi_anonyme(bytea)": {"popote_api"},
+    "public.prend_un_creneau_de_cle(text, bytea, integer, integer, integer)": {"popote_api"},
+    "public.cle_pour_connexion(bytea, bytea)": {"popote_api"},
+    (
+        "public.ouvre_une_session_par_cle"
+        "(uuid, bigint, bigint, boolean, boolean, bytea, text, text, bytea, text)"
+    ): {"popote_api"},
+    "private.cree_un_defi_anonyme(bytea, integer, timestamptz)": set(),
+    "private.consomme_un_defi_anonyme(bytea, timestamptz)": set(),
+    "private.cle_pour_connexion(bytea, bytea, timestamptz)": set(),
+    (
+        "private.ouvre_une_session_par_cle"
+        "(uuid, bigint, bigint, boolean, boolean, bytea, text, text, bytea, timestamptz, text)"
+    ): set(),
+    "private.purge_defis_anonymes(timestamptz, integer)": set(),
 }
 # Les rôles qui ont `usage` sur `private` : aucun tant qu'une migration n'en a pas besoin.
 USAGE_DE_PRIVATE: set[str] = set()

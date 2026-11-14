@@ -39,6 +39,8 @@ class Evenement(StrEnum):
     code_demande = "code_demande"
     connexion_par_code = "connexion_par_code"
     cle_ajoutee = "cle_ajoutee"
+    connexion_par_cle = "connexion_par_cle"
+    cle_suspecte = "cle_suspecte"
 
 
 async def journalise(
@@ -63,6 +65,7 @@ async def journalise_sans_lever(
     curseur: Curseur,
     evenement: Evenement,
     *,
+    personne: UUID | None = None,
     cle_compte: bytes | None = None,
     cle_ip: bytes | None = None,
     request_id: str | None = None,
@@ -76,6 +79,13 @@ async def journalise_sans_lever(
     """
     try:
         async with curseur.connection.transaction():
-            await journalise(curseur, evenement, cle_compte=cle_compte, cle_ip=cle_ip, request_id=request_id)
+            await journalise(
+                curseur,
+                evenement,
+                personne=personne,
+                cle_compte=cle_compte,
+                cle_ip=cle_ip,
+                request_id=request_id,
+            )
     except psycopg.Error as erreur:
         journal.error("Journal de sécurité : %s non écrit (%s)", evenement.value, type(erreur).__name__)
