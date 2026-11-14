@@ -120,6 +120,13 @@ def sessions_fraiches(fabrique: Fabrique, personne: UUID) -> UUID:
     return fabrique.session(personne, echeance_dans=DIX_ANS, absolue_dans=DIX_ANS).id
 
 
+def jeton_de(admin: psycopg.Connection[Ligne], session: UUID) -> bytes:
+    """L'empreinte du cookie d'une session : ce que les fonctions publiques demandent."""
+    ligne = admin.execute("select token_hash from public.login_session where id = %s", (session,)).fetchone()
+    assert ligne is not None
+    return bytes(ligne[0])
+
+
 def nombre(admin: psycopg.Connection[Ligne], requete: str, *valeurs: object) -> int:
     ligne = admin.execute(requete, valeurs).fetchone()
     assert ligne is not None
@@ -305,12 +312,13 @@ class TestDefi:
         session = sessions_fraiches(fabrique, moi.id)
         defi = token_bytes(32)
         a_l_etat(admin, moi.id, session, defi, datetime.now(tz=T0.tzinfo))
+        empreinte = jeton_de(admin, session)
         barriere = threading.Barrier(6)
 
         def appel() -> bytes | None:
             barriere.wait()
             with en_tant_que(moi.id) as curseur:
-                curseur.execute(CONSOMME, (session, "registration", defi))
+                curseur.execute(CONSOMME, (empreinte, "registration", defi))
                 rendu = un(curseur)[0]
                 return None if rendu is None else bytes(rendu)
 
@@ -427,6 +435,7 @@ class TestEnregistrementEnBase:
     ) -> None:
         session = sessions_fraiches(fabrique, moi.id)
         identifiant_de(moi.id)
+        empreinte = jeton_de(admin, session)
         barriere = threading.Barrier(15)
 
         def appel() -> str:
@@ -434,7 +443,19 @@ class TestEnregistrementEnBase:
             with en_tant_que(moi.id) as curseur:
                 curseur.execute(
                     ENREGISTRE,
-                    (session, token_bytes(32), b"\x01" * 77, 0, [], False, False, True, uuid4(), "Clé", None),
+                    (
+                        empreinte,
+                        token_bytes(32),
+                        b"\x01" * 77,
+                        0,
+                        [],
+                        False,
+                        False,
+                        True,
+                        uuid4(),
+                        "Clé",
+                        None,
+                    ),
                 )
                 return str(un(curseur)[0])
 
@@ -491,13 +512,14 @@ class TestEnregistrementEnBase:
         """A ferme les autres sessions sous son verrou ; B enregistre avec la session fermée : refusée."""
         identifiant_de(moi.id)
         a_fermer, gardee = sessions_fraiches(fabrique, moi.id), sessions_fraiches(fabrique, moi.id)
+        empreinte = jeton_de(admin, a_fermer)
 
         def b() -> str:
             with en_tant_que(moi.id) as curseur:
                 curseur.execute(
                     ENREGISTRE,
                     (
-                        a_fermer,
+                        empreinte,
                         token_bytes(32),
                         b"\x01" * 77,
                         0,
@@ -540,6 +562,71 @@ class TestEnregistrementEnBase:
         identifiant_de(moi.id)
         with pytest.raises(errors.InvalidParameterValue):
             cle_a(admin, moi.id, session, datetime.now(tz=T0.tzinfo), requete="pas-un-identifiant")
+
+
+class TestSessionDuCookie:
+    """Les fonctions publiques désignent la session par l'empreinte de son cookie, pas par son identifiant."""
+
+    def test_l_identifiant_d_une_session_ne_remplace_pas_le_cookie(
+        self, fabrique: Fabrique, moi: Personne, admin: psycopg.Connection[Ligne]
+    ) -> None:
+        session = sessions_fraiches(fabrique, moi.id)
+        identifiant_de(moi.id)
+        defi = token_bytes(32)
+        a_l_etat(admin, moi.id, session, defi, datetime.now(tz=T0.tzinfo))
+        faux = [session.bytes, token_bytes(32)]  # l'identifiant lu par `mes_sessions`, une empreinte inventée
+        with en_tant_que(moi.id) as curseur:
+            for jeton in faux:
+                curseur.execute(DEFI, (jeton, "registration", token_bytes(32)))
+                assert un(curseur)[0] == "session_perimee"
+                curseur.execute(CONSOMME, (jeton, "registration", defi))
+                assert un(curseur)[0] is None
+                curseur.execute(
+                    ENREGISTRE,
+                    (jeton, token_bytes(32), b"\x01" * 77, 0, [], False, False, True, uuid4(), "Clé", None),
+                )
+                assert un(curseur)[0] == "session_perimee"
+        assert (
+            nombre(admin, "select count(*) from public.webauthn_credential where person_id = %s", moi.id) == 0
+        )
+        assert nombre(admin, "select count(*) from public.webauthn_challenge where challenge = %s", defi) == 1
+
+    def test_le_cookie_d_une_autre_personne_est_refuse(
+        self, fabrique: Fabrique, moi: Personne, admin: psycopg.Connection[Ligne]
+    ) -> None:
+        autre = fabrique.personne(fabrique.foyer())
+        identifiant_de(moi.id)
+        jeton_de_l_autre = jeton_de(admin, sessions_fraiches(fabrique, autre.id))
+        with en_tant_que(moi.id) as curseur:
+            curseur.execute(
+                ENREGISTRE,
+                (
+                    jeton_de_l_autre,
+                    token_bytes(32),
+                    b"\x01" * 77,
+                    0,
+                    [],
+                    False,
+                    False,
+                    True,
+                    uuid4(),
+                    "Clé",
+                    None,
+                ),
+            )
+            assert un(curseur)[0] == "session_perimee"
+
+    def test_le_bon_cookie_enregistre(
+        self, fabrique: Fabrique, moi: Personne, admin: psycopg.Connection[Ligne]
+    ) -> None:
+        jeton = jeton_de(admin, fabrique.session(moi.id).id)
+        identifiant_de(moi.id)
+        with en_tant_que(moi.id) as curseur:
+            curseur.execute(
+                ENREGISTRE,
+                (jeton, token_bytes(32), b"\x01" * 77, 0, [], False, False, True, uuid4(), "Clé", None),
+            )
+            assert un(curseur)[0] == "creee"
 
 
 # ── Les clés à exclure, la suppression en cascade et la purge ───────────────

@@ -110,7 +110,7 @@ async def demande_un_defi(corps: DefiDeCle, request: Request, personne: Personne
     resultat = await demande_un_defi_d_enregistrement(
         personne.curseur,
         PartieDeConfiance.des_reglages(reglages),
-        session=personne.session,
+        empreinte_de_session=personne.empreinte_de_session,
         nom_d_utilisateur=ligne["email"] or nom_affiche,
         nom_affiche=nom_affiche,
     )
@@ -143,7 +143,9 @@ async def enregistre_une_cle(
         annonce = defi_de_la_reponse(corps.credential)
     except ReponseDeCleRefusee as erreur:
         raise _cle_refusee(erreur) from erreur
-    defi = await consomme_le_defi(personne.curseur, session=personne.session, defi=annonce)
+    defi = await consomme_le_defi(
+        personne.curseur, empreinte_de_session=personne.empreinte_de_session, defi=annonce
+    )
     if defi is None:
         raise Probleme(422, "cle_refusee", CLE_REFUSEE)
     try:
@@ -155,7 +157,7 @@ async def enregistre_une_cle(
     nom = corps.name or f"Clé du {app.state.horloge().astimezone(PARIS):%d/%m/%Y}"
     resultat = await enregistre_la_cle(
         personne.curseur,
-        session=personne.session,
+        empreinte_de_session=personne.empreinte_de_session,
         cle=cle,
         nom=nom,
         request_id=getattr(request.state, "request_id", None),
@@ -170,6 +172,7 @@ async def enregistre_une_cle(
 
 
 def _cle_refusee(erreur: ReponseDeCleRefusee) -> Probleme:
-    # Le type de la cause seul : son message recopie la réponse du navigateur (origine, identifiants).
-    journal.info("Clé refusée : %s", erreur.type_de_la_cause)
+    # Le message d'un refus est fixe ; le type de sa cause seul, jamais le texte de la cause : il recopie la
+    # réponse du navigateur (origine, identifiants).
+    journal.info("Clé refusée : %s (%s)", erreur, erreur.type_de_la_cause)
     return Probleme(422, "cle_refusee", CLE_REFUSEE)

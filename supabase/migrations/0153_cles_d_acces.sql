@@ -21,6 +21,9 @@
 --        (moins de 300 s, horloge de la base), refuse la 11e clé, l'identifiant déjà pris, et écrit `cle_ajoutee`. Sans cette
 --        relecture, une session volée qui lance l'enregistrement, puis une fermeture de toutes les sessions, laisserait la clé de
 --        l'attaquant (leçon 1 de T15b, appliquée à la persistance). Fermer toutes les sessions ne RETIRE pas les clés (S10).
+--    LA SESSION SE DÉSIGNE PAR L'EMPREINTE DE SON COOKIE (`p_token_hash`), pas par son identifiant : l'identifiant se lit par
+--    `mes_sessions` avec un simple jeton d'accès GoTrue (PostgREST reste ouvert jusqu'à J+2), l'empreinte du cookie non. Sans
+--    cela, un jeton volé suffirait à écrire une clé permanente, sans cookie ni défi ni vérification (revue adverse S8b).
 --    ORDRE DES VERROUS : foyer, invitation, PERSONNE (`verrouille_la_personne`), puis lignes ; chaque fonction qui touche une
 --    clé ou un défi prend la personne en premier (réentrant). Un REFUS est un résultat rendu (`etat`), jamais une exception.
 --  - `private.purge_webauthn_challenge` : échéance + 1 jour, chaque nuit par pg_cron.
@@ -38,12 +41,13 @@
 -- s'exécute tel quel, une fois les « -- » retirés (rejoué sur la base locale) :
 -- >>> retour arrière
 --   select cron.unschedule('webauthn-challenge-purge');   -- si pg_cron est là
---   drop function public.enregistre_une_cle(uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text);
+--   drop function public.enregistre_une_cle(bytea, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text);
 --   drop function private.enregistre_une_cle(uuid, uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text,
 --     text, timestamptz);
---   drop function public.consomme_un_defi(uuid, text, bytea);
+--   drop function public.consomme_un_defi(bytea, text, bytea);
 --   drop function private.consomme_un_defi(uuid, uuid, text, bytea, timestamptz);
---   drop function public.cree_un_defi(uuid, text, bytea);
+--   drop function public.cree_un_defi(bytea, text, bytea);
+--   drop function private.session_du_jeton(uuid, bytea);
 --   drop function private.cree_un_defi(uuid, uuid, text, bytea, timestamptz);
 --   drop function public.mes_identifiants_de_cle();
 --   drop function public.mon_identifiant_webauthn(bytea);
@@ -97,7 +101,8 @@ create table public.webauthn_credential (
   -- Un entier non signé de 32 bits (W3C § 6.1) ; zéro tant qu'une clé synchronisée ne compte pas.
   sign_count    bigint not null default 0 check (sign_count between 0 and 4294967295),
   transports    text[] not null default '{}'
-                check (transports <@ array['usb', 'nfc', 'ble', 'smart-card', 'internal', 'cable', 'hybrid']),
+                check (transports <@ array['usb', 'nfc', 'ble', 'smart-card', 'internal', 'cable', 'hybrid']
+                       and pg_catalog.cardinality(transports) <= 7),
   backup_eligible boolean not null,
   backup_state  boolean not null check (backup_eligible or not backup_state),
   uv_initialized boolean not null,
@@ -200,6 +205,22 @@ revoke all on function public.mes_identifiants_de_cle()
 grant execute on function public.mes_identifiants_de_cle() to authenticated;
 
 -- ── 4. Le défi : créé, puis consommé ────────────────────────────────────────
+/* La session du cookie : son identifiant, ou null (inconnue, d'une autre personne). Sans verrou : l'identifiant d'une ligne ne
+   change jamais ; l'état de la session (fermée, échue) se juge plus loin, sous le verrou de personne. */
+create or replace function private.session_du_jeton(p_person uuid, p_hash bytea)
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select s.id from public.login_session s where s.token_hash = p_hash and s.person_id = p_person;
+$$;
+comment on function private.session_du_jeton(uuid, bytea) is
+  'L''identifiant de la session de cette personne dont le cookie a cette empreinte, ou null. Interne.';
+revoke all on function private.session_du_jeton(uuid, bytea)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+
 /* Rend `creee`, `session_perimee` (la session n'est plus ouverte, ou la personne ne peut plus entrer) ou `trop_de_cles`
    (dix clés déjà : pas de cérémonie pour rien). Le verrou de personne d'abord : le défi se lie à une session qu'une fermeture
    de toutes les sessions peut révoquer. */
@@ -236,25 +257,31 @@ comment on function private.cree_un_defi(uuid, uuid, text, bytea, timestamptz) i
 revoke all on function private.cree_un_defi(uuid, uuid, text, bytea, timestamptz)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 
-create or replace function public.cree_un_defi(p_session uuid, p_purpose text, p_defi bytea)
+create or replace function public.cree_un_defi(p_token_hash bytea, p_purpose text, p_defi bytea)
 returns text
 language plpgsql
 volatile
 security definer
 set search_path = ''
 as $$
+declare
+  v_session uuid;
 begin
   if auth.uid() is null then
     raise exception 'Aucune personne dans ce contexte.' using errcode = 'invalid_authorization_specification';
   end if;
-  return private.cree_un_defi(auth.uid(), p_session, p_purpose, p_defi, pg_catalog.now());
+  v_session := private.session_du_jeton(auth.uid(), p_token_hash);
+  if v_session is null then
+    return 'session_perimee';
+  end if;
+  return private.cree_un_defi(auth.uid(), v_session, p_purpose, p_defi, pg_catalog.now());
 end;
 $$;
-comment on function public.cree_un_defi(uuid, text, bytea) is
-  'Garde le défi d''une cérémonie pour la personne et la session du contexte (10 minutes) ; rend creee, session_perimee ou trop_de_cles. authenticated seul.';
-revoke all on function public.cree_un_defi(uuid, text, bytea)
+comment on function public.cree_un_defi(bytea, text, bytea) is
+  'Garde le défi d''une cérémonie pour la personne du contexte et la session de ce cookie (10 minutes) ; rend creee, session_perimee ou trop_de_cles. authenticated seul.';
+revoke all on function public.cree_un_defi(bytea, text, bytea)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
-grant execute on function public.cree_un_defi(uuid, text, bytea) to authenticated;
+grant execute on function public.cree_un_defi(bytea, text, bytea) to authenticated;
 
 /* `delete … returning` : un défi ne sert qu'une fois, même pour deux requêtes parallèles (la seconde attend la ligne puis ne
    la trouve plus). Le défi d'une autre personne, d'une autre session, d'un autre but ou échu n'est NI rendu NI brûlé. Le
@@ -286,25 +313,31 @@ comment on function private.consomme_un_defi(uuid, uuid, text, bytea, timestampt
 revoke all on function private.consomme_un_defi(uuid, uuid, text, bytea, timestamptz)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 
-create or replace function public.consomme_un_defi(p_session uuid, p_purpose text, p_defi bytea)
+create or replace function public.consomme_un_defi(p_token_hash bytea, p_purpose text, p_defi bytea)
 returns bytea
 language plpgsql
 volatile
 security definer
 set search_path = ''
 as $$
+declare
+  v_session uuid;
 begin
   if auth.uid() is null then
     raise exception 'Aucune personne dans ce contexte.' using errcode = 'invalid_authorization_specification';
   end if;
-  return private.consomme_un_defi(auth.uid(), p_session, p_purpose, p_defi, pg_catalog.now());
+  v_session := private.session_du_jeton(auth.uid(), p_token_hash);
+  if v_session is null then
+    return null;
+  end if;
+  return private.consomme_un_defi(auth.uid(), v_session, p_purpose, p_defi, pg_catalog.now());
 end;
 $$;
-comment on function public.consomme_un_defi(uuid, text, bytea) is
-  'Consomme le défi de la personne et de la session du contexte (à usage unique, 10 minutes) et le rend ; null sinon. authenticated seul.';
-revoke all on function public.consomme_un_defi(uuid, text, bytea)
+comment on function public.consomme_un_defi(bytea, text, bytea) is
+  'Consomme le défi de la personne du contexte et de la session de ce cookie (à usage unique, 10 minutes) et le rend ; null sinon. authenticated seul.';
+revoke all on function public.consomme_un_defi(bytea, text, bytea)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
-grant execute on function public.consomme_un_defi(uuid, text, bytea) to authenticated;
+grant execute on function public.consomme_un_defi(bytea, text, bytea) to authenticated;
 
 -- ── 5. L'enregistrement de la clé ───────────────────────────────────────────
 /* Dans l'ordre, sous le verrou de personne : la session présentée (non fermée, non échue, personne qui peut entrer), sa preuve
@@ -387,7 +420,7 @@ revoke all on function private.enregistre_une_cle(
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 
 create or replace function public.enregistre_une_cle(
-  p_session uuid,
+  p_token_hash bytea,
   p_credential bytea,
   p_public_key bytea,
   p_sign_count bigint,
@@ -404,23 +437,30 @@ volatile
 security definer
 set search_path = ''
 as $$
+declare
+  v_session uuid;
 begin
   if auth.uid() is null then
     raise exception 'Aucune personne dans ce contexte.' using errcode = 'invalid_authorization_specification';
   end if;
+  v_session := private.session_du_jeton(auth.uid(), p_token_hash);
+  if v_session is null then
+    return query select 'session_perimee'::text, null::uuid, null::timestamptz;
+    return;
+  end if;
   return query select * from private.enregistre_une_cle(
-    auth.uid(), p_session, p_credential, p_public_key, p_sign_count, p_transports, p_backup_eligible,
+    auth.uid(), v_session, p_credential, p_public_key, p_sign_count, p_transports, p_backup_eligible,
     p_backup_state, p_uv, p_aaguid, p_name, p_request_id, pg_catalog.now());
 end;
 $$;
 comment on function public.enregistre_une_cle(
-  uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text) is
-  'Enregistre la clé d''accès de la personne du contexte, sous son verrou, la session et sa preuve (300 s) relues en base ; rend creee, session_perimee, preuve_perimee, trop_de_cles ou cle_deja_enregistree. authenticated seul.';
+  bytea, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text) is
+  'Enregistre la clé d''accès de la personne du contexte, sous son verrou, la session de ce cookie et sa preuve (300 s) relues en base ; rend creee, session_perimee, preuve_perimee, trop_de_cles ou cle_deja_enregistree. authenticated seul.';
 revoke all on function public.enregistre_une_cle(
-  uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text)
+  bytea, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
 grant execute on function public.enregistre_une_cle(
-  uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text) to authenticated;
+  bytea, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text) to authenticated;
 
 -- ── 6. La purge : échéance + 1 jour ─────────────────────────────────────────
 create or replace function private.purge_webauthn_challenge(

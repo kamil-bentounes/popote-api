@@ -986,6 +986,12 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b, § 4.16), la conne
   millisecondes. Un refus (`Refus`) est un **résultat** de la fonction SQL ; la route le traduit en `Probleme`, donc la transaction
   s'annule : **un défi dont la réponse est refusée redevient valable jusqu'à son échéance** (la classe de route idempotente exige qu'une
   erreur lève), seule une clé écrite le consomme. Rien d'autre à deviner pour un attaquant qui détient déjà la session et une preuve fraîche.
+- **La session se désigne par l'empreinte de son cookie**, jamais par son identifiant : `cree_un_defi`, `consomme_un_defi` et `enregistre_une_cle`
+  prennent `p_token_hash` (celui de `lit_la_session`) et en tirent la session de la personne du contexte (`private.session_du_jeton`). L'identifiant d'une
+  session se lit par `mes_sessions` avec un simple jeton d'accès GoTrue (PostgREST reste ouvert jusqu'à J+2) : sans cela, un jeton volé suffisait à écrire une
+  clé permanente, sans cookie, sans défi et sans vérification de signature (relevé par la revue adverse). Un identifiant ou une empreinte d'une autre
+  personne : `session_perimee`, rien d'écrit, défi intact (testé). Reste, par construction : qui appelle la fonction **directement** avec le cookie
+  d'une session à preuve fraîche saute la vérification WebAuthn ; il détient alors déjà le cookie, donc la session.
 - **Codes** : `403 cle_origine_non_admise` (l'`Origin` n'est pas dans la liste WebAuthn : aperçus de fusion), `403
   reauthentification_requise`, `401 pas_de_session` (session fermée entre la lecture et le verrou), `409 trop_de_cles` (dès le défi, et à
   l'écriture si une course a pris la dixième), `409 cle_deja_enregistree`, `422 cle_refusee` (réponse fausse, défi inconnu, échu, déjà servi, d'une
@@ -1004,6 +1010,11 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b, § 4.16), la conne
 - **Risque accepté, comme § 4.15 (1)** : `efface_mes_donnees` (0145) ne prend pas le verrou de personne avant S14 (0156) ; un enregistrement qui a
   lu « peut entrer » avant l'effacement peut écrire sa clé après lui (la clé étrangère vise `webauthn_user` puis `auth.users`). Elle meurt avec le
   compte Auth. **S14 efface codes, défis, clés et identifiant sous les trois verrous.**
+- **Limites dites.** (1) Une clé publique COSE de plus de 1 Kio est refusée **en Python** (`422 cle_refusee`), comme la contrainte de la table ; la RSA de
+  4096 bits en fait environ 550. (2) Le nom refuse les catégories Unicode C* et les séparateurs de ligne ou de paragraphe, **pas** les caractères « blancs » des
+  catégories Lo, So et Mn (U+3164, U+2800, U+115F…) : un nom peut s'afficher vide, à la seule personne qui l'a choisi ; les émojis à ZWJ (Cf) sont refusés.
+  (3) Le nombre de défis en attente n'est pas borné par personne (30 écritures par minute et par personne, purge à l'échéance + 1 jour). (4) `now()` est
+  celui du début de la transaction : une preuve ou une session peut passer quelques millisecondes après sa limite.
 - **Journaux** : jamais la réponse, l'identifiant de clé, la clé publique ni le défi ; un refus écrit `type_de_la_cause` seul (testé par
   `caplog` sur un refus, un succès et un défi servi). L'événement `cle_ajoutee` porte la personne, la session et l'identifiant de requête.
 - **Données** : tables `webauthn_user`, `webauthn_credential`, `webauthn_challenge` (RLS forcée, aucun droit) ; `transports` borné aux sept valeurs

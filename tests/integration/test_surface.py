@@ -114,11 +114,12 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.personne_peut_entrer(uuid)": set(),
     "public.mon_identifiant_webauthn(bytea)": {"authenticated"},
     "public.mes_identifiants_de_cle()": {"authenticated"},
-    "public.cree_un_defi(uuid, text, bytea)": {"authenticated"},
-    "public.consomme_un_defi(uuid, text, bytea)": {"authenticated"},
+    "public.cree_un_defi(bytea, text, bytea)": {"authenticated"},
+    "public.consomme_un_defi(bytea, text, bytea)": {"authenticated"},
+    "private.session_du_jeton(uuid, bytea)": set(),
     (
         "public.enregistre_une_cle"
-        "(uuid, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text)"
+        "(bytea, bytea, bytea, bigint, text[], boolean, boolean, boolean, uuid, text, text)"
     ): {"authenticated"},
     "private.cree_un_defi(uuid, uuid, text, bytea, timestamptz)": set(),
     "private.consomme_un_defi(uuid, uuid, text, bytea, timestamptz)": set(),

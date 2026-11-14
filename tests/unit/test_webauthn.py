@@ -843,6 +843,18 @@ def test_l_enregistrement_refuse_une_cle_publique_incoherente_ou_inutilisable(cl
         enregistre(nouvelle_cle(), cle_cose=cle_cose)
 
 
+def test_l_enregistrement_admet_une_cle_rsa_de_4096_bits() -> None:
+    assert enregistre(nouvelle_cle(), cle_cose=_cose_rsa(-257, 4096)).cle_publique == _cose_rsa(-257, 4096)
+
+
+def test_l_enregistrement_refuse_une_cle_publique_de_plus_de_1_kio() -> None:
+    # La base borne la clé à 1024 octets : un refus de la réponse ici, pas une erreur de contrainte plus loin.
+    trop_grande = _cose_rsa(-257, 8192)
+    assert len(trop_grande) > 1024
+    with pytest.raises(ReponseDeCleRefusee, match="trop grande"):
+        enregistre(nouvelle_cle(), cle_cose=trop_grande)
+
+
 # ---- lire le défi annoncé, l'identifiant : bornes et refus ----
 
 

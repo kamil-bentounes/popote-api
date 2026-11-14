@@ -1,7 +1,8 @@
 """L'enregistrement d'une clé d'accès, côté base (migration 0153) : défi, consommation, écriture.
 
 Tout se joue dans la transaction de la personne (`personne.curseur`), sous `authenticated` : les fonctions
-lisent `auth.uid()`, jamais un identifiant donné par la route. La personne et la session viennent du cookie.
+lisent `auth.uid()`, jamais un identifiant donné par la route. La session se désigne par l'EMPREINTE de son
+cookie, pas par son identifiant (qu'un simple jeton d'accès GoTrue lit par `mes_sessions`).
 
 Un refus est un RÉSULTAT (`Refus`), jamais une exception : la route le traduit. Mais la route, elle, lève
 `Probleme` (la classe de route idempotente l'exige) : la transaction s'annule alors, et le défi consommé
@@ -73,7 +74,7 @@ async def demande_un_defi_d_enregistrement(
     curseur: Curseur,
     partie: PartieDeConfiance,
     *,
-    session: UUID,
+    empreinte_de_session: bytes,
     nom_d_utilisateur: str,
     nom_affiche: str,
 ) -> DefiCree | Refus:
@@ -96,27 +97,29 @@ async def demande_un_defi_d_enregistrement(
         nom_affiche=nom_affiche,
         cles_existantes=existantes,
     )
-    etat = (await _une_ligne(curseur, CREE_UN_DEFI, (session, BUT_D_ENREGISTREMENT, options.defi)))["etat"]
+    etat = (
+        await _une_ligne(curseur, CREE_UN_DEFI, (empreinte_de_session, BUT_D_ENREGISTREMENT, options.defi))
+    )["etat"]
     if etat == "creee":
         return DefiCree(options.options)
     return Refus(etat)
 
 
-async def consomme_le_defi(curseur: Curseur, *, session: UUID, defi: bytes) -> bytes | None:
+async def consomme_le_defi(curseur: Curseur, *, empreinte_de_session: bytes, defi: bytes) -> bytes | None:
     """Le défi, une seule fois, s'il a été demandé par cette personne et cette session et n'est pas échu."""
-    ligne = await _une_ligne(curseur, CONSOMME_UN_DEFI, (session, BUT_D_ENREGISTREMENT, defi))
+    ligne = await _une_ligne(curseur, CONSOMME_UN_DEFI, (empreinte_de_session, BUT_D_ENREGISTREMENT, defi))
     return None if ligne["defi"] is None else bytes(ligne["defi"])
 
 
 async def enregistre_la_cle(
-    curseur: Curseur, *, session: UUID, cle: CleEnregistree, nom: str, request_id: str | None
+    curseur: Curseur, *, empreinte_de_session: bytes, cle: CleEnregistree, nom: str, request_id: str | None
 ) -> CleAjoutee | Refus:
     """Écrit la clé sous le verrou de personne, la session et sa preuve relues en base (`Refus` sinon)."""
     ligne = await _une_ligne(
         curseur,
         ENREGISTRE,
         (
-            session,
+            empreinte_de_session,
             cle.identifiant,
             cle.cle_publique,
             cle.compteur,

@@ -74,6 +74,9 @@ TAILLE_MINIMALE_D_UN_IDENTIFIANT = 16
 TAILLE_MAXIMALE_D_UN_IDENTIFIANT = 1023
 # W3C § 5.4.3 : l'identifiant d'utilisateur fait de 1 à 64 octets.
 TAILLE_MAXIMALE_D_UN_IDENTIFIANT_D_UTILISATEUR = 64
+# La base borne la clé publique COSE à 1 Kio (une RSA de 4096 bits en fait environ 550 octets) : au-delà,
+# un refus ici, pas une erreur de contrainte plus loin.
+TAILLE_MAXIMALE_D_UNE_CLE_PUBLIQUE = 1024
 # Une clé RSA plus petite se factorise ; l'exposant 65537 est celui de tous les authentificateurs.
 TAILLE_MINIMALE_D_UNE_CLE_RSA = 2048
 EXPOSANT_MINIMAL_D_UNE_CLE_RSA = 65537
@@ -377,6 +380,8 @@ def verifie_l_enregistrement(
         _controle_la_cle_publique(verifiee.credential_public_key)
     except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
         raise ReponseDeCleRefusee("réponse de clé refusée : enregistrement non vérifié") from erreur
+    if len(verifiee.credential_public_key) > TAILLE_MAXIMALE_D_UNE_CLE_PUBLIQUE:
+        raise ReponseDeCleRefusee("réponse de clé refusée : clé publique trop grande")
     # L'identifiant écrit dans l'attestation est celui que le navigateur annoncera ensuite (`rawId`) : s'ils
     # diffèrent, la clé enregistrée ne se retrouverait jamais à la connexion.
     if not hmac.compare_digest(verifiee.credential_id, credential.raw_id):

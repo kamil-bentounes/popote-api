@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+import cbor2
 import httpx
 import psycopg
 import pytest
@@ -47,6 +48,7 @@ class Banc:
         self.app = application_de_test(base, monkeypatch, **reglages)
         self.client = client_de(self.app)
         self.moi: Personne = fabrique.personne(fabrique.foyer())
+        self.personnes: list[UUID] = [self.moi.id]  # pour retirer leurs événements à la fin
         self.session: SessionDeTest = fabrique.session(self.moi.id)
 
     def entetes(self, session: SessionDeTest | None = None, cle: str | None = None) -> dict[str, str]:
@@ -124,6 +126,7 @@ class Banc:
 
     def autre_personne(self) -> tuple[Personne, SessionDeTest]:
         personne = self.fabrique.personne(self.fabrique.foyer())
+        self.personnes.append(personne.id)
         return personne, self.fabrique.session(personne.id)
 
     def evenements(self, personne: UUID | None = None) -> list[Ligne]:
@@ -138,7 +141,10 @@ class Banc:
 def banc(base: Base, fabrique: Fabrique, monkeypatch: pytest.MonkeyPatch) -> Iterator[Banc]:
     banc = Banc(base, fabrique, monkeypatch)
     yield banc
-    fabrique.admin.execute("delete from public.security_event where kind = 'cle_ajoutee'")
+    fabrique.admin.execute(
+        "delete from public.security_event where kind = 'cle_ajoutee' and person_id = any(%s)",
+        (banc.personnes,),
+    )
 
 
 # ── Les options ─────────────────────────────────────────────────────────────
@@ -218,6 +224,12 @@ class TestOptions:
         reponse = await banc.defi()
         assert (reponse.status_code, reponse.json()["code"]) == (403, "cle_origine_non_admise")
         assert banc.lignes("select 1 from public.webauthn_user where person_id = %s", banc.moi.id) == []
+
+    async def test_sans_origine_403_et_aucun_defi(self, banc: Banc) -> None:
+        # La garde d'origine de l'application refuse déjà ; la route refuse aussi, sans en dépendre.
+        reponse = await banc.defi(entetes=cookie(banc.session) | {"X-Popote-Client": "web"})
+        assert reponse.status_code == 403
+        assert banc.defis_vivants() == 0
 
     async def test_sans_preuve_recente_403_et_aucun_defi(self, banc: Banc) -> None:
         banc.vieillit_la_preuve(timedelta(seconds=301))
@@ -365,6 +377,33 @@ class TestEnregistrement:
         bonne = await banc.enregistre(authentificateur().cree(options))
         assert bonne.status_code == 201
 
+    async def test_un_nom_nul_vaut_le_nom_par_defaut(self, banc: Banc) -> None:
+        options = await banc.options()
+        reponse = await banc.client.post(
+            CLES, json={"credential": authentificateur().cree(options), "name": None}, headers=banc.entetes()
+        )
+        assert reponse.status_code == 201
+        assert reponse.json()["name"].startswith("Clé du ")
+
+    async def test_une_cle_publique_de_plus_de_1_kio_donne_422_cle_refusee(self, banc: Banc) -> None:
+        options = await banc.options()
+        cle = authentificateur()
+        cose = cle.cle_publique_cose()
+        # Une entrée de remplissage dans la clé COSE : valide pour la bibliothèque, trop grosse pour la base.
+        gonflee = cbor2.dumps({**cbor2.loads(cose), -99: b"\x00" * 1100})
+        reponse = await banc.enregistre(cle.cree(options, cle_cose=gonflee))
+        assert (reponse.status_code, reponse.json()["code"]) == (422, "cle_refusee")
+        assert banc.cles() == []
+
+    async def test_un_refus_de_conflit_laisse_le_defi_valable(self, banc: Banc) -> None:
+        cle, premiere = await banc.cle()
+        assert premiere.status_code == 201
+        options = await banc.options()
+        refusee = await banc.enregistre(cle.cree(options))
+        assert (refusee.status_code, refusee.json()["code"]) == (409, "cle_deja_enregistree")
+        assert banc.defis_vivants() == 1
+        assert (await banc.enregistre(authentificateur().cree(options))).status_code == 201
+
     async def test_un_defi_ne_sert_qu_une_fois(self, banc: Banc) -> None:
         options = await banc.options()
         premiere = await banc.enregistre(authentificateur().cree(options))
@@ -507,14 +546,14 @@ class TestEnregistrement:
         assert reponse.status_code == 401
         assert banc.cles() == []
 
-    async def test_sans_session_401(self, banc: Banc) -> None:
-        for chemin in (DEFIS, CLES):
-            reponse = await banc.client.post(
-                chemin,
-                json={"purpose": "registration", "credential": {}},
-                headers=ECRITURE | {"Idempotency-Key": '"k"'},
-            )
-            assert reponse.status_code == 401
+    @pytest.mark.parametrize(
+        ("chemin", "corps"),
+        [(DEFIS, {"purpose": "registration"}), (CLES, {"credential": {}})],
+        ids=["defi", "cle"],
+    )
+    async def test_sans_session_401(self, banc: Banc, chemin: str, corps: dict[str, Any]) -> None:
+        reponse = await banc.client.post(chemin, json=corps, headers=ECRITURE | {"Idempotency-Key": '"k"'})
+        assert (reponse.status_code, reponse.json()["code"]) == (401, "pas_de_session")
 
     async def test_sans_idempotency_key_400(self, banc: Banc) -> None:
         options = await banc.options()
