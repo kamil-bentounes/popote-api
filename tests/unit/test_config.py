@@ -456,3 +456,13 @@ def test_sans_poivre_hors_local_le_demarrage_n_est_pas_refuse() -> None:
 
 def test_le_plafond_de_blocage_par_defaut_est_de_24_heures() -> None:
     assert Settings.model_validate({"env": "local"}).connexion_attente_max_s == 86400
+
+
+def test_les_limites_de_connexion_par_defaut_visent_le_couple_puis_le_compte_entier() -> None:
+    reglages = Settings.model_validate({"env": "local"})
+    assert (reglages.connexion_essais_par_couple, reglages.connexion_essais_par_ip) == (5, 20)
+    assert (reglages.connexion_essais_compte_entier, reglages.connexion_fenetre_compte_entier_s) == (
+        20,
+        86400,
+    )
+    assert reglages.connexion_blocage_compte_entier_s == 3600

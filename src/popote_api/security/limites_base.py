@@ -1,9 +1,10 @@
 """Les limites de connexion comptées en base (migration 0138) : l'appel Python des fonctions SQL.
 
 Les compteurs vivent en base, pas en mémoire : plusieurs processus de l'API (et un redémarrage) partagent les
-mêmes. La décision est UNE fonction atomique, `public.prend_les_creneaux` : l'IP d'abord, le compte
-seulement si l'IP passe, donc une IP bloquée n'épuise jamais les créneaux d'un compte (B6). Les clés sont des
-HMAC (`security/empreintes.py`) ; les limites viennent de `config.py`.
+mêmes. La décision est UNE fonction atomique, `public.prend_les_creneaux_de_connexion` (0151) : l'IP d'abord,
+puis le compte entier (lu), le couple (compte, IP), le compte entier (compté) ; un créneau refusé n'use jamais
+les suivants (B6) et l'IP d'un tiers ne bloque que son couple (S7c). Les clés sont des HMAC
+(`security/empreintes.py`) ; les limites viennent de `config.py`.
 
 Le curseur vient de `base.connexion()` ou de `base.service()` (contexte sans personne) : `authenticated`
 n'a pas l'`execute` de ces fonctions.
@@ -20,7 +21,8 @@ class CleBloquee(StrEnum):
     """Quelle clé vient de passer en blocage : seule cette fois-là, `connexion_bloquee` s'écrit (B21)."""
 
     ip = "ip"
-    compte = "account"
+    couple = "couple"
+    compte = "account"  # le compte entier, toutes IP confondues
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,30 +38,35 @@ class Creneaux:
 
 
 async def prendre_les_creneaux(
-    curseur: Curseur, cle_compte: bytes, cle_ip: bytes, reglages: Settings
+    curseur: Curseur, cle_couple: bytes, cle_compte: bytes, cle_ip: bytes, reglages: Settings
 ) -> Creneaux:
-    """Prend un créneau sur l'IP, puis sur le compte si l'IP passe."""
+    """Prend les créneaux de l'IP, du couple (compte, IP), puis du compte entier, dans cet ordre."""
     await curseur.execute(
-        "select attente_s, nouveau_blocage from public.prend_les_creneaux(%s, %s, %s, %s, %s, %s)",
+        "select attente_s, nouveau_blocage from public.prend_les_creneaux_de_connexion("
+        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
+            cle_couple,
             cle_compte,
             cle_ip,
-            reglages.connexion_essais_par_compte,
+            reglages.connexion_essais_par_couple,
+            reglages.connexion_essais_compte_entier,
             reglages.connexion_essais_par_ip,
             reglages.connexion_fenetre_s,
             reglages.connexion_attente_max_s,
+            reglages.connexion_fenetre_compte_entier_s,
+            reglages.connexion_blocage_compte_entier_s,
         ),
     )
     ligne = await curseur.fetchone()
     if ligne is None:  # une fonction `returns table` qui rend une ligne : jamais vide
-        raise RuntimeError("prend_les_creneaux n'a rendu aucune ligne")
+        raise RuntimeError("prend_les_creneaux_de_connexion n'a rendu aucune ligne")
     bloquee = ligne["nouveau_blocage"]
     return Creneaux(ligne["attente_s"], CleBloquee(bloquee) if bloquee is not None else None)
 
 
-async def liberer_le_compte(curseur: Curseur, cle_compte: bytes) -> None:
-    """Après un succès : remet le compte à zéro, jamais l'IP."""
-    await curseur.execute("select public.libere_compte(%s)", (cle_compte,))
+async def liberer_le_couple(curseur: Curseur, cle_couple: bytes, cle_compte: bytes) -> None:
+    """Après un succès : le couple à zéro, un refus de moins sur le compte entier, jamais l'IP."""
+    await curseur.execute("select public.libere_le_couple(%s, %s)", (cle_couple, cle_compte))
 
 
 async def prendre_un_creneau_de_reinitialisation(curseur: Curseur, cle: bytes, reglages: Settings) -> int:

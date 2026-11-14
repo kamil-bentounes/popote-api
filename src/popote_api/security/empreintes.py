@@ -30,6 +30,7 @@ ETIQUETTE_IP = b"popote/ip/v1\x00"
 ETIQUETTE_REINITIALISATION = b"popote/reinit/v1\x00"
 ETIQUETTE_LIEN = b"popote/lien/v1\x00"
 ETIQUETTE_PAIRE_DE_CODE = b"popote/code-paire/v1\x00"
+ETIQUETTE_COUPLE_DE_CONNEXION = b"popote/connexion-couple/v1\x00"
 # Le code se protège par une clé dérivée du poivre (`login-code/v1`), jamais par le poivre lui-même.
 ETIQUETTE_DU_CODE = b"popote/login-code/v1\x00"
 # Une requête sans adresse (relais absent ou invalide) : une clé commune, jamais « personne ».
@@ -132,6 +133,16 @@ class Empreintes:
 
     def cle_paire_de_code_requise(self, email: str, ip: str | None) -> bytes:
         cle = self.cle_paire_de_code(email, ip)
+        if cle is None:
+            raise PoivreAbsentError
+        return cle
+
+    def cle_couple_de_connexion_requise(self, email: str, ip: str | None) -> bytes:
+        """La clé du blocage de connexion : le COUPLE (e-mail, IP), jamais l'e-mail seul (S7c).
+
+        Un tiers qui connaît l'adresse ne bloque ainsi que son propre couple, pas la personne chez elle.
+        """
+        cle = self._hmac(ETIQUETTE_COUPLE_DE_CONNEXION, f"{email_normalise(email)}\x00{ip_canonique(ip)}")
         if cle is None:
             raise PoivreAbsentError
         return cle

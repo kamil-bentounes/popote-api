@@ -51,6 +51,12 @@ class Banc:
         self.ip = f"203.0.113.{random.randint(1, 254)}"  # une IP de test par banc
         self.cles: list[bytes] = []
 
+    def suit(self, email: str, ip: str | None = None) -> bytes:
+        """Note les clés (IP, couple) d'un essai pour les retirer à la fin ; rend la clé du couple."""
+        couple = self.empreintes.cle_couple_de_connexion_requise(email, ip or self.ip)
+        self.cles += [couple, self.empreintes.cle_ip_requise(ip or self.ip)]
+        return couple
+
     def client(self, ip: str | None = None) -> httpx.AsyncClient:
         transport = httpx.ASGITransport(app=self.app, client=(ip or self.ip, 5000))
         return httpx.AsyncClient(transport=transport, base_url="http://test")
@@ -98,8 +104,7 @@ class Banc:
         **plus: Any,
     ) -> httpx.Response:
         """Soumet un code à `POST /sessions` ; ne pose aucune ligne."""
-        cle_ip = self.empreintes.cle_ip(self.ip)
-        self.cles += [c for c in (self.empreintes.cle_compte(email), cle_ip) if c]
+        self.cles += [self.empreintes.cle_compte_requise(email), self.suit(email)]
         entetes = ECRITURE | plus.pop("headers", {})
         corps = {
             "method": "email_code",
@@ -324,9 +329,9 @@ async def test_un_refus_valide_la_transaction_l_essai_reste_compte(banc: Banc) -
     personne, email = banc.personne()
     identifiant, bon = banc.pose_un_code(email, personne)
     assert (await banc.poste(email, identifiant, f"{(int(bon) + 1) % 10**6:06d}")).status_code == 401
-    cle = banc.empreintes.cle_compte(email)
+    cle = banc.suit(email)
     assert banc.lignes(
-        "select attempts from public.login_throttle where scope = 'account' and key = %s", cle
+        "select attempts from public.login_throttle where scope = 'couple' and key = %s", cle
     ) == [(1,)]
     assert banc.lignes(
         "select attempts, used_at is null from public.login_code where id = %s", identifiant
@@ -336,7 +341,9 @@ async def test_un_refus_valide_la_transaction_l_essai_reste_compte(banc: Banc) -
 async def test_le_temps_d_une_adresse_inconnue_est_comparable_a_celui_d_un_faux_code(
     banc_avec: Callable[..., Banc],
 ) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000, connexion_essais_par_ip=10000)
+    banc = banc_avec(
+        connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000, connexion_essais_par_ip=10000
+    )
     personne, email = banc.personne()
 
     async def duree(adresse: str, titulaire: UUID | None) -> float:
@@ -369,14 +376,68 @@ async def test_cinq_faux_puis_le_bon_donne_429_sans_aucune_verification(
     ) == [(0, True)]
 
 
-async def test_le_blocage_d_un_compte_monte_jusqu_a_24_heures(banc: Banc) -> None:
+async def test_l_ip_d_un_tiers_ne_bloque_pas_la_personne_chez_elle(banc_avec: Callable[..., Banc]) -> None:
+    banc = banc_avec(connexion_essais_par_ip=10000)
+    personne, email = banc.personne()
+    tiers = banc.client("198.51.100.77")
+    banc.suit(email, "198.51.100.77")
+    for _ in range(5):
+        assert (await banc.connecte_par_code(email, personne, faux=True, client=tiers)).status_code == 401
+    assert (await banc.connecte_par_code(email, personne, faux=True, client=tiers)).status_code == 429
+    assert (await banc.connecte_par_code(email, personne)).status_code == 201  # depuis sa propre IP
+
+
+async def test_vingt_refus_venus_de_quatre_ip_bloquent_le_compte_entier_soixante_minutes(
+    banc_avec: Callable[..., Banc], verifications: list[UUID]
+) -> None:
+    banc = banc_avec(connexion_essais_par_ip=10000)
+    personne, email = banc.personne()
+    for rang in range(4):
+        ip = f"198.51.100.{80 + rang}"
+        banc.suit(email, ip)
+        for _ in range(5):
+            faux = await banc.connecte_par_code(email, personne, faux=True, client=banc.client(ip))
+            assert faux.status_code == 401
+    avant = len(verifications)
+    reponse = await banc.connecte_par_code(email, personne)  # le bon code, d'une cinquième IP
+    assert reponse.status_code == 429
+    assert int(reponse.headers["retry-after"]) == 3600
+    assert "set-cookie" not in reponse.headers
+    assert len(verifications) == avant
+
+
+async def test_la_personne_sur_son_appareil_habituel_entre_malgre_le_blocage_du_compte_entier(
+    banc_avec: Callable[..., Banc],
+) -> None:
+    banc = banc_avec(connexion_essais_par_ip=10000)
+    personne, email = banc.personne()
+    assert (await banc.connecte_par_code(email, personne)).status_code == 201  # son couple devient connu
+    for rang in range(4):
+        ip = f"198.51.100.{90 + rang}"
+        banc.suit(email, ip)
+        for _ in range(5):
+            await banc.connecte_par_code(email, personne, faux=True, client=banc.client(ip))
+    ailleurs = banc.client("198.51.100.99")
+    banc.suit(email, "198.51.100.99")
+    assert (
+        await banc.connecte_par_code(email, personne, client=ailleurs)
+    ).status_code == 429  # IP neuve : bloquée
+    assert (await banc.connecte_par_code(email, personne)).status_code == 201  # son IP habituelle : entre
+    blocages = banc.lignes(
+        "select ip_hash from public.security_event where kind = 'connexion_bloquee' and account_key = %s",
+        banc.empreintes.cle_compte(email),
+    )
+    assert blocages == [(None,)]  # le compte entier ne porte pas d'IP, un couple en porte une
+
+
+async def test_le_blocage_d_un_couple_monte_jusqu_a_24_heures(banc: Banc) -> None:
     """Cinq essais faits, sept crans, blocage échu : le prochain faux code bloque 24 h, plafond compris."""
     personne, email = banc.personne()
     banc.fabrique.admin.execute(
         "insert into public.login_throttle"
         " (scope, key, window_start, attempts, strikes, last_block_at, blocked_until)"
-        " values ('account', %s, now(), 5, 7, now() - interval '25 hours', now() - interval '1 second')",
-        (banc.empreintes.cle_compte(email),),
+        " values ('couple', %s, now(), 5, 7, now() - interval '25 hours', now() - interval '1 second')",
+        (banc.suit(email),),
     )
     reponse = await banc.connecte_par_code(email, personne, faux=True)
     assert reponse.status_code == 429
@@ -386,7 +447,9 @@ async def test_le_blocage_d_un_compte_monte_jusqu_a_24_heures(banc: Banc) -> Non
 async def test_cinq_faux_sur_la_meme_demande_tuent_le_code_meme_pour_le_bon(
     banc_avec: Callable[..., Banc],
 ) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000, connexion_essais_par_ip=10000)
+    banc = banc_avec(
+        connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000, connexion_essais_par_ip=10000
+    )
     personne, email = banc.personne()
     identifiant, bon = banc.pose_un_code(email, personne)
     faux = f"{(int(bon) + 1) % 10**6:06d}"
@@ -427,7 +490,9 @@ async def test_cinquante_tentatives_fausses_en_parallele_font_exactement_cinq_ve
 async def test_vingt_soumissions_du_bon_code_ouvrent_une_seule_session(
     banc_avec: Callable[..., Banc],
 ) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000, connexion_essais_par_ip=10000)
+    banc = banc_avec(
+        connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000, connexion_essais_par_ip=10000
+    )
     personne, email = banc.personne()
     identifiant, bon = banc.pose_un_code(email, personne)
     reponses = await asyncio.gather(*(banc.poste(email, identifiant, bon) for _ in range(20)))
@@ -530,13 +595,17 @@ async def test_le_succes_remet_le_compte_a_zero_mais_pas_l_ip(banc: Banc) -> Non
     for _ in range(3):
         assert (await banc.connecte_par_code(email, personne, faux=True)).status_code == 401
     assert (await banc.connecte_par_code(email, personne)).status_code == 201
-    cle_compte, cle_ip = banc.empreintes.cle_compte(email), banc.empreintes.cle_ip(banc.ip)
+    cle_couple, cle_ip = banc.suit(email), banc.empreintes.cle_ip(banc.ip)
     assert banc.lignes(
-        "select attempts from public.login_throttle where scope = 'account' and key = %s", cle_compte
+        "select attempts from public.login_throttle where scope = 'couple' and key = %s", cle_couple
     ) == [(0,)]
     assert banc.lignes(
         "select attempts from public.login_throttle where scope = 'ip' and key = %s", cle_ip
     ) == [(4,)]
+    assert banc.lignes(
+        "select attempts from public.login_throttle where scope = 'compte_entier' and key = %s",
+        banc.empreintes.cle_compte(email),
+    ) == [(3,)]  # le succès n'est pas un refus : son essai est rendu
 
 
 async def test_les_evenements_de_connexion(banc_avec: Callable[..., Banc]) -> None:
@@ -563,15 +632,19 @@ async def test_les_evenements_de_connexion(banc_avec: Callable[..., Banc]) -> No
         "where kind = 'connexion_bloquee' and account_key = %s",
         cle,
     )
+    cle_ip = banc.empreintes.cle_ip(banc.ip)
     assert len(ratees) == 5  # le succès a remis le compte à zéro : cinq faux comptés, les autres refusés
     assert len(bloquees) == 1  # B21 : un événement par fenêtre de blocage, pas un par essai refusé
-    assert all(ligne == (None, None) for ligne in ratees + bloquees)  # clé de compte seule
+    assert all(ligne == (None, None) for ligne in ratees)  # clé de compte seule
+    assert [(bytes(ip), personne) for ip, personne in bloquees] == [
+        (cle_ip, None)
+    ]  # un couple : compte et IP
 
 
 async def test_un_cookie_valide_present_est_revoque_par_la_nouvelle_connexion(
     banc_avec: Callable[..., Banc],
 ) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000)
+    banc = banc_avec(connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000)
     personne, email = banc.personne()
     premiere = await banc.connecte_par_code(email, personne)
     ancien = {"Cookie": cookie_brut(premiere).split(";")[0]}
@@ -601,7 +674,7 @@ async def test_un_refus_ne_ferme_pas_la_session_presentee(banc: Banc) -> None:
 
 
 async def test_un_cookie_invalide_present_est_ignore(banc_avec: Callable[..., Banc]) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000)
+    banc = banc_avec(connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000)
     personne, email = banc.personne()
     for mauvais in ("n'importe quoi", "A" * 43):
         reponse = await banc.connecte_par_code(
@@ -613,7 +686,9 @@ async def test_un_cookie_invalide_present_est_ignore(banc_avec: Callable[..., Ba
 async def test_aucune_donnee_personnelle_dans_les_journaux(
     banc_avec: Callable[..., Banc], caplog: pytest.LogCaptureFixture
 ) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000, connexion_essais_par_ip=10000)
+    banc = banc_avec(
+        connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000, connexion_essais_par_ip=10000
+    )
     personne, email = banc.personne()
     secrets_vus: list[str] = []
     with caplog.at_level(logging.DEBUG):
@@ -660,7 +735,9 @@ async def test_sans_poivre_la_connexion_refuse_plutot_que_de_compter(banc_avec: 
 
 
 async def test_un_blocage_d_ip_marque_l_ip_et_pas_le_compte_vise(banc_avec: Callable[..., Banc]) -> None:
-    banc = banc_avec(connexion_essais_par_compte=1000)  # seule l'IP bloque
+    banc = banc_avec(
+        connexion_essais_par_couple=1000, connexion_essais_compte_entier=10000
+    )  # seule l'IP bloque
     personne, email = banc.personne()
     for _ in range(25):
         await banc.connecte_par_code(email, personne, faux=True)
@@ -707,8 +784,8 @@ async def test_un_journal_qui_leve_ne_change_ni_la_reponse_ni_l_essai_compte(
     assert (reponse.status_code, reponse.json()["code"]) == (401, "code_incorrect")
     assert banc.lignes("select attempts from public.login_code where id = %s", identifiant) == [(1,)]
     assert banc.lignes(
-        "select attempts from public.login_throttle where scope = 'account' and key = %s",
-        banc.empreintes.cle_compte(email),
+        "select attempts from public.login_throttle where scope = 'couple' and key = %s",
+        banc.suit(email),
     ) == [(1,)]
     assert (
         banc.lignes(

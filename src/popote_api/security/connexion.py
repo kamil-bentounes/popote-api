@@ -26,7 +26,7 @@ from popote_api.security.appareil import resume_agent
 from popote_api.security.empreintes import Empreintes
 from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton, jeton_neuf
 from popote_api.security.journal_securite import Evenement, journalise, journalise_sans_lever
-from popote_api.security.limites_base import CleBloquee, liberer_le_compte, prendre_les_creneaux
+from popote_api.security.limites_base import CleBloquee, liberer_le_couple, prendre_les_creneaux
 from popote_api.security.mots_de_passe import candidats_de_connexion
 from popote_api.security.sessions_base import (
     confirme_le_changement_de_mot_de_passe,
@@ -102,10 +102,11 @@ async def tente_la_connexion_par_code(
     """Lève `PoivreAbsentError` sans poivre (la route répond 503 : on ne compte pas sans clé)."""
     cle_compte = empreintes.cle_compte_requise(email)
     cle_ip = empreintes.cle_ip_requise(ip)
+    cle_couple = empreintes.cle_couple_de_connexion_requise(email, ip)
     empreinte_du_code = empreintes.empreinte_du_code(code_request_id, cle_compte, code)
     jeton, empreinte_du_nouveau_jeton = jeton_neuf()
     async with base.connexion() as curseur:
-        bloquee = await _prend_les_creneaux(curseur, reglages, cle_compte, cle_ip, request_id)
+        bloquee = await _prend_les_creneaux(curseur, reglages, cle_couple, cle_compte, cle_ip, request_id)
         if bloquee is not None:
             return bloquee
         ouverture = await ouvre_une_session_par_code(
@@ -123,7 +124,7 @@ async def tente_la_connexion_par_code(
                 curseur, Evenement.connexion_ratee, cle_compte=cle_compte, request_id=request_id
             )
             return Refusee()
-        await liberer_le_compte(curseur, cle_compte)  # le compte seul : jamais l'IP
+        await liberer_le_couple(curseur, cle_couple, cle_compte)  # jamais l'IP
         return Ouverte(jeton, ouverture.session, ouverture.personne)
 
 
@@ -139,16 +140,18 @@ async def tente_la_reauthentification(
     ip: str | None,
     request_id: str | None,
 ) -> ResultatDeReauthentification:
-    """Mêmes créneaux que la connexion, sur le compte de la personne puis l'IP : une session volée ne peut
-    donc pas forcer le mot de passe. `email` est celui de la personne, lu par la route sous sa session.
+    """Mêmes créneaux que la connexion (l'IP, le couple compte-IP, le compte entier) : une session volée ne
+    peut donc pas forcer le mot de passe, et son IP ne bloque que son propre couple. `email` est celui de
+    la personne, lu par la route sous sa session.
 
-    Succès : le compteur du compte est remis à zéro et `reauth_at` de SA session seulement est posé.
+    Succès : le couple est remis à zéro et `reauth_at` de SA session seulement est posé.
     Lève `PoivreAbsentError` sans poivre (la route répond 503).
     """
     cle_compte = empreintes.cle_compte_requise(email)
     cle_ip = empreintes.cle_ip_requise(ip)
+    cle_couple = empreintes.cle_couple_de_connexion_requise(email, ip)
     async with base.connexion() as curseur:
-        bloquee = await _prend_les_creneaux(curseur, reglages, cle_compte, cle_ip, request_id)
+        bloquee = await _prend_les_creneaux(curseur, reglages, cle_couple, cle_compte, cle_ip, request_id)
         if bloquee is not None:
             return bloquee
         if not await _verifie_de(curseur, personne, mot_de_passe):
@@ -161,7 +164,7 @@ async def tente_la_reauthentification(
                 request_id=request_id,
             )
             return Refusee()
-        await liberer_le_compte(curseur, cle_compte)  # le compte seul : jamais l'IP
+        await liberer_le_couple(curseur, cle_couple, cle_compte)  # jamais l'IP
         await marque_reauth(curseur, session, personne)
         await journalise(
             curseur,
@@ -216,21 +219,28 @@ async def journalise_la_liste_de_fuites_indisponible(
 
 
 async def _prend_les_creneaux(
-    curseur: Curseur, reglages: Settings, cle_compte: bytes, cle_ip: bytes, request_id: str | None
+    curseur: Curseur,
+    reglages: Settings,
+    cle_couple: bytes,
+    cle_compte: bytes,
+    cle_ip: bytes,
+    request_id: str | None,
 ) -> Bloquee | None:
     """Les créneaux, l'IP d'abord (B6) ; `Bloquee` s'il en manque un, et alors rien d'autre ne s'exécute."""
-    creneaux = await prendre_les_creneaux(curseur, cle_compte, cle_ip, reglages)
+    creneaux = await prendre_les_creneaux(curseur, cle_couple, cle_compte, cle_ip, reglages)
     if creneaux.passe:
         return None
     # Un seul événement par fenêtre de blocage (B21) : 100 essais refusés n'en écrivent qu'un.
     if creneaux.nouveau_blocage is not None:
-        # La clé qui vient de bloquer, et elle seule : un blocage d'IP ne marque pas le compte visé.
+        # La clé qui vient de bloquer, et elle seule : un blocage d'IP ne marque pas le compte visé ;
+        # le couple s'écrit avec la clé du compte et celle de l'IP, le compte entier avec celle du compte.
         par_ip = creneaux.nouveau_blocage is CleBloquee.ip
+        avec_ip = creneaux.nouveau_blocage in (CleBloquee.ip, CleBloquee.couple)
         await journalise_sans_lever(
             curseur,
             Evenement.connexion_bloquee,
             cle_compte=None if par_ip else cle_compte,
-            cle_ip=cle_ip if par_ip else None,
+            cle_ip=cle_ip if avec_ip else None,
             request_id=request_id,
         )
     return Bloquee(creneaux.attente_s)

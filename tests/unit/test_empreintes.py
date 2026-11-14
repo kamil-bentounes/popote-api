@@ -143,3 +143,29 @@ def test_sans_poivre_les_variantes_requises_refusent_au_lieu_de_compter_sans_cle
 def test_avec_poivre_les_variantes_requises_rendent_les_memes_cles() -> None:
     assert empreintes().cle_compte_requise("a@x.fr") == empreintes().cle_compte("a@x.fr")
     assert empreintes().cle_ip_requise("1.2.3.4") == empreintes().cle_ip("1.2.3.4")
+
+
+def test_la_cle_du_couple_de_connexion_depend_de_l_adresse_et_de_l_ip_et_n_est_aucune_autre_cle() -> None:
+    e = empreintes()
+    cle = e.cle_couple_de_connexion_requise(" A@x.fr ", "1.2.3.4")
+    assert cle == e.cle_couple_de_connexion_requise("a@x.fr", "1.2.3.4")
+    assert cle != e.cle_couple_de_connexion_requise("a@x.fr", "1.2.3.5")
+    assert cle != e.cle_couple_de_connexion_requise("b@x.fr", "1.2.3.4")
+    assert len(cle) == 32
+    assert cle not in {e.cle_compte("a@x.fr"), e.cle_ip("1.2.3.4"), e.cle_paire_de_code("a@x.fr", "1.2.3.4")}
+    assert cle != e.cle_reinitialisation("a@x.fr", "1.2.3.4")
+
+
+def test_sans_poivre_la_cle_du_couple_de_connexion_refuse() -> None:
+    with pytest.raises(PoivreAbsentError):
+        empreintes(None).cle_couple_de_connexion_requise("a@x.fr", "1.2.3.4")
+
+
+def test_la_cle_du_couple_regroupe_l_ipv6_par_slash_64() -> None:
+    e = empreintes()
+    assert e.cle_couple_de_connexion_requise("a@x.fr", "2001:db8::1") == e.cle_couple_de_connexion_requise(
+        "a@x.fr", "2001:db8::2"
+    )
+    assert e.cle_couple_de_connexion_requise("a@x.fr", "2001:db8::1") != e.cle_couple_de_connexion_requise(
+        "a@x.fr", "2001:db8:0:1::1"
+    )

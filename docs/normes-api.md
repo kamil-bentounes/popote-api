@@ -195,8 +195,8 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
     nombre entier de secondes (RFC 9110, `delay-seconds`) égal à `t` : le brouillon demande qu'il ne soit
     pas antérieur à la fin de la fenêtre.
   Les limites qui protègent un compte sont comptées en base, donc justes quelle que soit l'instance :
-  connexion 5 essais par compte et 20 par IP en 15 min avec attente croissante, réinitialisation 3 par heure
-  et par compte, invitations 10 par jour.
+  connexion 5 essais par couple (compte, IP) et 20 par IP en 15 min avec attente croissante, 20 refus par
+  compte en 24 h pour 60 min, réinitialisation 3 par heure et par compte, invitations 10 par jour.
 - **Modèles** : quotas par foyer et par usage, décomptés de façon atomique en base
   (`update … where appels < quota returning …`) AVANT l'appel ; plafond en euros appliqué.
 - **Tailles, types et délais** (`src/popote_api/limites.py`, middlewares ASGI qui rendent leur réponse sans
