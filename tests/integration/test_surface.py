@@ -27,6 +27,7 @@ TABLES = [
     "public.login_code",
 ]
 
+I7 = ", integer" * 7
 # Les fonctions de 0.4 et les rôles qui peuvent les exécuter (rôle COURANT). Une migration en ajoute.
 EXECUTABLES_PAR: dict[str, set[str]] = {
     "public.journalise(text, uuid, uuid, uuid, bytea, bytea, text)": {"popote_api", "service_role"},
@@ -51,6 +52,10 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     },
     "public.prend_un_creneau_reinit(bytea, integer, integer)": {"popote_api", "service_role"},
     "public.libere_compte(bytea)": {"popote_api", "service_role"},
+    f"public.prend_les_creneaux_de_connexion(bytea, bytea, bytea{I7})": {"popote_api", "service_role"},
+    "public.libere_le_couple(bytea, bytea)": {"popote_api", "service_role"},
+    f"private.prend_les_creneaux_de_connexion(bytea, bytea, bytea{I7}, timestamptz)": set(),
+    "private.prend_un_creneau_fixe(text, bytea, integer, integer, integer, timestamptz)": set(),
     "private.prend_les_creneaux(bytea, bytea, integer, integer, integer, integer, timestamptz)": set(),
     "private.prend_un_creneau(text, bytea, integer, integer, integer, boolean, timestamptz)": set(),
     "private.prend_un_creneau_reinit(bytea, integer, integer, timestamptz)": set(),
