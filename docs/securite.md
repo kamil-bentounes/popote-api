@@ -204,7 +204,7 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Bornes** : la base refuse une limite nulle ou hors bornes (limite 1 à 10 000, fenêtre 1 à 86 400 s, plafond entre la
   fenêtre et 86 400 s) : un appelant ne désactive pas une limite. `config.py` refuse un plafond sous la fenêtre.
 - **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
-  nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h.
+  nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h (un couple connu : 30 jours après son dernier succès, 0152).
 - **Risque accepté : blocage par un tiers (B5).** Qui connaît l'adresse d'une personne peut ralentir **sa** connexion en
   épuisant ses 5 essais : au plus 60 min par blocage (plafond), « mot de passe oublié » restant ouvert jusqu'à S5 (code par mail). Accepté pour
   un foyer de deux personnes ; l'alternative (ne pas limiter par compte) laisserait la force brute ouverte.
@@ -672,7 +672,7 @@ configuration, journalisation, protection des données.
   aucune donnée d'une personne identifiable, d'où aucune conservation à convenir. À confirmer : la
   localisation du service (hors Union européenne ou non) et son éventuel statut de sous-traitant ne sont pas
   établis par ce document ; à faire valider avant la bascule (0.8).
-- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an (échecs et blocages de connexion : 90 jours), journal des appels au modèle 90 jours,
+- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an (échecs et blocages de connexion : 90 jours), couple (compte, IP) connu 30 jours (clé HMAC pseudonyme et date, `login_throttle`), journal des appels au modèle 90 jours,
   photos de saisie 30 jours.
 - Export et suppression du compte restent des routes de l'API.
 
@@ -776,7 +776,8 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   la route interne signée et le script d'exploitation). La garde de réauth est celle de la route (T14b).
 - **Résidus connus** (hors de la fonction) : `auth.audit_log_entries` (journal de GoTrue : `actor_id`, adresse et IP ; ni la
   fonction ni la suppression d'`auth.users` n'y touchent, à traiter côté Auth) et `auth.flow_state.user_id` ; `login_throttle`
-  (clés HMAC de compte, purgées à l'échéance, pas à la suppression) ; les identifiants d'une personne supprimée restent dans
+  (clés HMAC de compte, purgées à l'échéance, pas à la suppression ; un couple (compte, IP) connu, pseudonyme : 30 jours après son
+  dernier succès ; les événements `connexion_bloquee` d'un couple lient clé de compte et empreinte d'IP 90 jours, sans `person_id`) ; les identifiants d'une personne supprimée restent dans
   `depense_part`, `cloture_choix` et `versement_epargne` (uuid sans clé étrangère) tant que le foyer existe ; les événements
   écrits après l'effacement (reconnexion avant la suppression d'`auth.users`) gardent leurs clés. Les objets de Storage ne
   sont pas touchés ici.

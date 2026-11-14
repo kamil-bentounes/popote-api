@@ -12,8 +12,9 @@
 --    (couple ni en cran, ni déjà connu).
 --  - `purge_login_throttle` garde la ligne d'un couple connu 30 jours (une clé HMAC et une date, jamais l'adresse ni l'IP).
 --
--- Retour arrière (sans perte : les couples redeviennent inconnus) : rejouer les trois `create or replace` de 0151 (les deux premières)
--- et de 0138 (la purge), puis `alter table public.login_throttle drop column last_success_at;`.
+-- Retour arrière (sans perte : les couples redeviennent inconnus) : rejouer `private.prend_les_creneaux_de_connexion` et
+-- `public.libere_le_couple` de 0151 et `private.purge_login_throttle` de 0138, puis
+-- `alter table public.login_throttle drop column last_success_at;`.
 -- ═══════════════════════════════════════════════════════════════════════════
 set local lock_timeout = '5s';
 set local statement_timeout = '30s';
@@ -129,3 +130,12 @@ end;
 $$;
 revoke all on function private.purge_login_throttle(timestamptz, integer)
   from public, anon, authenticated, service_role, popote_api, popote_internal;
+comment on function private.purge_login_throttle(timestamptz, integer) is
+  'Efface les compteurs sans activité depuis 24 h (un couple connu : 30 jours après son dernier succès), par lots ; rend leur nombre.';
+revoke all on function private.prend_les_creneaux_de_connexion(bytea, bytea, bytea, integer, integer, integer, integer, integer, integer, integer, timestamptz)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+revoke all on function public.libere_le_couple(bytea, bytea)
+  from public, anon, authenticated, service_role, popote_api, popote_internal;
+grant execute on function public.libere_le_couple(bytea, bytea) to popote_api, service_role;
+comment on column public.login_throttle.last_success_at is
+  'Dernier succès du couple (compte, IP) : le rend « connu » 30 jours. Purgé avec la ligne.';
