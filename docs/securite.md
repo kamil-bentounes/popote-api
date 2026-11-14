@@ -209,7 +209,7 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Bornes** : la base refuse une limite nulle ou hors bornes (limite 1 à 10 000, fenêtre 1 à 86 400 s, plafond entre la
   fenêtre et 86 400 s) : un appelant ne désactive pas une limite. `config.py` refuse un plafond sous la fenêtre.
 - **Droits** : `popote_api` et `service_role` seulement ; l'horloge (`p_now`) n'existe que dans `private`. Purge
-  nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h.
+  nocturne (`limites-de-connexion-purge`, 03 h 47 UTC) des lignes sans activité depuis 24 h (un couple connu : 30 jours après son dernier succès, 0152).
 - **Blocage par un tiers (B5), réduit en S7c.** Avant 0151, cinq refus bloquaient le compte entier jusqu'à 24 h : qui connaissait l'adresse
   gardait la personne dehors. Depuis, ses cinq refus ne bloquent que **son** couple (adresse, IP) : la personne se connecte de chez elle.
   Une IP seule ne pèse que 5 refus sur le compte entier : les essais d'un couple déjà passé en blocage n'y comptent plus (et un succès ne
@@ -217,11 +217,14 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Le couple connu (0152).** Un couple (compte, IP) qui a réussi une connexion il y a moins de 30 jours (`login_throttle.last_success_at`,
   posée par `libere_le_couple`) n'est pas arrêté par le blocage du compte entier et n'y compte plus ; sa propre limite (5) et celle de l'IP
   restent. Sans cela, 5 refus depuis 4 IP neuves (quatre /64 IPv6, presque gratuites) bloquaient la personne partout, et le tiers
-  recommençait avec 4 autres. La ligne d'un couple connu survit 30 jours à la purge : une clé HMAC et une date, ni l'adresse ni l'IP.
+  recommençait avec 4 autres. La ligne d'un couple connu survit 30 jours à la purge : une clé HMAC pseudonyme du couple et une date, jamais l'adresse ni l'IP en clair.
   **Risque résiduel accepté** : une IP neuve de la personne (autre réseau, première connexion) est bloquée 60 min tant que 20 refus
   d'IP différentes courent sur son compte ; son appareil habituel entre. Pour la connexion par code, les limites de la demande (6 codes
   par heure et par adresse, 5 essais par code) bornent la force brute à 30 essais par heure. La réauthentification par mot de passe
-  (jusqu'à S11) n'a que la limite du compte entier : environ 480 essais par jour pour qui tient une session volée et au moins quatre IP.
+  (jusqu'à S11) n'a, au-delà des limites par couple et par IP, que celle du compte entier, qui n'est pas un plafond : chaque IP neuve en
+  fait compter 5 essais, un couple déjà en blocage ou connu aucun. Un tiers qui partage l'IP de la victime (réseau mobile partagé,
+  bureau) partage son couple, donc son statut « connu » : il reste borné par les 5 essais du couple et les 20 de l'IP, et peut bloquer ce
+  couple pour la victime (24 h au plus). Sans IP lisible (hors production), toutes les requêtes partagent un seul couple.
 
 ### 4.4 Sessions côté base (0.4, migration 0139 ; code : `security/sessions_base.py`, `security/appareil.py`)
 
@@ -267,7 +270,7 @@ refusent de démarrer avec autre chose que `hibp`.
 - **Cookie déjà présent (B22).** Une connexion réussie révoque la session présentée si elle est valide (événement `session_fermee`, écrit par
   la base) ; un cookie invalide est ignoré. Un refus ne ferme rien.
 - **Journal.** `connexion_par_code` (personne, session, clé de compte ; écrit par la base), `connexion_ratee` (clé de compte seule),
-  `connexion_bloquee` (la clé qui vient de bloquer ; jamais e-mail, IP ni agent en clair). Un blocage s'écrit une fois par fenêtre et par clé
+  `connexion_bloquee` (les clés du blocage : compte seul, ou compte et empreinte d'IP pour un couple ; jamais e-mail, IP ni agent en clair). Un blocage s'écrit une fois par fenêtre et par clé
   (B21). Ni le code, ni l'adresse, ni `code_request_id`, ni le jeton dans un journal applicatif (testé par `caplog`).
 - **Succès.** `libere_le_couple` remet le couple à zéro et rend un essai au compte entier, jamais l'IP.
 - **Envoi des mails obligatoire hors local.** `essai` et `prod` refusent de démarrer sans `POPOTE_MAIL_PROVIDER=scaleway` complet (clé d'envoi et
@@ -688,7 +691,7 @@ configuration, journalisation, protection des données.
   aucune donnée d'une personne identifiable, d'où aucune conservation à convenir. À confirmer : la
   localisation du service (hors Union européenne ou non) et son éventuel statut de sous-traitant ne sont pas
   établis par ce document ; à faire valider avant la bascule (0.8).
-- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an (échecs et blocages de connexion : 90 jours), journal des appels au modèle 90 jours,
+- Conservation : journaux applicatifs 30 jours, journal de sécurité 1 an (échecs et blocages de connexion : 90 jours), couple (compte, IP) connu 30 jours (clé HMAC pseudonyme et date, `login_throttle`), journal des appels au modèle 90 jours,
   photos de saisie 30 jours.
 - Export et suppression du compte restent des routes de l'API.
 
@@ -792,7 +795,8 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   la route interne signée et le script d'exploitation). La garde de réauth est celle de la route (T14b).
 - **Résidus connus** (hors de la fonction) : `auth.audit_log_entries` (journal de GoTrue : `actor_id`, adresse et IP ; ni la
   fonction ni la suppression d'`auth.users` n'y touchent, à traiter côté Auth) et `auth.flow_state.user_id` ; `login_throttle`
-  (clés HMAC de compte, purgées à l'échéance, pas à la suppression) ; les identifiants d'une personne supprimée restent dans
+  (clés HMAC de compte, purgées à l'échéance, pas à la suppression ; un couple (compte, IP) connu, pseudonyme : 30 jours après son
+  dernier succès ; les événements `connexion_bloquee` d'un couple lient clé de compte et empreinte d'IP 90 jours, sans `person_id`) ; les identifiants d'une personne supprimée restent dans
   `depense_part`, `cloture_choix` et `versement_epargne` (uuid sans clé étrangère) tant que le foyer existe ; les événements
   écrits après l'effacement (reconnexion avant la suppression d'`auth.users`) gardent leurs clés. Les objets de Storage ne
   sont pas touchés ici.

@@ -63,4 +63,4 @@ def test_des_essais_croises_entre_comptes_ips_et_couples_ne_s_interbloquent_pas(
     appels = [(couples[c, i], c, i) for c, i in [(a, x), (b, y), (a, y), (b, x)]] * 50
     resultats = en_parallele(appels)
     assert len(resultats) == 200  # aucune exception, dont `40P01`
-    assert sum(1 for attente, _ in resultats if attente == 0) <= 4 * 5  # chaque couple : 5 par fenêtre
+    assert sum(1 for attente, _ in resultats if attente == 0) == 4 * 5  # chaque couple : 5 par fenêtre

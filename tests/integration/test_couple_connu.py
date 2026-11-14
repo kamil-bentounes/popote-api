@@ -95,3 +95,14 @@ def test_la_purge_garde_un_couple_connu_trente_jours(
         "select key from public.login_throttle where key = any(%s)", ([recent, ancien],)
     ).fetchall()
     assert [bytes(r[0]) for r in restant] == [recent]
+
+
+def test_un_succes_de_plus_de_trente_jours_ne_rend_pas_le_couple_connu_et_son_essai_est_rendu(
+    admin: psycopg.Connection[Ligne], cles: list[bytes]
+) -> None:
+    couple, compte, ip = neuve(cles), neuve(cles), neuve(cles)
+    maintenant = datetime.now(UTC)
+    pose_connu(admin, couple, maintenant - 31 * JOUR)
+    prend(admin, couple, compte, ip, maintenant)  # inconnu : l'essai compte sur le compte entier
+    admin.execute("select public.libere_le_couple(%s, %s)", (couple, compte))
+    assert ligne_de(admin, "compte_entier", compte)["attempts"] == 0
