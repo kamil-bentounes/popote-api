@@ -1,10 +1,10 @@
 """Spec § 4, B15, B24 : `verifie_mot_de_passe` et `verifie_mot_de_passe_de` (migration 0137).
 
 Base locale par défaut ; `POPOTE_TEST_DSN_API` et `POPOTE_TEST_DSN_ADMIN` les rejouent sur un autre serveur.
-La fonction se joue comme `popote_api`, le seul rôle qui l'exécute ; le droit se lit aussi par
-`set local role`
-(le rôle COURANT, B3). Les hachages sont écrits en direct dans `auth.users` ; un compte réel de GoTrue local
-(administration d'Auth) prouve que son hachage est reconnu.
+`verifie_mot_de_passe_de` se joue comme `popote_api`, le seul rôle qui l'exécute ; la variante par adresse
+n'en a plus (0150) et se joue en propriétaire ; le droit se lit aussi par `set local role` (le rôle COURANT,
+B3). Les hachages sont écrits en direct dans `auth.users` ; un compte réel de GoTrue local (administration
+d'Auth) prouve que son hachage est reconnu.
 """
 
 import statistics
@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 import httpx
 import psycopg
 import pytest
-from _connexions import DSN_API, connecte
+from _connexions import DSN_ADMIN, DSN_API, connecte
 from _fabrique import Fabrique
 from psycopg import errors, sql
 
@@ -83,9 +83,9 @@ def comptes(fabrique: Fabrique) -> Comptes:
     return Comptes(fabrique)
 
 
-def verifie(cx: psycopg.Connection[Ligne], email: str | None, mot_de_passe: str | None) -> object:
-    """Le résultat en sa propre transaction, comme une requête de l'API (contexte connexion)."""
-    with cx.transaction():
+def verifie(_cx: psycopg.Connection[Ligne], email: str | None, mot_de_passe: str | None) -> object:
+    """Le résultat en propriétaire : depuis 0150 aucun rôle applicatif n'exécute la variante par adresse."""
+    with psycopg.connect(DSN_ADMIN, autocommit=True) as cx:
         ligne = cx.execute(VERIFIE, (email, mot_de_passe)).fetchone()
     assert ligne is not None
     return ligne[0]
@@ -361,6 +361,10 @@ FONCTIONS = [
     ("public.verifie_mot_de_passe(text, text)", VERIFIE, ("a@x.test", "mdp")),
     ("public.verifie_mot_de_passe_de(uuid, text)", VERIFIE_DE, (UUID(int=1), "mdp")),
 ]
+EXECUTANTS = {
+    FONCTIONS[0][0]: set(),
+    FONCTIONS[1][0]: {"popote_api"},
+}  # 0150 : la variante par adresse n'a plus de rôle
 
 
 @pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"])
@@ -391,7 +395,7 @@ def test_popote_internal_ne_peut_pas_verifier(nom: str, requete: str, arguments:
 
 
 @pytest.mark.parametrize(("nom", "requete", "arguments"), FONCTIONS, ids=["email", "personne"])
-def test_seul_popote_api_a_le_droit_d_execution(
+def test_seuls_les_roles_attendus_ont_le_droit_d_execution(
     nom: str, requete: str, arguments: tuple[object, ...], admin: psycopg.Connection[Ligne]
 ) -> None:
     roles = ["anon", "authenticated", "service_role", "popote_api", "popote_internal"]
@@ -401,7 +405,12 @@ def test_seul_popote_api_a_le_droit_d_execution(
         ).fetchone()
         for role in roles
     }
-    assert {role for role, ligne in droits.items() if ligne == (True,)} == {"popote_api"}
+    assert {role for role, ligne in droits.items() if ligne == (True,)} == EXECUTANTS[nom]
+
+
+def test_popote_api_ne_peut_plus_executer_la_variante_par_adresse(cx_api: psycopg.Connection[Ligne]) -> None:
+    with pytest.raises(errors.InsufficientPrivilege), cx_api.transaction():
+        cx_api.execute(VERIFIE, ("a@x.test", "mdp"))
 
 
 # ── Le temps ne dit rien ────────────────────────────────────────────────────

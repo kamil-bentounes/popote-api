@@ -42,7 +42,7 @@ EXECUTABLES_PAR: dict[str, set[str]] = {
     "private.fait_tourner_session(bytea, bytea, timestamptz)": set(),
     "private.purge_login_session(timestamptz, integer)": set(),
     "private.purge_journal_securite(timestamp with time zone, integer)": set(),
-    "public.verifie_mot_de_passe(text, text)": {"popote_api"},
+    "public.verifie_mot_de_passe(text, text)": set(),  # 0150 : plus aucun rôle applicatif
     "public.verifie_mot_de_passe_de(uuid, text)": {"popote_api"},
     "private.mot_de_passe_correspond(text, text)": set(),
     "public.prend_les_creneaux(bytea, bytea, integer, integer, integer, integer)": {
