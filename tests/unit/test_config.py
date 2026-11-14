@@ -1,5 +1,5 @@
 import pytest
-from _commun import DSN, SECRET
+from _commun import COURRIER, DSN, SECRET
 from pydantic import ValidationError
 
 import popote_api.main
@@ -52,13 +52,15 @@ def test_hors_local_sans_base_echoue(env: str) -> None:
 
 @pytest.mark.parametrize("env", ["essai", "prod"])
 def test_hors_local_un_secret_de_32_caracteres_et_une_base_passent(env: str) -> None:
-    reglages = Settings.model_validate({"env": env, "relay_secret": SECRET, "database_url": DSN})
+    reglages = Settings.model_validate({"env": env, "relay_secret": SECRET, "database_url": DSN, **COURRIER})
     assert reglages.relais_exige is True
 
 
 def test_l_erreur_de_configuration_ne_recopie_pas_le_secret() -> None:
     with pytest.raises(ValidationError) as erreur:
-        Settings.model_validate({"env": "prod", "relay_secret": "court-mais-secret", "database_url": DSN})
+        Settings.model_validate(
+            {"env": "prod", "relay_secret": "court-mais-secret", "database_url": DSN, **COURRIER}
+        )
     assert "court-mais-secret" not in str(erreur.value)
 
 
@@ -153,6 +155,7 @@ def test_trois_secrets_distincts_passent() -> None:
             "relay_secret": "r" * 32,
             "internal_secret": "i" * 32,
             "internal_secret_precedent": "p" * 32,
+            **COURRIER,
         }
     )
     assert len(reglages.secrets_internes) == 2
@@ -184,6 +187,7 @@ def test_hors_local_le_nom_du_cookie_de_session_peut_etre_redit(env: str) -> Non
             "relay_secret": SECRET,
             "database_url": DSN,
             "session_cookie_name": "__Host-popote_session",
+            **COURRIER,
         }
     )
     assert reglages.nom_du_cookie_de_session == "__Host-popote_session"
@@ -199,7 +203,7 @@ def test_un_nom_de_cookie_de_session_illegal_echoue(nom: str) -> None:
 def test_hors_local_desactiver_la_liste_de_fuites_echoue(env: str) -> None:
     with pytest.raises(ValidationError, match="breach_check"):
         Settings.model_validate(
-            {"env": env, "relay_secret": SECRET, "database_url": DSN, "breach_check": "off"}
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "breach_check": "off", **COURRIER}
         )
 
 
@@ -241,7 +245,7 @@ def test_un_poivre_de_moins_de_32_caracteres_echoue_au_demarrage(env: str) -> No
 @pytest.mark.parametrize("env", ["essai", "prod"])
 def test_hors_local_le_poivre_est_facultatif(env: str) -> None:
     reglages = Settings.model_validate(
-        {"env": env, "relay_secret": SECRET, "database_url": DSN, "identity_pepper": ""}
+        {"env": env, "relay_secret": SECRET, "database_url": DSN, "identity_pepper": "", **COURRIER}
     )
     assert reglages.identity_pepper is None
 
@@ -270,7 +274,7 @@ def test_les_reglages_d_auth_sont_facultatifs() -> None:
 
 @pytest.mark.parametrize("env", ["essai", "prod"])
 def test_hors_local_les_reglages_d_auth_restent_facultatifs(env: str) -> None:
-    reglages = Settings.model_validate({"env": env, "relay_secret": SECRET, "database_url": DSN})
+    reglages = Settings.model_validate({"env": env, "relay_secret": SECRET, "database_url": DSN, **COURRIER})
     assert reglages.supabase_url is None
 
 
@@ -417,3 +421,38 @@ def test_la_boite_de_mail_locale_n_est_permise_qu_en_local() -> None:
                 "relay_secret": SECRET,
             }
         )
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+@pytest.mark.parametrize("fournisseur", ["aucun", "local"])
+def test_hors_local_sans_envoi_reel_le_demarrage_est_refuse(env: str, fournisseur: str) -> None:
+    with pytest.raises(ValidationError, match="mail_provider"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "mail_provider": fournisseur}
+        )
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+def test_hors_local_scaleway_sans_cle_ni_projet_est_refuse(env: str) -> None:
+    with pytest.raises(ValidationError, match="scaleway"):
+        Settings.model_validate(
+            {"env": env, "relay_secret": SECRET, "database_url": DSN, "mail_provider": "scaleway"}
+        )
+
+
+@pytest.mark.parametrize("fournisseur", ["aucun", "local", "scaleway"])
+def test_en_local_le_fournisseur_de_mail_reste_libre(fournisseur: str) -> None:
+    complet = COURRIER if fournisseur == "scaleway" else {"mail_provider": fournisseur}
+    assert Settings.model_validate({"env": "local", **complet}).mail_provider == fournisseur
+
+
+def test_sans_poivre_hors_local_le_demarrage_n_est_pas_refuse() -> None:
+    """Le poivre manque encore sur l'essai : le conteneur démarre, la route de connexion répond 503."""
+    reglages = Settings.model_validate(
+        {"env": "essai", "relay_secret": SECRET, "database_url": DSN, **COURRIER}
+    )
+    assert reglages.identity_pepper is None
+
+
+def test_le_plafond_de_blocage_par_defaut_est_de_24_heures() -> None:
+    assert Settings.model_validate({"env": "local"}).connexion_attente_max_s == 86400

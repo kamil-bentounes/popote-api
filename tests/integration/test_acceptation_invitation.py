@@ -300,8 +300,9 @@ async def test_acceptation_cree_le_compte_le_profil_et_la_session(cadre: Cadre) 
         "select count(*) from public.security_event where kind = 'invitation_acceptee' and person_id = %s",
         personne,
     ) == [(1,)]
-    connexion = await cadre.banc.connecte(adresse, NOUVEAU)
-    assert connexion.status_code == 201
+    assert await cadre.banc.mot_de_passe_est_bon(
+        adresse, NOUVEAU
+    )  # le mot de passe choisi est celui du compte
     assert cadre.fuites.appels == 1
 
 
@@ -506,7 +507,7 @@ async def test_orphelin_sans_hachage_est_repris(cadre: Cadre) -> None:
     assert cadre.banc.lignes(
         "select count(*) from public.security_event where kind = 'compte_repris' and person_id = %s", personne
     ) == [(1,)]
-    assert (await cadre.banc.connecte(adresse, NOUVEAU)).status_code == 201
+    assert await cadre.banc.mot_de_passe_est_bon(adresse, NOUVEAU)
     assert cadre.banc.lignes(
         "select email_confirmed_at is not null from auth.users where id = %s", personne
     ) == [(True,)]
@@ -537,7 +538,7 @@ async def test_deux_liens_pour_le_meme_orphelin_un_seul_gagne(cadre: Cadre) -> N
     assert codes[0] == 201 and codes[1] in (409, 410)
     gagnant = 0 if reponses[0].status_code == 201 else 1
     mot_de_passe = ("premier mot de passe très long", "second mot de passe très long!")[gagnant]
-    assert (await cadre.banc.connecte(adresse, mot_de_passe)).status_code == 201
+    assert await cadre.banc.mot_de_passe_est_bon(adresse, mot_de_passe)
     assert cadre.membres() == 2 and cadre.auth.changements == [personne]
 
 

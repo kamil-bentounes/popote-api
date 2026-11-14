@@ -6,12 +6,14 @@ transaction par requête :
 l'appelant décide quand elle se valide.
 """
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from popote_api.infra.db import Curseur, SessionCourante
 from popote_api.security.appareil import Appareil
 
 __all__ = [
+    "OuvertureParCode",
     "SessionCourante",
     "confirme_le_changement_de_mot_de_passe",
     "cree_session",
@@ -19,6 +21,7 @@ __all__ = [
     "fait_tourner_session",
     "ferme_session",
     "marque_reauth",
+    "ouvre_une_session_par_code",
     "session_courante",
     "verrouille_la_personne",
 ]
@@ -109,3 +112,49 @@ async def confirme_le_changement_de_mot_de_passe(
     await curseur.execute(
         "select public.confirme_le_changement_de_mot_de_passe(%s, %s, %s)", (personne, session, request_id)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class OuvertureParCode:
+    """Ce que rend `ouvre_une_session_par_code` : un refus est un résultat, jamais une erreur."""
+
+    ouverte: bool
+    session: UUID | None
+    personne: UUID | None
+
+
+async def ouvre_une_session_par_code(
+    curseur: Curseur,
+    *,
+    code_request_id: UUID,
+    cle_compte: bytes,
+    empreinte_du_code: bytes,
+    empreinte_du_jeton: bytes,
+    appareil: Appareil,
+    session_presentee: bytes | None,
+    request_id: str | None,
+) -> OuvertureParCode:
+    """Vérifie le code et ouvre la session en un appel (0149), la preuve relue sous le verrou de la personne.
+
+    Un code faux, échu, utilisé, révoqué, ou une personne qui ne peut pas entrer rendent `ouverte = faux` et
+    la transaction se valide (l'essai reste compté) ; une erreur de la base annule tout (le code reste
+    valable).
+    """
+    await curseur.execute(
+        "select ouverte, session, personne"
+        " from public.ouvre_une_session_par_code(%s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            code_request_id,
+            cle_compte,
+            empreinte_du_code,
+            empreinte_du_jeton,
+            appareil.navigateur,
+            appareil.systeme,
+            session_presentee,
+            request_id,
+        ),
+    )
+    ligne = await curseur.fetchone()
+    if ligne is None:  # une fonction qui rend toujours une ligne
+        raise RuntimeError("ouvre_une_session_par_code n'a rien rendu")
+    return OuvertureParCode(ligne["ouverte"], ligne["session"], ligne["personne"])

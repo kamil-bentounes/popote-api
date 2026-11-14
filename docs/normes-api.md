@@ -299,8 +299,8 @@ L'inventaire des appels actuels du front, qui donne la liste des routes de l'ét
   `ROUTES_PUBLIQUES` (`routes_publiques.py`, reprise par `main.py`), chaque entrée avec sa raison ; un test
   d'architecture exige `personne_connectee` sur toute autre route. Sous `/api/v1/`, une route publique rend ses
   propres `422` et `405` (les autres rendent `401` tant qu'aucune session n'est validée).
-- **`POST /api/v1/sessions`** (connexion, publique) : `201` + `Set-Cookie`, corps `{id}` sans jeton ; `401
-  identifiants_incorrects` ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
+- **`POST /api/v1/sessions`** (connexion par le code reçu par mail, publique, 0.4bis S7b) : corps `{method: "email_code", email,
+  code_request_id, code}` ; `201` + `Set-Cookie`, corps `{id}` sans jeton ; `401 code_incorrect` (un seul refus) ; `422` ; `429 trop_de_requetes` + `Retry-After` ; `503`. Sans `Idempotency-Key`
   (exemption écrite dans `tests/unit/test_posts_idempotents.py`). Détail : `docs/securite.md` § 4.5.
 - **`POST /api/v1/login-codes`** (demande de code par mail, publique, 0.4bis S5b) : `202 {code_request_id, expires_in_s,
   resend_after_s, message}` **toujours**, que l'adresse ait un compte ou non ; `422` ; `429 trop_de_requetes` + `Retry-After` ;

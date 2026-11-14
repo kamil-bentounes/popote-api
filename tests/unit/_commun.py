@@ -11,6 +11,14 @@ from popote_api.config import Settings
 SECRET = "s" * 32
 POIVRE = "p" * 32
 DSN = "postgresql://x:y@127.0.0.1:1/rien"
+PROJET = "00000000-0000-4000-8000-000000000001"
+CLE_D_ENVOI = "00000000-0000-4000-8000-000000000002"
+# Hors local, l'envoi réel complet est obligatoire (S7) : un fournisseur que ces tests n'appellent jamais.
+COURRIER = {
+    "mail_provider": "scaleway",
+    "scaleway_tem_secret_key": CLE_D_ENVOI,
+    "scaleway_tem_project_id": PROJET,
+}
 RELAIS = {"X-Popote-Relais": SECRET}
 # Ce qu'envoie le front dans une écriture : l'origine de l'environnement et l'en-tête propre à l'appli.
 ECRITURE_LOCALE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
@@ -23,6 +31,8 @@ def reglages(env: str, **autres: Any) -> Settings:
     valeurs: dict[str, Any] = {"env": env, "json_logs": False}
     if env != "local":
         valeurs |= {"relay_secret": SECRET, "database_url": DSN, "identity_pepper": POIVRE}
+        # Hors local, l'envoi réel est obligatoire (S7) : un fournisseur complet, jamais appelé par ces tests.
+        valeurs |= COURRIER
     return Settings.model_validate(valeurs | autres)
 
 

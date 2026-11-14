@@ -1,0 +1,4 @@
+# Raison : le corps de POST /api/v1/sessions passe du mot de passe au code reçu par mail (D3) ; la nouvelle appli n'est pas en ligne et personne ne consomme ce contrat
+error at revision.json, in API POST /api/v1/sessions added the new required request property `code` [new-required-request-property].
+error at revision.json, in API POST /api/v1/sessions added the new required request property `code_request_id` [new-required-request-property].
+error at revision.json, in API POST /api/v1/sessions added the new required request property `method` [new-required-request-property].

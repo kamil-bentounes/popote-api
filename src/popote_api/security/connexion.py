@@ -1,17 +1,20 @@
-"""L'orchestration d'une connexion par e-mail et mot de passe (spec § 4, « Session », « Mots de passe »).
+"""L'orchestration de la connexion par code et de la réauthentification (spec § 4, « Session »).
 
 Une seule transaction (`base.connexion()`, A16) : elle se VALIDE aussi quand la connexion est refusée,
 sinon le compteur d'essais et l'événement de sécurité d'un échec s'annuleraient avec lui. Le résultat est
-donc rendu, jamais levé, tant que la transaction est ouverte ; la route le traduit en réponse.
+donc rendu, jamais levé, tant que la transaction est ouverte ; la route le traduit en réponse. L'événement
+d'un refus s'écrit dans un point de sauvegarde (`journalise_sans_lever`) : il ne peut pas annuler l'essai.
 
-Ordre, qui est la sécurité de la route : clés HMAC -> créneaux (l'IP d'abord, B6) -> `verifie_mot_de_passe`.
-Un créneau refusé n'appelle JAMAIS la vérification (donc aucun `crypt()` pour un tiers qui martèle), et un
-compte inconnu prend un créneau, une vérification et un événement comme un compte connu : rien ne dit
-si l'adresse existe. Le jeton est tiré ici, jamais lu du client.
+Ordre, qui est la sécurité de la route : clés HMAC -> créneaux (l'IP d'abord, B6) ->
+`ouvre_une_session_par_code`.
+Un créneau refusé n'appelle JAMAIS la vérification (aucun essai de code pour un tiers qui martèle), et les
+créneaux se prennent AVANT le verrou de la clé de compte et celui de la personne, que la fonction SQL prend
+ensuite. Une adresse inconnue prend un créneau, une vérification et un événement comme une connue : rien ne
+dit si le compte existe. Le jeton est tiré ici, jamais lu du client.
 
 La réauthentification (T10, `tente_la_reauthentification`) partage les créneaux (`_prend_les_creneaux`) et
-le blocage unique par fenêtre (B21) ; `ouvre_une_session` est la partie « succès » de la connexion (jeton
-neuf, session, événements).
+le blocage unique par fenêtre (B21) ; `ouvre_une_session` est la partie « succès » de l'acceptation d'une
+invitation (jeton neuf, session, événements).
 """
 
 from dataclasses import dataclass
@@ -20,9 +23,9 @@ from uuid import UUID
 from popote_api.config import Settings
 from popote_api.infra.db import Base, Curseur
 from popote_api.security.appareil import resume_agent
-from popote_api.security.empreintes import Empreintes, email_normalise
+from popote_api.security.empreintes import Empreintes
 from popote_api.security.jeton import JetonMalFormeError, empreinte_du_jeton, jeton_neuf
-from popote_api.security.journal_securite import Evenement, journalise
+from popote_api.security.journal_securite import Evenement, journalise, journalise_sans_lever
 from popote_api.security.limites_base import CleBloquee, liberer_le_compte, prendre_les_creneaux
 from popote_api.security.mots_de_passe import candidats_de_connexion
 from popote_api.security.sessions_base import (
@@ -30,7 +33,7 @@ from popote_api.security.sessions_base import (
     cree_session,
     fait_tourner_et_ferme_les_autres,
     marque_reauth,
-    verrouille_la_personne,
+    ouvre_une_session_par_code,
 )
 
 
@@ -83,13 +86,14 @@ async def ouvre_une_session(
     return Ouverte(jeton, session, personne)
 
 
-async def tente_la_connexion(
+async def tente_la_connexion_par_code(
     base: Base,
     empreintes: Empreintes,
     reglages: Settings,
     *,
     email: str,
-    mot_de_passe: str,
+    code_request_id: UUID,
+    code: str,
     ip: str | None,
     agent: str | None,
     jeton_presente: str | None,
@@ -98,24 +102,29 @@ async def tente_la_connexion(
     """Lève `PoivreAbsentError` sans poivre (la route répond 503 : on ne compte pas sans clé)."""
     cle_compte = empreintes.cle_compte_requise(email)
     cle_ip = empreintes.cle_ip_requise(ip)
+    empreinte_du_code = empreintes.empreinte_du_code(code_request_id, cle_compte, code)
+    jeton, empreinte_du_jeton = jeton_neuf()
     async with base.connexion() as curseur:
         bloquee = await _prend_les_creneaux(curseur, reglages, cle_compte, cle_ip, request_id)
         if bloquee is not None:
             return bloquee
-        personne = await _verifie(curseur, email_normalise(email), mot_de_passe)
-        if personne is None:
-            await journalise(curseur, Evenement.connexion_ratee, cle_compte=cle_compte, request_id=request_id)
-            return Refusee()
-        # Le verrou de la personne, puis la preuve REFAITE : un changement de mot de passe validé entre la
-        # première vérification et ici l'a rendue fausse, et la session ouverte alors lui survivrait.
-        await verrouille_la_personne(curseur, personne, _empreinte_presentee(jeton_presente))
-        if not await _verifie_de(curseur, personne, mot_de_passe):
-            await journalise(curseur, Evenement.connexion_ratee, cle_compte=cle_compte, request_id=request_id)
+        ouverture = await ouvre_une_session_par_code(
+            curseur,
+            code_request_id=code_request_id,
+            cle_compte=cle_compte,
+            empreinte_du_code=empreinte_du_code,
+            empreinte_du_jeton=empreinte_du_jeton,
+            appareil=resume_agent(agent),
+            session_presentee=_empreinte_presentee(jeton_presente),
+            request_id=request_id,
+        )
+        if not ouverture.ouverte or ouverture.session is None or ouverture.personne is None:
+            await journalise_sans_lever(
+                curseur, Evenement.connexion_ratee, cle_compte=cle_compte, request_id=request_id
+            )
             return Refusee()
         await liberer_le_compte(curseur, cle_compte)  # le compte seul : jamais l'IP
-        return await ouvre_une_session(
-            curseur, personne, agent=agent, jeton_presente=jeton_presente, request_id=request_id
-        )
+        return Ouverte(jeton, ouverture.session, ouverture.personne)
 
 
 async def tente_la_reauthentification(
@@ -234,23 +243,6 @@ def _empreinte_presentee(jeton: str | None) -> bytes | None:
         return empreinte_du_jeton(jeton)
     except JetonMalFormeError:
         return None  # un cookie invalide est ignoré, sans erreur
-
-
-async def _verifie(curseur: Curseur, email: str, mot_de_passe: str) -> UUID | None:
-    # Aucun candidat (plus de 72 octets, nul...) : refus sans appel à la base ; la forme normalisée d'abord.
-    for candidat in candidats_de_connexion(mot_de_passe):
-        personne = await verifie_un_candidat(curseur, email, candidat)
-        if personne is not None:
-            return personne
-    return None
-
-
-async def verifie_un_candidat(curseur: Curseur, email: str, candidat: str) -> UUID | None:
-    """Un seul appel à `public.verifie_mot_de_passe` : le seul `crypt()` de la connexion."""
-    await curseur.execute("select public.verifie_mot_de_passe(%s, %s) as personne", (email, candidat))
-    ligne = await curseur.fetchone()
-    personne: UUID | None = ligne["personne"] if ligne is not None else None
-    return personne
 
 
 async def _verifie_de(curseur: Curseur, personne: UUID, mot_de_passe: str) -> bool:

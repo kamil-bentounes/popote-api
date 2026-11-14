@@ -250,6 +250,9 @@ def test_le_compte_des_apercus_est_lu_dans_l_environnement(monkeypatch: pytest.M
         "POPOTE_RELAY_SECRET": "s" * 32,
         "POPOTE_DATABASE_URL": "postgresql://x:y@127.0.0.1:1/rien",
         "POPOTE_APERCU_COMPTE": COMPTE,
+        "POPOTE_MAIL_PROVIDER": "scaleway",
+        "POPOTE_SCALEWAY_TEM_SECRET_KEY": "00000000-0000-4000-8000-000000000002",
+        "POPOTE_SCALEWAY_TEM_PROJECT_ID": "00000000-0000-4000-8000-000000000001",
     }.items():
         monkeypatch.setenv(nom, valeur)
     assert Settings().origine_admise(APERCU)

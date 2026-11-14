@@ -268,8 +268,8 @@ class TestSucces:
         assert auth.appels == [(moi.id, unicodedata.normalize("NFKC", NOUVEAU_NFD))]
         assert fuites.appels == 1
         # Le nouveau mot de passe, tapé décomposé, ouvre une session ; l'ancien est refusé.
-        assert (await moi.banc.connecte(moi.email, NOUVEAU_NFD)).status_code == 201
-        assert (await moi.banc.connecte(moi.email, MOT_DE_PASSE)).status_code == 401
+        assert await moi.banc.mot_de_passe_est_bon(moi.email, NOUVEAU_NFD)
+        assert not await moi.banc.mot_de_passe_est_bon(moi.email, MOT_DE_PASSE)
         assert password_set(moi)
         assert lignes_auth(moi) == 0  # B9 : plus de ligne `auth.sessions`
         (jetons,) = moi.banc.lignes(
@@ -289,7 +289,7 @@ class TestSucces:
     ) -> None:
         reponse = await change(moi, MOT_DE_PASSE)
         assert reponse.status_code == 204
-        assert (await moi.banc.connecte(moi.email, MOT_DE_PASSE)).status_code == 201
+        assert await moi.banc.mot_de_passe_est_bon(moi.email, MOT_DE_PASSE)
 
     async def test_deux_changements_simultanes_donnent_un_204_et_un_401_sans_cookie(
         self,
@@ -321,7 +321,7 @@ async def test_auth_en_panne_donne_503_avec_le_nouveau_cookie_et_le_mot_de_passe
     assert await lit_moi(moi, nouveau) == 200  # la session survit, sous son nouveau jeton
     assert await lit_moi(moi, moi.session.jeton) == 401
     assert await lit_moi(moi, autre.jeton) == 401  # les autres sont fermées par précaution
-    assert (await moi.banc.connecte(moi.email, MOT_DE_PASSE)).status_code == 201  # l'ancien est encore le bon
+    assert await moi.banc.mot_de_passe_est_bon(moi.email, MOT_DE_PASSE)  # l'ancien est encore le bon
     assert not password_set(moi)
     # B9 : fermées par la base à l'étape 2, avant Auth (au succès, Auth les ferme aussi de son côté).
     assert lignes_auth(moi) == 0

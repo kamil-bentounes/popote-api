@@ -203,9 +203,9 @@ class TestSuppression:
         )  # `person_id` nul : `auth.users` a disparu, la clé étrangère l'a remis à null
         assert evenement[1] is None and evenement[2] is None  # ni clé de compte ni empreinte d'IP
         # Les mêmes identifiants ne donnent plus rien, comme une adresse inconnue.
-        connexion = await moi.banc.connecte(moi.email)
+        connexion = await moi.banc.connecte_par_code(moi.email, None)  # sans compte : une ligne factice
         assert connexion.status_code == 401
-        assert connexion.json()["code"] == "identifiants_incorrects"
+        assert connexion.json()["code"] == "code_incorrect"
         # Ni le mot de passe ni le jeton de session n'ont touché le journal.
         assert MOT_DE_PASSE not in caplog.text
         assert moi.session.jeton not in caplog.text
@@ -292,10 +292,8 @@ class TestAuthEnPanne:
         assert not profil(moi) and sessions(moi) == 0 and compte_auth(moi)
         assert len(evenements_avant()) == 1
         assert (await moi.banc.client().get(ROUTE, headers=cookie(moi.session))).status_code == 401
-        # La personne se reconnecte (le compte Auth reste, le mot de passe aussi)...
-        connexion = await moi.banc.connecte(moi.email)
-        assert connexion.status_code == 201
-        jeton = connexion.cookies[moi.banc.reglages.nom_du_cookie_de_session]
+        # Une session neuve (le compte Auth reste ; sans profil, la personne n'entre plus par code : A1)...
+        jeton = moi.banc.fabrique.session(moi.id).jeton
         # ... et recommence, Auth étant revenu : l'effacement se rejoue sans erreur.
         moi.banc.app.state.auth_admin = auth = AuthEnregistre()
         assert (await supprime(moi, jeton=jeton)).status_code == 204

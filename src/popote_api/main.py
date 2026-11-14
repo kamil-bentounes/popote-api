@@ -11,7 +11,7 @@ from pydantic import SecretStr
 
 from popote_api import contrat, erreurs_base, errors, journal, limites, relais
 from popote_api.api import codes, connexion, health, internes, invitations_publiques, v1
-from popote_api.config import Env, MailProvider, Settings
+from popote_api.config import Env, Settings
 from popote_api.identifiant import Identifiant
 from popote_api.infra.auth_admin import cree_auth_admin
 from popote_api.infra.db import Base, SondeBase
@@ -62,11 +62,6 @@ def create_app(settings: Settings | None = None, *, horloge: Callable[[], float]
             avertissements.warning(
                 "POPOTE_SUPABASE_URL ou POPOTE_SUPABASE_SECRET_KEY absente : l'administration d'Auth est "
                 "indisponible (503)."
-            )
-        if settings.mail_provider is MailProvider.aucun and settings.relais_exige:
-            avertissements.warning(
-                "POPOTE_MAIL_PROVIDER=aucun : aucun mail ne part, le code de connexion et les invitations "
-                "sont inopérants (poser POPOTE_MAIL_PROVIDER=scaleway et la clé d'envoi)."
             )
         if settings.public_base_url is None and settings.relais_exige:
             avertissements.warning(

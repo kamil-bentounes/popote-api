@@ -160,28 +160,43 @@
         "title": "CodeDemandeAccepte",
         "type": "object"
       },
-      "Connexion": {
+      "ConnexionParCode": {
         "additionalProperties": false,
+        "description": "L'ouverture par le code reçu par mail : la demande (`code_request_id`), l'adresse, les six chiffres.",
         "properties": {
+          "code": {
+            "description": "Le code à six chiffres.",
+            "format": "password",
+            "pattern": "^[0-9]{6}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "code_request_id": {
+            "description": "L'identifiant rendu par `POST /login-codes`.",
+            "format": "uuid",
+            "title": "Code Request Id",
+            "type": "string"
+          },
           "email": {
             "description": "L'adresse du compte.",
             "maxLength": 254,
             "title": "Email",
             "type": "string"
           },
-          "password": {
-            "description": "Le mot de passe.",
-            "format": "password",
-            "maxLength": 256,
-            "title": "Password",
+          "method": {
+            "const": "email_code",
+            "description": "La preuve présentée : le code reçu par mail.",
+            "title": "Method",
             "type": "string"
           }
         },
         "required": [
+          "method",
           "email",
-          "password"
+          "code_request_id",
+          "code"
         ],
-        "title": "Connexion",
+        "title": "ConnexionParCode",
         "type": "object"
       },
       "ErreurDeChamp": {
@@ -3771,13 +3786,13 @@
     },
     "/api/v1/sessions": {
       "post": {
-        "description": "Ouvre une session par e-mail et mot de passe. Le jeton n'est jamais dans le corps : il est posé dans le cookie `__Host-popote_session` (HttpOnly, Secure, SameSite=Lax). Sans `Idempotency-Key` : chaque connexion réussie ouvre une session neuve.",
+        "description": "Ouvre une session avec le code à six chiffres demandé par `POST /login-codes` (`method` : `email_code`). Le jeton n'est jamais dans le corps : il est posé dans le cookie `__Host-popote_session` (HttpOnly, Secure, SameSite=Lax). Un seul refus pour tout ce qui n'est pas un code valable (`401 code_incorrect` : mêmes statut, corps et en-têtes, jamais de cookie) ; cinq essais par compte et par code, un code ne sert qu'une fois ; au-delà des limites, `429` sans aucune vérification. Sans `Idempotency-Key` : chaque connexion réussie ouvre une session neuve.",
         "operationId": "create_session",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Connexion"
+                "$ref": "#/components/schemas/ConnexionParCode"
               }
             }
           },
@@ -4013,7 +4028,7 @@
             }
           }
         },
-        "summary": "Se connecter",
+        "summary": "Se connecter par le code reçu par mail",
         "tags": [
           "sessions"
         ]

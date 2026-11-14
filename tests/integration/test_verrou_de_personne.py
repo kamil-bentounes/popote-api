@@ -22,11 +22,9 @@ from _connexions import DSN_API, connecte
 from _course import attend_un_verrou, course, ne_fait_pas_attendre
 from _fabrique import Fabrique, SessionDeTest
 from test_connexion import MOT_DE_PASSE, Banc, banc, banc_avec, comptes  # noqa: F401  # fixtures reprises
-from test_verifie_mot_de_passe import hache
 
 from popote_api.infra import db
 from popote_api.infra.db import Base, SessionRefuseeError
-from popote_api.security import connexion as modele_connexion
 from popote_api.security.appareil import Appareil
 from popote_api.security.sessions_base import cree_session
 
@@ -267,35 +265,14 @@ class TestPreuveEnVol:
         assert active(admin, apres) and active(admin, courante.id) and not active(admin, ancienne.id)
 
 
-# ── La preuve et la session : un mot de passe changé entre les deux ─────────
+# ── La preuve et la session : une seule transaction sous le verrou (S7) ─────
 
 
-async def test_un_mot_de_passe_change_entre_la_verification_et_la_session_refuse_la_connexion(
-    banc: Banc, admin: psycopg.Connection[Ligne], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """La barrière : juste après la première vérification, Auth change le mot de passe."""
-    personne, email = banc.compte()
-    verifie = modele_connexion.verifie_un_candidat
-
-    async def verifie_puis_change(curseur: object, adresse: str, mot_de_passe: str) -> UUID | None:
-        trouvee = await verifie(curseur, adresse, mot_de_passe)  # type: ignore[arg-type]
-        admin.execute(
-            "update auth.users set encrypted_password = %s where id = %s",
-            (hache(admin, "un-autre-mot-de-passe-long"), personne),
-        )
-        return trouvee
-
-    monkeypatch.setattr(modele_connexion, "verifie_un_candidat", verifie_puis_change)
-    reponse = await banc.connecte(email, MOT_DE_PASSE)
-    assert reponse.status_code == 401  # la preuve refaite sous le verrou échoue : aucune session ne survit
-    assert nombre_d_actives(admin, personne) == 0
-
-
-async def test_une_connexion_dont_le_mot_de_passe_n_a_pas_change_ouvre_sa_session(
+async def test_une_connexion_par_code_ouvre_sa_session_sous_le_verrou(
     banc: Banc, admin: psycopg.Connection[Ligne]
 ) -> None:
-    personne, email = banc.compte()
-    assert (await banc.connecte(email, MOT_DE_PASSE)).status_code == 201
+    personne, email = banc.personne()
+    assert (await banc.connecte_par_code(email, personne)).status_code == 201
     assert nombre_d_actives(admin, personne) == 1
 
 
@@ -401,28 +378,24 @@ class TestSessionPresenteeDUneAutrePersonne:
             )
 
 
-class TestConnexionParMotDePasseEtSessionPresentee:
-    """Le verrou pris en Python AVANT la preuve refaite doit déjà ordonner les deux personnes."""
+class TestConnexionParCodeEtSessionPresentee:
+    """Le verrou pris par la vérification doit déjà ordonner les deux personnes."""
 
     async def test_la_connexion_de_l_id_le_plus_grand_attend_la_plus_petite_sans_tenir_la_sienne(
         self, banc: Banc, fabrique: Fabrique, admin: psycopg.Connection[Ligne]
     ) -> None:
-        un, adresse_un = banc.compte()
-        autre, adresse_autre = banc.compte()
-        (bas, _), (haut, adresse_haut) = sorted(
-            ((un, adresse_un), (autre, adresse_autre)), key=lambda p: str(p[0])
-        )
+        (bas, _), (haut, adresse_haut) = sorted((banc.personne(), banc.personne()), key=lambda p: str(p[0]))
         cookie_de_bas = fabrique.session(bas)
         with connecte(DSN_API) as a:
             a.execute(VERROU, (bas,))
             tache = asyncio.create_task(
-                banc.connecte(
+                banc.connecte_par_code(
                     adresse_haut,
-                    MOT_DE_PASSE,
+                    haut,
                     headers={"Cookie": f"__Host-popote_session={cookie_de_bas.jeton}"},
                 )
             )
-            await attend_un_verrou(admin, "verrouille_la_personne", a.info.backend_pid)
+            await attend_un_verrou(admin, "ouvre_une_session_par_code", a.info.backend_pid)
             assert verrou_libre(admin, haut)  # elle ne tient pas la sienne en attendant la plus petite
             a.commit()
             reponse = await tache

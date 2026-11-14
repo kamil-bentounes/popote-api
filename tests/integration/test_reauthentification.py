@@ -144,12 +144,12 @@ class TestReauthentification:
         assert int(reponse.headers["retry-after"]) > 0
         assert reponse.json()["code"] == "trop_de_requetes"
         assert len(verifications) == avant  # aucun crypt() pour un refus de créneau
-        connexion = await moi.banc.connecte(moi.email)  # même compteur : la connexion est bloquée aussi
+        connexion = await moi.banc.connecte_par_code(moi.email, moi.id)  # même compteur : bloquée aussi
         assert connexion.status_code == 429
 
     async def test_cinq_faux_a_la_connexion_bloquent_aussi_la_reauthentification(self, moi: Personne) -> None:
         for _ in range(5):
-            assert (await moi.banc.connecte(moi.email, FAUX)).status_code == 401
+            assert (await moi.banc.connecte_par_code(moi.email, moi.id, faux=True)).status_code == 401
         assert (await moi.reauthentifie()).status_code == 429
 
     async def test_le_succes_remet_le_compteur_a_zero(self, moi: Personne) -> None:
@@ -299,7 +299,7 @@ class TestGarde:
             assert "www-authenticate" not in reponse.headers  # 403, pas 401 : la session reste valide
 
     async def test_juste_apres_la_connexion_la_garde_passe(self, client: Any, moi: Personne) -> None:
-        connexion = await moi.banc.connecte(moi.email)  # la vraie connexion pose `reauth_at`
+        connexion = await moi.banc.connecte_par_code(moi.email, moi.id)  # la vraie connexion pose `reauth_at`
         assert connexion.status_code == 201
         jeton = connexion.cookies["__Host-popote_session"]
         reponse = await client[0].get(

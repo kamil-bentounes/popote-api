@@ -225,37 +225,40 @@ refusent de démarrer avec autre chose que `hibp`.
   (`login-session-purge`, 03 h 53 UTC).
 
 
-### 4.5 La connexion (0.4, `POST /api/v1/sessions` ; code : `security/connexion.py`, `security/cookie.py`, `api/connexion.py`)
+### 4.5 La connexion par code (0.4bis S7, `POST /api/v1/sessions` ; code : `security/connexion.py`, `security/cookie.py`, `api/connexion.py`, base : § 4.15)
 
-- **Ordre, qui est la sécurité de la route.** Corps validé (e-mail 254, mot de passe 256, champs inconnus refusés)
-  -> clés HMAC (`email_normalise`, B24) -> `prend_les_creneaux` (IP d'abord, B6) -> `verifie_mot_de_passe` pour
-  chaque candidat de `candidats_de_connexion`. Un créneau refusé (`429` + `Retry-After`) n'appelle **jamais** la
-  vérification : aucun `crypt()` pour qui martèle. Un mot de passe sans candidat (plus de 72 octets) échoue sans
-  appel à la base. Sans poivre, la route répond `503` : on ne compte pas sans clé.
-- **Une seule transaction** (`base.connexion()`), validée aussi sur un refus : le compteur et l'événement d'un
-  échec ne s'annulent pas avec lui.
-- **Un seul refus.** `401 identifiants_incorrects`, « E-mail ou mot de passe incorrect. », que le compte soit
-  inconnu, banni, supprimé, sans hachage, en `$2y$` ou que le mot de passe soit faux ; même corps, mêmes en-têtes,
-  aucun `Set-Cookie`. Un compte inconnu prend créneau, `crypt()` factice et événement comme un compte connu
-  (temps comparable, mesuré). Le message ne dit rien de la limite par compte ou par IP.
-- **Jeton.** Tiré par le serveur (`jeton_neuf`, 32 octets) ; celui d'un cookie du client n'est jamais adopté. La
-  base ne garde que l'empreinte. Le corps de la réponse (`{"id"}`) ne porte pas le jeton.
-- **Cookie** (`security/cookie.py`, seul endroit qui écrit ses attributs) : `__Host-popote_session`, `HttpOnly`,
-  `Secure`, `SameSite=Lax`, `Path=/`, sans `Domain`, `Max-Age` 90 jours (le serveur tient les 30 jours glissants).
-  Hors local, démarrer avec un autre nom ou sans `Secure` (`POPOTE_SESSION_COOKIE_SECURE=false`) est refusé.
-- **Cookie déjà présent (B22).** Une connexion réussie révoque la session présentée si elle est valide (événement
-  `session_fermee`, écrit par la base) ; un cookie invalide est ignoré. Un échec ne ferme rien.
-- **Journal.** `connexion_reussie` (personne et session), `connexion_ratee` (clé de compte seule), `connexion_bloquee`
-  (la clé qui vient de bloquer : celle du compte, ou celle de l'IP quand c'est l'IP ; jamais e-mail, IP ni agent en
-  clair). Il s'écrit une fois par fenêtre de blocage et par clé (B21) : au plus deux événements par rafale.
-- **Rafales et verrous (revue).** Un mot de passe qui change à la normalisation coûte deux `crypt()` pour un créneau ;
-  les lignes de limite restent verrouillées pendant la vérification (les connexions d'une même IP ou d'un même
-  compte passent en série) ; un relais sans `X-Popote-IP` met tout le monde dans la clé commune `sans-ip`.
-  Acceptés pour un foyer de deux personnes ; à revoir si la charge change.
-- **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait
-  un jeton en base ; chaque succès ouvre une session neuve, chaque échec se compte.
-- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus
-  60 minutes ; le code par mail (S5) reste ouvert (foyer de deux personnes).
+- **Le corps.** `{method: "email_code", email, code_request_id, code}` : six chiffres ASCII exactement, champs inconnus refusés (`422`) ;
+  la connexion par mot de passe est retirée (rupture du contrat, `docs/ruptures-admises/`). La réauthentification par mot de passe reste
+  jusqu'à S11.
+- **Ordre, qui est la sécurité de la route.** Corps validé -> clés HMAC (`email_normalise`, B24) et empreinte du code -> `prend_les_creneaux`
+  (IP d'abord, B6 ; plafond de blocage 24 h) -> `ouvre_une_session_par_code` (un seul appel SQL, § 4.15). Un créneau refusé (`429` +
+  `Retry-After`) n'appelle **jamais** la vérification : le code n'est pas touché. Les créneaux se prennent avant les verrous de la clé de compte
+  et de la personne (ordre : limites, puis personne). Sans poivre, la route répond `503` : on ne compte pas sans clé (le poivre manque encore sur
+  l'essai : le conteneur démarre, la route répond `503`).
+- **Une seule transaction** (`base.connexion()`), validée aussi sur un refus : l'essai compté (le créneau, et l'essai de la ligne) ne s'annule
+  pas avec lui. Le journal d'un refus (`connexion_ratee`) s'écrit dans un point de sauvegarde (`journalise_sans_lever`) : s'il échoue, il
+  manque, le type de l'erreur est journalisé, et l'essai reste compté. Une **erreur** de la base (hors journal) annule tout : `503`
+  réessayable, code encore valable, aucun cookie.
+- **Un seul refus.** `401 code_incorrect`, « Code incorrect ou expiré. », que la demande soit inconnue, d'une autre adresse, fausse, échue,
+  utilisée, révoquée, que la ligne soit factice ou le compte banni, supprimé ou sans profil ; même corps, mêmes en-têtes, aucun `Set-Cookie`
+  (testé pour chaque cas). Le message ne dit rien de la limite par compte ou par IP.
+- **Jeton.** Tiré par le serveur (`jeton_neuf`, 32 octets) ; celui d'un cookie du client n'est jamais adopté. La base ne garde que l'empreinte.
+  Le corps de la réponse (`{"id"}`) ne porte pas le jeton.
+- **Cookie** (`security/cookie.py`, seul endroit qui écrit ses attributs) : `__Host-popote_session`, `HttpOnly`, `Secure`, `SameSite=Lax`,
+  `Path=/`, sans `Domain`, `Max-Age` 90 jours (le serveur tient les 30 jours glissants). Hors local, démarrer avec un autre nom ou sans
+  `Secure` (`POPOTE_SESSION_COOKIE_SECURE=false`) est refusé.
+- **Cookie déjà présent (B22).** Une connexion réussie révoque la session présentée si elle est valide (événement `session_fermee`, écrit par
+  la base) ; un cookie invalide est ignoré. Un refus ne ferme rien.
+- **Journal.** `connexion_par_code` (personne, session, clé de compte ; écrit par la base), `connexion_ratee` (clé de compte seule),
+  `connexion_bloquee` (la clé qui vient de bloquer ; jamais e-mail, IP ni agent en clair). Un blocage s'écrit une fois par fenêtre et par clé
+  (B21). Ni le code, ni l'adresse, ni `code_request_id`, ni le jeton dans un journal applicatif (testé par `caplog`).
+- **Succès.** `libere_compte` remet le compteur du compte à zéro, jamais celui de l'IP.
+- **Envoi des mails obligatoire hors local.** `essai` et `prod` refusent de démarrer sans `POPOTE_MAIL_PROVIDER=scaleway` complet (clé d'envoi et
+  projet) : le code par mail est la seule première connexion. `local` garde `aucun` et `local`.
+- **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait un jeton en base ; chaque succès
+  ouvre une session neuve, chaque échec se compte.
+- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus 24 h par blocage ; la clé
+  d'accès (S9) et l'invitation restent ouvertes (foyer de deux personnes).
 
 ### 4.6 Les appareils et la déconnexion (0.4, migration 0140 ; code : `api/appareils.py`, `security/cookie.py`)
 
@@ -420,10 +423,8 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   borné par les délais de 8 s). Conséquence : l'activité s'écrit même si
   la route échoue (la session a bien servi). `session_valide`, `session_courante` et `session_personne` ne sont pas touchées : l'API ne
   les appelle plus, elles ne servent qu'au code déjà déployé pendant la fenêtre de déploiement.
-- **La preuve et la session (leçon 1, chemin mot de passe).** `tente_la_connexion` vérifie le mot de passe, prend le verrou de la
-  personne, puis **refait** la vérification avant d'ouvrir la session : un changement de mot de passe validé entre les deux la rend
-  fausse, la connexion est refusée (un test glisse le changement entre les deux par une barrière). Coût : un second `crypt()` sur le
-  seul chemin de succès, jusqu'à S7 qui retire le mot de passe (S7 et S9 relisent leur preuve sous le verrou par construction).
+- **La preuve et la session (leçon 1).** La vérification d'un code et la session qu'elle ouvre sont un seul appel SQL sous le verrou de la
+  personne, la preuve relue sous le verrou (§ 4.15) ; S9 fera de même pour la clé d'accès.
 - **Deux personnes, un navigateur.** `cree_session` révoque la session PRÉSENTÉE (B22), qui peut être celle d'une autre personne : les deux
   personnes se verrouillent toujours dans le même ordre (l'identifiant le plus petit d'abord), donc deux connexions croisées ne
   s'attendent jamais en cercle. C'est `verrouille_la_personne(personne, session_présentée)` qui ordonne, que l'appelant soit `cree_session` ou
@@ -434,9 +435,9 @@ Un second verrou de lignes n'est pas à craindre : la route n'est ouverte qu'à 
   tient plus de ligne de session, donc aucun cycle avec les fermetures qui prennent la personne d'abord (testé : l'ancien chemin, une
   reconnexion et une fermeture en parallèle). Prix : pendant la fenêtre, l'ancien code ne repousse plus l'activité (30 jours glissants).
 - **L'activité est au mieux** : si le verrou ne lâche pas en 1 s, en cas d'interblocage ou de délai de requête, la requête (session
-  valide) continue sans écrire l'activité, journalisée par le type ; la suivante réessaie. `tente_la_connexion` prend les créneaux (des
+  valide) continue sans écrire l'activité, journalisée par le type ; la suivante réessaie. `tente_la_connexion_par_code` prend les créneaux (des
   compteurs) avant le verrou de la personne : l'ordre limites, puis personne est celui de toutes les routes publiques (`demande_un_code`
-  aussi), sans cycle ; le second `crypt()` se fait sous le verrou.
+  aussi), sans cycle.
 - **Courses déterministes** (`tests/integration/_course.py`) : A prend le verrou sans valider, B démarre, le test attend B dans
   `pg_stat_activity` (le backend que le pid exact de A fait attendre, pas un autre), A valide, on lit le sort de B ; jamais un `sleep` comme preuve. Les entrelacements (200 opérations de création et
   de fermeture, 100 requêtes à activité périmée contre reconnexions et fermetures, connexions croisées de deux personnes) ne donnent aucun `40P01`. Un `40P01` reste traduit en
