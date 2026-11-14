@@ -1,5 +1,6 @@
-"""Les modèles de `POST /api/v1/sessions` : un e-mail et un mot de passe, une session sans jeton."""
+"""Les modèles de `POST /api/v1/sessions` : un code reçu par mail, une session sans jeton."""
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field, field_validator
@@ -18,11 +19,17 @@ def exige_un_email_encodable(email: str) -> str:
     return email
 
 
-class Connexion(Entree):
-    # Bornés : un corps de plusieurs Mio ne atteint ni Auth ni bcrypt. 254 : longueur maximale d'une adresse.
+class ConnexionParCode(Entree):
+    """L'ouverture par le code reçu par mail : la demande (`code_request_id`), l'adresse, les six chiffres."""
+
+    method: Literal["email_code"] = Field(description="La preuve présentée : le code reçu par mail.")
     email: str = Field(max_length=254, description="L'adresse du compte.")
-    password: str = Field(
-        max_length=256, description="Le mot de passe.", json_schema_extra={"format": "password"}
+    code_request_id: UUID = Field(description="L'identifiant rendu par `POST /login-codes`.")
+    # Six chiffres ASCII exactement, ni espace ni saut de ligne : `\d` accepterait d'autres chiffres Unicode.
+    code: str = Field(
+        pattern=r"^[0-9]{6}$",
+        description="Le code à six chiffres.",
+        json_schema_extra={"format": "password"},
     )
 
     @field_validator("email")

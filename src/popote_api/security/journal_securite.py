@@ -6,10 +6,15 @@ Un événement ne porte ni e-mail, ni IP, ni agent : des clés HMAC (`security/e
 identifiants.
 """
 
+import logging
 from enum import StrEnum
 from uuid import UUID
 
+import psycopg
+
 from popote_api.infra.db import Curseur
+
+journal = logging.getLogger(__name__)
 
 
 class Evenement(StrEnum):
@@ -51,3 +56,25 @@ async def journalise(
         "select public.journalise(%s, %s, %s, %s, %s, %s, %s)",
         (str(evenement), personne, session, invitation, cle_compte, cle_ip, request_id),
     )
+
+
+async def journalise_sans_lever(
+    curseur: Curseur,
+    evenement: Evenement,
+    *,
+    cle_compte: bytes | None = None,
+    cle_ip: bytes | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Écrit l'événement d'un REFUS sans jamais faire échouer la transaction qui porte l'essai compté.
+
+    Une erreur de la base annule la transaction entière, essai compris : l'écriture se fait donc dans un
+    point de sauvegarde, que l'erreur annule seul. L'événement manque alors, le type de l'erreur est
+    journalisé (jamais son message) et l'essai reste compté. Une connexion perdue lève encore à la
+    validation : rien à protéger.
+    """
+    try:
+        async with curseur.connection.transaction():
+            await journalise(curseur, evenement, cle_compte=cle_compte, cle_ip=cle_ip, request_id=request_id)
+    except psycopg.Error as erreur:
+        journal.error("Journal de sécurité : %s non écrit (%s)", evenement.value, type(erreur).__name__)

@@ -197,7 +197,7 @@ class Settings(BaseSettings):
     identity_pepper: SecretStr | None = None
     # Les limites de connexion, comptées en base (`security/limites_base.py`, migration 0138). Les défauts
     # sont ceux de la spec § 3.6 : 5 essais par compte et 20 par IP en 15 min, blocage de 15 min qui double
-    # jusqu'à 60 min ; `reinitialisation_*` : 3 demandes par heure, réglage mort retiré en S15.
+    # jusqu'à 24 h ; `reinitialisation_*` : 3 demandes par heure, réglage mort retiré en S15.
     connexion_essais_par_compte: int = Field(default=5, ge=1, le=1000)
     connexion_essais_par_ip: int = Field(default=20, ge=1, le=10000)
     connexion_fenetre_s: int = Field(default=900, ge=1, le=86400)
@@ -205,7 +205,9 @@ class Settings(BaseSettings):
     invitation_essais_par_ip: int = Field(default=30, ge=1, le=10000)
     invitation_essais_par_lien: int = Field(default=10, ge=1, le=10000)
     invitation_fenetre_s: int = Field(default=900, ge=1, le=86400)
-    connexion_attente_max_s: int = Field(default=3600, ge=1, le=86400)
+    # Plafond du blocage : 24 h (S7). Les crans retombent 24 h après sa fin (0149) ; avec 60 min, cinq essais
+    # par 15 min auraient laissé près de vingt essais par jour sur un code de six chiffres.
+    connexion_attente_max_s: int = Field(default=86400, ge=1, le=86400)
     # La demande de code par mail (`security/code_de_connexion.py`, migration 0147) : 10 demandes par IP et
     # 3 par (adresse, IP) par fenêtre de 15 min, 6 par adresse par heure ; sans escalade (le créneau de trop
     # attend la fin de la fenêtre). Le coupe-circuit global compte les mails envoyés, jamais les demandes.
@@ -232,8 +234,8 @@ class Settings(BaseSettings):
     breach_check: BreachCheck = BreachCheck.hibp
 
     # L'envoi des mails (`infra/mails.py`). `local` ne se pose qu'en local. `scaleway` exige la clé d'envoi
-    # et le projet ; sa clé n'est lue que par `infra/mail_scaleway.py` (test d'architecture). Sans fournisseur
-    # (`aucun`), hors local, l'application démarre avec un avertissement : le refus n'est armé qu'en S7.
+    # et le projet ; sa clé n'est lue que par `infra/mail_scaleway.py` (test d'architecture). Hors local,
+    # `scaleway` complet est OBLIGATOIRE (depuis S7 : le code par mail est la seule première connexion).
     mail_provider: MailProvider = MailProvider.aucun
     # La clé d'API dédiée à l'envoi (application IAM qui n'a que `TransactionalEmailEmailApiCreate`).
     scaleway_tem_secret_key: SecretStr | None = None
@@ -532,9 +534,13 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _la_boite_locale_reste_locale(self) -> Self:
-        if self.relais_exige and self.mail_provider is MailProvider.local:
-            raise ValueError("mail_provider : « local » n'est permis qu'en local.")
+    def _hors_local_le_courrier_part_par_scaleway(self) -> Self:
+        # Le code par mail est la seule première connexion : sans envoi réel, plus personne n'entre. La
+        # complétude de `scaleway` (clé, projet) est contrôlée par `_scaleway_exige_la_cle_et_le_projet`.
+        if self.relais_exige and self.mail_provider is not MailProvider.scaleway:
+            raise ValueError(
+                "mail_provider : « scaleway » est obligatoire hors local (clé d'envoi et projet)."
+            )
         return self
 
     @model_validator(mode="after")

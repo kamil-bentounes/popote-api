@@ -1032,18 +1032,6 @@ def test_le_fournisseur_scaleway_sans_cle_ou_sans_projet_refuse_de_demarrer(
         reglages(env, **valeurs)
 
 
-@pytest.mark.parametrize("env", ["essai", "prod"])
-async def test_sans_fournisseur_l_application_demarre_encore_et_avertit(
-    env: str, caplog: pytest.LogCaptureFixture
-) -> None:
-    # S4 : le refus de démarrer sans fournisseur complet n'est armé qu'en S7.
-    app = create_app(reglages(env))
-    with caplog.at_level(logging.WARNING, logger="popote_api.main"):
-        async with app.router.lifespan_context(app):
-            pass
-    assert "POPOTE_MAIL_PROVIDER=aucun" in caplog.text
-
-
 async def test_avec_scaleway_complet_le_demarrage_n_avertit_pas_du_mail(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

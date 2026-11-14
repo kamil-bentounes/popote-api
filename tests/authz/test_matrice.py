@@ -359,11 +359,16 @@ async def test_la_connexion_publique_ne_change_rien_pour_qui_a_deja_une_session(
     ouverte = {"Cookie": f"__Host-popote_session={fabrique.session(monde.moi.id).jeton}"}
     refus = await client.post(
         "/api/v1/sessions",
-        json={"email": "inconnue@test.local", "password": "mauvais-mot-de-passe-long"},
+        json={
+            "method": "email_code",
+            "email": "inconnue@test.local",
+            "code_request_id": "00000000-0000-4000-8000-000000000001",
+            "code": "123456",
+        },
         headers=ouverte | ECRITURE,
     )
     assert refus.status_code == 401
-    assert refus.json()["code"] == "identifiants_incorrects"
+    assert refus.json()["code"] == "code_incorrect"
     assert "set-cookie" not in refus.headers
     assert str(monde.moi.id) not in refus.text
     assert (await client.get("/api/v1/me", headers=ouverte)).status_code == 200  # l'échec ne l'a pas fermée
