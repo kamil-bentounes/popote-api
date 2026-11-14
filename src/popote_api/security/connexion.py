@@ -74,11 +74,11 @@ async def ouvre_une_session(
     request_id: str | None,
 ) -> Ouverte:
     """Jeton neuf, session, et révocation de la session PRÉSENTÉE si elle est valide (B22)."""
-    empreinte_presentee = _empreinte_presentee(jeton_presente)
+    presentee = empreinte_presentee(jeton_presente)
     jeton, empreinte = jeton_neuf()
     # La base révoque la session présentée si elle est valide et écrit elle-même `session_fermee` (0139).
     session = await cree_session(
-        curseur, personne, empreinte, resume_agent(agent), session_presentee=empreinte_presentee
+        curseur, personne, empreinte, resume_agent(agent), session_presentee=presentee
     )
     await journalise(
         curseur, Evenement.connexion_reussie, personne=personne, session=session, request_id=request_id
@@ -116,7 +116,7 @@ async def tente_la_connexion_par_code(
             empreinte_du_code=empreinte_du_code,
             empreinte_du_jeton=empreinte_du_nouveau_jeton,
             appareil=resume_agent(agent),
-            session_presentee=_empreinte_presentee(jeton_presente),
+            session_presentee=empreinte_presentee(jeton_presente),
             request_id=request_id,
         )
         if not ouverture.ouverte or ouverture.session is None or ouverture.personne is None:
@@ -246,7 +246,7 @@ async def _prend_les_creneaux(
     return Bloquee(creneaux.attente_s)
 
 
-def _empreinte_presentee(jeton: str | None) -> bytes | None:
+def empreinte_presentee(jeton: str | None) -> bytes | None:
     if jeton is None:
         return None
     try:

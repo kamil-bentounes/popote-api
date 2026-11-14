@@ -74,8 +74,15 @@ LONGUEUR_MAX_POINTEUR = 256
 MESSAGE_PAR_DEFAUT = "Valeur invalide."
 MESSAGE_JSON_INVALIDE = "Le corps n'est pas un JSON valide."
 # type d'erreur pydantic -> message ; les champs entre accolades viennent de `ctx`.
+# Le corps de `POST /sessions` est une union discriminée par `method` : le chemin d'une erreur porte
+# l'étiquette.
+CHAMP_D_ETIQUETTE = "method"
+ETIQUETTES_D_UNION = frozenset({"email_code", "passkey"})
+ETIQUETTE_D_UNION_ABSENTE_OU_INCONNUE = frozenset({"union_tag_not_found", "union_tag_invalid"})
 MESSAGES_422 = {
     "missing": "Ce champ est obligatoire.",
+    "union_tag_not_found": "Ce champ est obligatoire.",
+    "union_tag_invalid": "Valeur non admise.",
     "string_too_short": "Trop court : {min_length} caractères au minimum.",
     "string_too_long": "Trop long : {max_length} caractères au maximum.",
     "int_parsing": "Un nombre entier est attendu.",
@@ -235,6 +242,12 @@ def _erreur_de_validation(erreur: Mapping[str, Any]) -> dict[str, Any]:
     if emplacement == "body":
         if erreur["type"] == "json_invalid":
             return {"pointer": "", "message": MESSAGE_JSON_INVALIDE}
+        if erreur["type"] in ETIQUETTE_D_UNION_ABSENTE_OU_INCONNUE:
+            return {"pointer": _pointeur((CHAMP_D_ETIQUETTE,)), "message": _message(erreur)}
+        # Pydantic place l'étiquette de l'union (`method`) dans le chemin : le pointeur du client vise le
+        # champ.
+        if chemin and chemin[0] in ETIQUETTES_D_UNION:
+            chemin = chemin[1:]
         return {"pointer": _pointeur(tuple(chemin)), "message": _message(erreur)}
     nom = str(chemin[0]) if chemin else ""
     return {"parameter": {"name": nom, "in": str(emplacement)}, "message": _message(erreur)}

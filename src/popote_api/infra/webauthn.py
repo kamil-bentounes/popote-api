@@ -121,11 +121,21 @@ class CleStockeeIllisible(ErreurDeCle):
     """
 
 
-class CompteurDeCleRegresse(ReponseDeCleRefusee):
-    """Signature valide, mais le compteur n'a pas crû : « a signal, but not proof » de clonage (W3C § 7.2).
+class SignalDeClonage(ReponseDeCleRefusee):
+    """Signature valide, `userHandle` bon, mais la clé ne se comporte plus comme celle qu'on a enregistrée.
 
-    Seul un refus qui porte une signature VALIDE peut l'être : une réponse fausse ne dit rien de la clé.
+    « A signal, but not proof » de clonage (W3C § 7.2) : l'appelant refuse ET alerte. Seul un refus qui
+    porte une signature VALIDE peut l'être : une réponse fausse ne dit rien de la clé.
     """
+
+
+class CompteurDeCleRegresse(SignalDeClonage):
+    """Le compteur de signature n'a pas crû (W3C § 7.2, § 6.1.1)."""
+
+
+class EligibiliteDeCleChangee(SignalDeClonage):
+    """L'éligibilité à la sauvegarde (BE) n'est plus celle de l'enregistrement : elle ne change jamais (§
+    7.2)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,7 +448,7 @@ def verifie_la_connexion(
     except ERREURS_DE_LA_BIBLIOTHEQUE as erreur:
         raise ReponseDeCleRefusee("réponse de clé refusée : assertion non vérifiée") from erreur
     if (verifiee.credential_device_type is CredentialDeviceType.MULTI_DEVICE) != cle.peut_etre_sauvegardee:
-        raise ReponseDeCleRefusee("réponse de clé refusée : l'éligibilité à la sauvegarde a changé")
+        raise EligibiliteDeCleChangee("réponse de clé refusée : l'éligibilité à la sauvegarde a changé")
     nouveau = verifiee.new_sign_count
     if (nouveau > 0 or cle.compteur > 0) and nouveau <= cle.compteur:
         raise CompteurDeCleRegresse("réponse de clé refusée : le compteur n'a pas crû")

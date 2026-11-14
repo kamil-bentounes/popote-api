@@ -1025,3 +1025,51 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b, § 4.16), la conne
   journaux, deux courses), `tests/integration/test_cles_base.py` (base : bornes de 300 s et de 10 minutes, quinze enregistrements parallèles, course avec une fermeture
   de toutes les sessions, contraintes, purge), `test_surface.py`, `tests/authz/test_matrice.py`.
 - **Retour arrière** : en tête de `0153_cles_d_acces.sql` (supprime les clés enregistrées : la personne se reconnecte par code et les recrée).
+
+### 4.17 Les clés d'accès : la connexion (0.4bis S9, migration 0154 ; code : `api/cles_publiques.py`, `api/connexion.py`, `security/connexion_par_cle.py`)
+
+- **Deux routes publiques** (`ROUTES_PUBLIQUES`). `POST /api/v1/passkey-challenges` (sans corps) rend `{options}` de `navigator.credentials.get()` :
+  défi de 32 octets valable 10 minutes, **aucune clé nommée, aucun nom** (la cérémonie ne dit rien d'un compte, W3C § 14.6.2), vérification exigée.
+  `POST /api/v1/sessions` `{method: "passkey", credential}` (16 Kio au plus, `422` au-delà) ouvre la session : `201 {id}` + cookie, ou le même
+  `401 cle_refusee` pour tout refus, `429` + `Retry-After`, `503`. Pas d'`Idempotency-Key` (exemptions écrites : sans personne, rejouer garderait un
+  défi). Le corps de `/sessions` est une union discriminée par `method` (`email_code` | `passkey`) : pas une rupture du contrat (`oasdiff` : aucune).
+- **Ordre, qui est la sécurité de la route** (une seule transaction `base.connexion()`, validée aussi sur un refus : défi brûlé, créneau et événement
+  restent). (1) créneau `cle_ip` de l'IP : un créneau refusé n'appelle JAMAIS la vérification ; (2) défi consommé (`delete … returning` : deux
+  soumissions parallèles de la même assertion, un seul gagnant) ; (3) clé lue par son identifiant **sous le verrou de personne**
+  (`cle_pour_connexion` : verrou, puis ligne `for update`) ; (4) signature vérifiée en Python **contre le défi que la base a rendu**, sans réseau, pendant que le
+  verrou est tenu ; (5) `ouvre_une_session_par_cle` : compteur, `backup_state`, `uv_initialized`, `last_used_at`, session `opened_with = 'cle'` (qui révoque
+  la session présentée, B22), `opened_with_credential`, événement `connexion_par_cle`. Une fermeture de toutes les sessions qui précède fait attendre la
+  connexion puis la laisse ouvrir une session **postérieure** (la preuve se fait après le verrou) ; la suppression de la clé qui précède la fait refuser (courses testées).
+- **Un refus est un résultat, une erreur annule tout.** Clé inconnue, signature fausse, origine, RP ID, UP ou UV absent, `userHandle` absent ou d'une autre
+  personne, éligibilité de sauvegarde changée, compteur, défi inconnu, échu, servi ou d'enregistrement, personne bannie, supprimée ou sans profil
+  (`personne_peut_entrer`, A1) : le même `401 cle_refusee` (statut, corps hors `instance`, en-têtes identiques), jamais `503`, jamais de cookie. Une erreur de la
+  base (ou une clé publique illisible en base, `CleStockeeIllisible`, qui alerte au lieu de répondre « refusée ») annule la transaction : `503`, **le défi
+  redevient valable**, compteur inchangé, aucune session.
+- **`cle_suspecte`** ne s'écrit que sur un `SignalDeClonage` (`CompteurDeCleRegresse` ou `EligibiliteDeCleChangee`, éligibilité de sauvegarde BE changée), que `verifie_la_connexion` lève **après** le `userHandle` et une signature valide : une
+  assertion non signée, ou au mauvais `userHandle`, ne fait pas naître d'alerte. Compteur non croissant (un des deux non nul) : refus, compteur **inchangé** ;
+  deux zéros (clés synchronisées) : accepté. La base refuse aussi, en dernier recours, un compteur qui ne croît pas ou qui a changé depuis la lecture.
+- **Limites** (`login_throttle`, comptées en base, clés = HMAC de l'IP, jamais l'IP). `cle_ip` : 20 vérifications par IP et par 15 min, escalade jusqu'à 1 h
+  (`cle_essais_par_ip`, `cle_attente_max_s`), un seul événement `connexion_bloquee` par blocage. `cle_defi_ip` : 60 défis par IP et par 15 min, **sans escalade**
+  (écart au plan, qui n'avait qu'un scope : la page de connexion demande un défi à chaque chargement pour le remplissage automatique, et 20 au total auraient
+  bloqué dix chargements) ; plafond de **5 000 défis anonymes vivants** (`cle_defis_anonymes_max`, souple : des demandes qui se croisent le dépassent d'au plus la taille du pool),
+  au-delà `429` + `Retry-After: 60` ; `purge_defis_anonymes` chaque heure (pg_cron `webauthn-defis-anonymes-purge`). Le couple (compte, IP) de S7c ne s'applique pas : la
+  cérémonie ne désigne aucun compte. Un tiers ne peut donc user que les créneaux de **son** IP, sauf le plafond global de défis vivants (limite dite 4).
+- **Origine** : `403 cle_origine_non_admise` si l'`Origin` n'est pas dans la liste WebAuthn mais passe la garde d'origine générale (aperçus de fusion : ils n'offrent que
+  le code) ; sans défi ni créneau.
+- **Journaux** : jamais le défi, l'assertion, l'identifiant de clé (testé par `caplog` sur un refus et un succès) ; un refus écrit `type_de_la_cause` seul.
+- **Limites dites.** (1) Le refus d'une clé inconnue ne vérifie pas de signature et ne prend aucun verrou : il est plus court de quelques millisecondes qu'un
+  refus de signature fausse ; un identifiant de clé (16 octets au moins, au hasard) ne se devine pas. (2) `GET /me/sessions` ne rend pas encore `opened_with` (S10
+  touche `api/appareils.py` ; le plan l'attribuait à S7). (3) Une session ouverte par clé survit à la suppression de la clé tant que S10 n'a pas écrit la fermeture
+  (`opened_with_credential` est prêt) ; `efface_mes_donnees` ne prend pas encore le verrou de personne ni ne ferme les clés avant S14. (4) Le plafond de 5 000 défis vivants
+  est global : environ 84 IP (ou /64) à 60 défis par 15 minutes le saturent, et toute la connexion par clé répond alors `429` pendant 60 s (le code par mail reste) ;
+  risque accepté par le plan, l'alerte `plafond atteint` est journalisée. (5) Le créneau `cle_ip` se prend avant même la forme de la réponse et n'est pas rendu après un
+  succès : 20 requêtes triviales, ou 20 connexions réussies derrière une même IP (NAT), bloquent la connexion par clé de cette IP de 15 minutes à 1 h (risque 6). Il se
+  tient jusqu'au commit : les requêtes d'une même IP se sérialisent. (6) Une clé publique illisible en base (`CleStockeeIllisible`, donnée abîmée) rend `503` et
+  annule le créneau avec la transaction : qui connaît son identifiant et détient un défi peut rejouer sans compter ; le `503` la distingue d'une clé inconnue. (7) Le
+  corps de 1 Mio se lit et se valide (60 à 150 ms) avant le refus des 16 Kio, comme sur les autres routes publiques. (8) Un refus par clé écrit le même
+  `connexion_ratee` qu'un refus par code (la clé de l'IP seule les distingue).
+- **Mesure** (Authentificateur logiciel, 50 assertions par algorithme) : `verifie_la_connexion` coûte 0,1 ms en médiane (ES256, EdDSA, RS256 2048), moins de 1 ms au pire,
+  contre les 10 ms du plan ; non testée (une borne de temps serait fragile).
+- Tests : `tests/integration/test_connexion_par_cle.py` (HTTP, authentificateur logiciel : parcours, rejeu, assertions refusées, compteur, limites, pannes, journaux, deux
+  courses), `tests/integration/test_connexion_par_cle_base.py` (base : défis anonymes, créneaux, lecture de la clé, ouverture), `test_surface.py`.
+- **Retour arrière** : en tête de `0154_connexion_par_cle.sql` (les sessions ouvertes par clé sont révoquées : la personne se reconnecte par code ; rejoué sur la base locale).

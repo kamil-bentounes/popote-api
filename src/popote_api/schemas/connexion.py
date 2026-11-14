@@ -1,11 +1,16 @@
 """Les modèles de `POST /api/v1/sessions` : un code reçu par mail, une session sans jeton."""
 
-from typing import Literal
+import json
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from pydantic import Field, field_validator
 
 from popote_api.schemas.base import Entree, Sortie
+
+# Une assertion WebAuthn tient en quelques centaines d'octets ; 16 Kio laisse de la marge aux extensions et
+# refuse le reste avant tout travail (le plafond général de 1 Mio est celui du serveur).
+TAILLE_MAX_D_UNE_ASSERTION: Final = 16 * 1024
 
 
 def exige_un_email_encodable(email: str) -> str:
@@ -36,6 +41,29 @@ class ConnexionParCode(Entree):
     @classmethod
     def _email_encodable(cls, email: str) -> str:
         return exige_un_email_encodable(email)
+
+
+class ConnexionParCle(Entree):
+    """L'ouverture par clé d'accès : la réponse de `navigator.credentials.get()`, sans adresse ni nom."""
+
+    method: Literal["passkey"] = Field(description="La preuve présentée : une clé d'accès.")
+    credential: dict[str, Any] = Field(
+        description=(
+            "La réponse de `navigator.credentials.get()`, par `PublicKeyCredential.toJSON()` "
+            "(16 Kio au plus)."
+        ),
+        repr=False,
+    )
+
+    @field_validator("credential")
+    @classmethod
+    def _assertion_de_taille_raisonnable(cls, credential: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(credential, separators=(",", ":")).encode()) > TAILLE_MAX_D_UNE_ASSERTION:
+            raise ValueError("Réponse trop grande.")
+        return credential
+
+
+ConnexionDemandee = Annotated[ConnexionParCode | ConnexionParCle, Field(discriminator="method")]
 
 
 class SessionOuverte(Sortie):
