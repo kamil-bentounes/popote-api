@@ -163,3 +163,12 @@ async def test_en_local_le_mail_absent_n_avertit_pas(caplog: pytest.LogCaptureFi
         async with app.router.lifespan_context(app):
             pass
     assert "MAIL_PROVIDER" not in caplog.text
+
+
+@pytest.mark.parametrize("env", ["essai", "prod"])
+async def test_hors_local_sans_poivre_le_conteneur_demarre_et_les_cles_manquent(env: str) -> None:
+    """Le poivre manque encore sur l'essai : le démarrage ne le refuse pas, la route répond 503."""
+    app = create_app(reglages(env, identity_pepper=None))
+    async with app.router.lifespan_context(app):
+        pass
+    assert app.state.empreintes.disponible is False

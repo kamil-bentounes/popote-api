@@ -124,7 +124,7 @@ class Banc:
         return await self.poste(email, identifiant, envoye, client=client, **plus)
 
     async def mot_de_passe_est_bon(self, email: str, mot_de_passe: str) -> bool:
-        """Le mot de passe de ce compte est-il celui-là ? (la même fonction SQL que la réauthentification)."""
+        """Le mot de passe de ce compte est-il celui-là ? (`verifie_mot_de_passe`, par adresse)."""
         async with self.app.state.base.connexion() as curseur:
             for candidat in candidats_de_connexion(mot_de_passe):
                 await curseur.execute(
@@ -302,13 +302,30 @@ async def test_tous_les_refus_se_ressemblent_au_champ_instance_pres(banc: Banc, 
     assert (statut, corps, en_tetes) == attendue
 
 
+@pytest.mark.parametrize("cas", ["banni", "supprime", "sans_profil"])
+async def test_une_personne_qui_ne_peut_pas_entrer_compte_un_essai_sans_exception(
+    banc: Banc, cas: str
+) -> None:
+    personne, email = banc.personne()
+    identifiant, bon = banc.pose_un_code(email, personne)
+    admin = banc.fabrique.admin
+    if cas == "banni":
+        admin.execute("update auth.users set banned_until = 'infinity' where id = %s", (personne,))
+    elif cas == "supprime":
+        admin.execute("update auth.users set deleted_at = now() where id = %s", (personne,))
+    else:
+        admin.execute("delete from public.user_profile where id = %s", (personne,))
+    reponse = await banc.poste(email, identifiant, bon)  # le BON code
+    assert (reponse.status_code, reponse.json()["code"]) == (401, "code_incorrect")
+    assert banc.lignes(
+        "select attempts, used_at is null from public.login_code where id = %s", identifiant
+    ) == [(1, True)]
+
+
 async def test_un_refus_valide_la_transaction_l_essai_reste_compte(banc: Banc) -> None:
     personne, email = banc.personne()
-    identifiant, _ = banc.pose_un_code(email, personne)
-    assert (await banc.poste(email, identifiant, "000000")).status_code in (
-        401,
-        201,
-    )  # 1 chance sur 10^6 d'être bon
+    identifiant, bon = banc.pose_un_code(email, personne)
+    assert (await banc.poste(email, identifiant, f"{(int(bon) + 1) % 10**6:06d}")).status_code == 401
     cle = banc.empreintes.cle_compte(email)
     assert banc.lignes(
         "select attempts from public.login_throttle where scope = 'account' and key = %s", cle
@@ -355,16 +372,17 @@ async def test_cinq_faux_puis_le_bon_donne_429_sans_aucune_verification(
 
 
 async def test_le_blocage_d_un_compte_monte_jusqu_a_24_heures(banc: Banc) -> None:
+    """Cinq essais faits, sept crans, blocage échu : le prochain faux code bloque 24 h, plafond compris."""
     personne, email = banc.personne()
-    cle = banc.empreintes.cle_compte(email)
     banc.fabrique.admin.execute(
-        "insert into public.login_throttle (scope, key, window_start, strikes, last_block_at, blocked_until)"
-        " values ('account', %s, now(), 7, now(), now() + interval '16 hours')",
-        (cle,),
+        "insert into public.login_throttle"
+        " (scope, key, window_start, attempts, strikes, last_block_at, blocked_until)"
+        " values ('account', %s, now(), 5, 7, now() - interval '25 hours', now() - interval '1 second')",
+        (banc.empreintes.cle_compte(email),),
     )
-    reponse = await banc.connecte_par_code(email, personne)
+    reponse = await banc.connecte_par_code(email, personne, faux=True)
     assert reponse.status_code == 429
-    assert 15 * 3600 < int(reponse.headers["retry-after"]) <= 16 * 3600
+    assert int(reponse.headers["retry-after"]) == 86400
 
 
 async def test_cinq_faux_sur_la_meme_demande_tuent_le_code_meme_pour_le_bon(
@@ -398,6 +416,8 @@ async def test_le_vingt_et_unieme_essai_d_une_ip_sur_des_comptes_differents_est_
 async def test_cinquante_tentatives_fausses_en_parallele_font_exactement_cinq_verifications(
     banc: Banc, verifications: list[UUID]
 ) -> None:
+    # Ici c'est la ligne de limite du compte qui sérialise ; les verrous de la base sont éprouvés par
+    # `test_ouverture_par_code_base.py` (S7a) et `test_course_code.py`.
     personne, email = banc.personne()
     identifiant, bon = banc.pose_un_code(email, personne)
     faux = f"{(int(bon) + 1) % 10**6:06d}"
@@ -604,10 +624,14 @@ async def test_aucune_donnee_personnelle_dans_les_journaux(
             envoye = f"{(int(bon) + 1) % 10**6:06d}" if faux else bon
             secrets_vus += [str(identifiant), bon, envoye]
             reponse = await banc.poste(email, identifiant, envoye)
-    jeton = cookie_brut(await banc.connecte_par_code(email, personne)).split("=")[1].split(";")[0]
-    assert reponse.status_code in (401, 429)
+            if not faux:
+                assert reponse.status_code == 201
+                secrets_vus.append(
+                    cookie_brut(reponse).split("=")[1].split(";")[0]
+                )  # le jeton, dans la capture
     texte = "\n".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
-    for secret in (email, jeton, banc.ip, *secrets_vus):
+    assert len(secrets_vus) == 7 * 3 + 1
+    for secret in (email, banc.ip, *secrets_vus):
         assert secret not in texte
 
 
@@ -726,3 +750,18 @@ async def test_une_erreur_de_la_base_rend_503_et_laisse_le_code_valable(banc: Ba
     assert (
         await banc.poste(email, identifiant, bon)
     ).status_code == 201  # le même code, la nouvelle tentative réussit
+
+
+async def test_de_la_demande_du_code_a_la_session_par_le_courrier(banc_avec: Callable[..., Banc]) -> None:
+    """Le parcours réel : `POST /login-codes`, le code lu dans la boîte de test, puis `POST /sessions`."""
+    banc = banc_avec(mail_provider="local")
+    personne, email = banc.personne()
+    banc.cles.append(banc.empreintes.cle_paire_de_code(email, banc.ip) or b"")
+    demande = await banc.client().post("/api/v1/login-codes", json={"email": email}, headers=ECRITURE)
+    assert demande.status_code == 202
+    (message,) = banc.app.state.mails.codes
+    reponse = await banc.poste(email, UUID(demande.json()["code_request_id"]), message.code)
+    assert reponse.status_code == 201
+    assert banc.lignes("select opened_with from public.login_session where person_id = %s", personne) == [
+        ("code",)
+    ]

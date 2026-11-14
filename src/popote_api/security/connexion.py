@@ -103,7 +103,7 @@ async def tente_la_connexion_par_code(
     cle_compte = empreintes.cle_compte_requise(email)
     cle_ip = empreintes.cle_ip_requise(ip)
     empreinte_du_code = empreintes.empreinte_du_code(code_request_id, cle_compte, code)
-    jeton, empreinte_du_jeton = jeton_neuf()
+    jeton, empreinte_du_nouveau_jeton = jeton_neuf()
     async with base.connexion() as curseur:
         bloquee = await _prend_les_creneaux(curseur, reglages, cle_compte, cle_ip, request_id)
         if bloquee is not None:
@@ -113,7 +113,7 @@ async def tente_la_connexion_par_code(
             code_request_id=code_request_id,
             cle_compte=cle_compte,
             empreinte_du_code=empreinte_du_code,
-            empreinte_du_jeton=empreinte_du_jeton,
+            empreinte_du_jeton=empreinte_du_nouveau_jeton,
             appareil=resume_agent(agent),
             session_presentee=_empreinte_presentee(jeton_presente),
             request_id=request_id,
@@ -226,7 +226,7 @@ async def _prend_les_creneaux(
     if creneaux.nouveau_blocage is not None:
         # La clé qui vient de bloquer, et elle seule : un blocage d'IP ne marque pas le compte visé.
         par_ip = creneaux.nouveau_blocage is CleBloquee.ip
-        await journalise(
+        await journalise_sans_lever(
             curseur,
             Evenement.connexion_bloquee,
             cle_compte=None if par_ip else cle_compte,

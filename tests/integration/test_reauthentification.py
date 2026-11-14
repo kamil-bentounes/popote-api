@@ -147,6 +147,18 @@ class TestReauthentification:
         connexion = await moi.banc.connecte_par_code(moi.email, moi.id)  # même compteur : bloquée aussi
         assert connexion.status_code == 429
 
+    async def test_le_blocage_de_24_heures_vaut_aussi_pour_la_reauthentification(self, moi: Personne) -> None:
+        """Le compteur est partagé avec la connexion par code : son plafond est de 24 h pour les deux."""
+        moi.banc.fabrique.admin.execute(
+            "insert into public.login_throttle (scope, key, window_start, attempts, strikes, last_block_at,"
+            " blocked_until) values ('account', %s, now(), 5, 7, now() - interval '25 hours',"
+            " now() - interval '1 second')",
+            (moi.cle,),
+        )
+        reponse = await moi.reauthentifie({"password": FAUX})
+        assert reponse.status_code == 429
+        assert int(reponse.headers["retry-after"]) == 86400
+
     async def test_cinq_faux_a_la_connexion_bloquent_aussi_la_reauthentification(self, moi: Personne) -> None:
         for _ in range(5):
             assert (await moi.banc.connecte_par_code(moi.email, moi.id, faux=True)).status_code == 401

@@ -257,8 +257,8 @@ refusent de démarrer avec autre chose que `hibp`.
   projet) : le code par mail est la seule première connexion. `local` garde `aucun` et `local`.
 - **Pas d'`Idempotency-Key`** (exemption écrite) : route publique, sans personne ; rejouer une réponse garderait un jeton en base ; chaque succès
   ouvre une session neuve, chaque échec se compte.
-- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus 24 h par blocage ; la clé
-  d'accès (S9) et l'invitation restent ouvertes (foyer de deux personnes).
+- **Risque accepté (B5).** Un tiers qui connaît l'adresse peut ralentir la connexion de cette personne, au plus 24 h par blocage, sans autre entrée avant
+  la clé d'accès (S9) ni l'invitation par mail (voir le risque accepté du § 4.3).
 
 ### 4.6 Les appareils et la déconnexion (0.4, migration 0140 ; code : `api/appareils.py`, `security/cookie.py`)
 
@@ -294,6 +294,9 @@ refusent de démarrer avec autre chose que `hibp`.
   événement). Entorse à « une transaction par requête » (A16) : `verifie_mot_de_passe_de` n'est exécutable que par
   `popote_api`. Une requête tient donc deux connexions du pool un instant ; sous charge l'attente du pool finit en
   `503`, sans interblocage durable.
+- **Compteur partagé.** La réauthentification prend les mêmes créneaux que la connexion (compte, puis IP) : cinq mots de passe faux, ou cinq
+  requêtes d'un tiers qui connaît l'adresse, bloquent aussi la connexion par code ET la réauthentification (donc le changement de mot de
+  passe et la suppression du compte de la personne déjà connectée), jusqu'à 24 h par blocage depuis S7 (§ 4.3, risque accepté).
 - **`exige_reauth`** : lit `reauth_at` de la session déjà lue (aucun appel de plus) ; à plus de 300 s de
   `app.state.horloge()` : `403 reauthentification_requise`. 300 s exactement passe. Posé par la connexion, donc un
   changement juste après la connexion n'exige rien. Aucune route ne l'utilise encore (T11, T14).
@@ -767,7 +770,8 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
 - **`delete_my_account()`** (appli en ligne) : même signature, mêmes droits, même effet ; appelle `efface_mes_donnees()` puis
   supprime `auth.users`. Risque accepté : `efface_mes_donnees` est appelable directement (PostgREST) par une personne
   connectée, sans réauthentification ; elle n'y gagne que ce qu'elle obtiendrait déjà par `delete_my_account`, et le compte
-  Auth reste (elle peut se reconnecter). La garde de réauth est celle de la route (T14b).
+  Auth reste (depuis S7 elle ne peut plus se reconnecter : sans profil, pas d'entrée par code, A1 ; S14 apporte `compte_a_supprimer`,
+  la route interne signée et le script d'exploitation). La garde de réauth est celle de la route (T14b).
 - **Résidus connus** (hors de la fonction) : `auth.audit_log_entries` (journal de GoTrue : `actor_id`, adresse et IP ; ni la
   fonction ni la suppression d'`auth.users` n'y touchent, à traiter côté Auth) et `auth.flow_state.user_id` ; `login_throttle`
   (clés HMAC de compte, purgées à l'échéance, pas à la suppression) ; les identifiants d'une personne supprimée restent dans
@@ -780,7 +784,8 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   mêmes attributs que la pose). Pourquoi deux : Auth supprime `auth.users`, que le profil référence ; tant que l'effacement
   n'est pas validé, cette suppression l'attendrait, et lui attendrait Auth. Écart assumé à B4 (une transaction par
   requête quand c'est possible : ici ce ne l'est pas). Auth ne répond pas : `503 suppression_incomplete` AVEC le cookie vidé
-  (la session n'existe plus) ; données et sessions sont parties, le compte Auth reste ; la personne se reconnecte et recommence
+  (la session n'existe plus) ; données et sessions sont parties, le compte Auth reste ; **depuis S7 la personne ne peut plus se reconnecter** (A1) : le compte Auth
+  orphelin attend S14 (`compte_a_supprimer`, amendement 12) ; avant S14 il faut un geste d'exploitation ; elle se reconnectait et recommençait
   (l'effacement se rejoue sans erreur et n'écrit pas un second `compte_supprime`). `deleteUser` sur `404 user_not_found` vaut
   succès ; un `404` d'une autre origine, non. L'événement `compte_supprime` est écrit par `efface_mes_donnees`, pas par la
   route ; sa `person_id` passe à null quand `auth.users` disparaît. Un journal ne reçoit jamais mot de passe ni jeton.
@@ -832,8 +837,8 @@ sont préfixés (`invitation_ip`, `invitation_link`) : ils ne partagent rien ave
   30 lettres (« Support Popote » passe) : le filtre réduit l'hameçonnage par prénom sans le supprimer (menace F6). Un prénom ne se garde jamais sans ce filtre : S12 l'applique aussi à la saisie.
 - **Les réalisations** : `POPOTE_MAIL_PROVIDER` = `aucun` (défaut ; chaque envoi lève `MailIndisponible`, `MailAbsent`), `local`
   (`BoiteDeTest`, deux listes `codes` et `invitations`, **local seulement** : refusé ailleurs) ou `scaleway` (S4, ci-dessous).
-  Hors local, `aucun` et l'absence de `POPOTE_PUBLIC_BASE_URL` sont signalés au démarrage ; le refus de démarrer sans fournisseur
-  `scaleway` complet est armé en S7. Avec `scaleway`, la clé ou le projet manquant empêche de démarrer.
+  Hors local (`essai`, `prod`), `scaleway` complet est **obligatoire** (S7) : `aucun` ou `local`, ou la clé ou le projet manquant,
+  empêche de démarrer ; l'absence de `POPOTE_PUBLIC_BASE_URL` est signalée au démarrage.
 - **L'envoi réel, `infra/mail_scaleway.py` (S4)** : Scaleway Transactional Email, `POST` vers une adresse **écrite en dur** (région
   `fr-par`), clé dans `X-Auth-Token`. `EnvoiScaleway` hérite d'`EnvoiParEnveloppe` : il n'écrit que `_transmet(enveloppe)` et ne voit ni le
   code, ni le lien, ni un prénom (un test d'architecture le garde pour tout `infra/mail_*.py`) ; le sujet et le texte envoyés sont ceux de
