@@ -17,7 +17,7 @@ from popote_api.infra.db import Base
 pytestmark = pytest.mark.integration
 
 ECRITURE = {"Origin": "http://localhost:5173", "X-Popote-Client": "web"}
-CHAMPS = {"id", "browser", "os", "created_at", "last_seen_at", "current"}
+CHAMPS = {"id", "browser", "os", "created_at", "last_seen_at", "opened_with", "current"}
 
 
 @pytest.fixture
@@ -290,6 +290,7 @@ async def test_sans_session_chaque_route_repond_401(client: httpx.AsyncClient) -
 
 
 APPELS = (
+    "select * from public.mes_appareils(10, null, null)",
     "select * from public.mes_sessions(10, null, null)",
     "select public.ferme_un_appareil(gen_random_uuid(), null)",
     "select public.ferme_les_autres_appareils(gen_random_uuid())",

@@ -284,15 +284,18 @@ refusent de démarrer avec autre chose que `hibp`.
 
 - **`GET /api/v1/me/sessions`** : les sessions actives de la personne (ni révoquées, ni échues), la plus récemment
   active d'abord, curseur sur (dernière activité, id). Champs : `id`, `browser`, `os`, `created_at`, `last_seen_at`,
+  `opened_with` (`code`, `cle`, `invitation` ou `autre` : comment la session est née, 0.4bis S10),
   `current` (une seule par page, calculée en Python : `id == session courante`). Jamais d'empreinte, d'IP ni de
-  texte d'agent.
+  texte d'agent, ni de la clé qui a ouvert une session `cle`.
 - **`DELETE /api/v1/me/sessions/{id}`** : `id` est un UUID ou `current`. Autre personne ou inconnue : le même `404
   session_introuvable` (on ne révèle rien) et la session de l'autre reste valide. Déjà fermée : `204`. `current` (ou
   son propre UUID) est la déconnexion : `204`, cookie vidé (`Max-Age=0`, mêmes attributs que la pose), événement
   `deconnexion` ; une seconde déconnexion, ou une déconnexion simultanée perdue, rend `401`.
 - **`DELETE /api/v1/me/sessions?scope=others`** : `scope` obligatoire, une seule valeur (`others`) ; absent ou autre
   rend `422`, rien n'est fermé. Garde la courante ; un événement `session_fermee` par session fermée.
-- **Contexte « personne »** : trois fonctions `security definer` (`mes_sessions`, `ferme_un_appareil`,
+- **Contexte « personne »** : trois fonctions `security definer` (`mes_sessions` (remplacée par `mes_appareils` en 0155 :
+  mêmes colonnes plus `opened_with`, nom nouveau parce que les colonnes de sortie ne changent pas par `create or replace` et
+  que le code déjà déployé appelle `mes_sessions` ; elle part en S15), `ferme_un_appareil`,
   `ferme_les_autres_appareils`), exécutables par `authenticated` seul (B3) ; la personne vient de `auth.uid()`, jamais
   d'un paramètre. Les événements s'écrivent dans la même transaction que la fermeture. Sans `Idempotency-Key` :
   un `DELETE` est idempotent par nature.
@@ -1058,9 +1061,8 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b, § 4.16), la conne
   le code) ; sans défi ni créneau.
 - **Journaux** : jamais le défi, l'assertion, l'identifiant de clé (testé par `caplog` sur un refus et un succès) ; un refus écrit `type_de_la_cause` seul.
 - **Limites dites.** (1) Le refus d'une clé inconnue ne vérifie pas de signature et ne prend aucun verrou : il est plus court de quelques millisecondes qu'un
-  refus de signature fausse ; un identifiant de clé (16 octets au moins, au hasard) ne se devine pas. (2) `GET /me/sessions` ne rend pas encore `opened_with` (S10
-  touche `api/appareils.py` ; le plan l'attribuait à S7). (3) Une session ouverte par clé survit à la suppression de la clé tant que S10 n'a pas écrit la fermeture
-  (`opened_with_credential` est prêt) ; `efface_mes_donnees` ne prend pas encore le verrou de personne ni ne ferme les clés avant S14. (4) Le plafond de 5 000 défis vivants
+  refus de signature fausse ; un identifiant de clé (16 octets au moins, au hasard) ne se devine pas. (2) `GET /me/sessions` rend `opened_with` depuis S10 (§ 4.18). (3) Une session ouverte par clé se ferme avec la clé depuis S10 (§ 4.18) ;
+  `efface_mes_donnees` ne prend pas encore le verrou de personne ni ne ferme les clés avant S14. (4) Le plafond de 5 000 défis vivants
   est global : environ 84 IP (ou /64) à 60 défis par 15 minutes le saturent, et toute la connexion par clé répond alors `429` pendant 60 s (le code par mail reste) ;
   risque accepté par le plan, l'alerte `plafond atteint` est journalisée. (5) Le créneau `cle_ip` se prend avant même la forme de la réponse et n'est pas rendu après un
   succès : 20 requêtes triviales, ou 20 connexions réussies derrière une même IP (NAT), bloquent la connexion par clé de cette IP de 15 minutes à 1 h (risque 6). Il se
@@ -1073,3 +1075,41 @@ Partie sans base : ni table, ni route. L'enregistrement (S8b, § 4.16), la conne
 - Tests : `tests/integration/test_connexion_par_cle.py` (HTTP, authentificateur logiciel : parcours, rejeu, assertions refusées, compteur, limites, pannes, journaux, deux
   courses), `tests/integration/test_connexion_par_cle_base.py` (base : défis anonymes, créneaux, lecture de la clé, ouverture), `test_surface.py`.
 - **Retour arrière** : en tête de `0154_connexion_par_cle.sql` (les sessions ouvertes par clé sont révoquées : la personne se reconnecte par code ; rejoué sur la base locale).
+
+### 4.18 Les clés d'accès : la gestion et les sessions de la clé (0.4bis S10, migration 0155 ; code : `api/cles.py`, `api/appareils.py`, `security/cles_d_acces.py`)
+
+- **Trois routes** (session, contexte « personne » : les fonctions lisent `auth.uid()`). `GET /api/v1/me/passkeys` : `{items, next_cursor: null}`, dix
+  clés au plus (la borne de l'enregistrement), de la plus ancienne à la plus récente ; champs `id`, `name`, `created_at`, `last_used_at`,
+  `device_type` (`multi_device` si la clé peut se synchroniser, sinon `single_device`), `backed_up`, `transports` ; **jamais** la clé publique, l'identifiant
+  de clé ni l'AAGUID (testé sur les octets). `PATCH /api/v1/me/passkeys/{id}` (`application/merge-patch+json`, `Idempotency-Key` obligatoire comme tout `PATCH`) :
+  seul `name` se change (NFC, 1 à 40 caractères, ni contrôle ni invisible) ; `{}` ne change rien ; `name: null` et tout autre champ : `422` ; clé d'une autre
+  personne ou inconnue : `404 cle_introuvable`, inchangée. `DELETE /api/v1/me/passkeys/{id}` : `204`, preuve de moins de 5 minutes (`403
+  reauthentification_requise`), `404` si la clé est inconnue, à une autre personne ou déjà supprimée.
+- **Ni `If-Match` ni `ETag`** : une personne édite ses clés ; deux onglets qui renomment la même clé se départagent par le dernier écrit, sans perte qui compte.
+- **Supprimer une clé ferme les sessions qu'elle a ouvertes** (NIST § 4.2 : une clé compromise s'invalide aussitôt). `supprime_ma_cle` désigne la session par
+  l'empreinte de son cookie (comme 0153), prend le **verrou de personne**, **relit** la session (non fermée, non échue) et sa preuve (300 s, horloge de la base),
+  ferme les sessions dont `opened_with_credential` est la clé **avant** de supprimer la clé (la colonne n'a pas de clé étrangère : un `on delete set null`
+  aurait perdu le lien), écrit un `session_fermee` par session fermée et `cle_supprimee`. Les autres sessions de la personne restent. Si la session
+  qui supprime avait été ouverte par la clé, elle est fermée aussi : `204` et cookie vidé. Un refus (`session_perimee`, `preuve_perimee`, `inconnue`) est
+  un résultat rendu avant toute écriture.
+- **Courses** (`test_course_suppression_de_cle.py`) : une connexion par cette clé qui attend le verrou tenu par la suppression est refusée à la reprise, sans
+  session ; une session ouverte par la clé juste avant la suppression (même verrou) est fermée avec elle ; une suppression derrière la fermeture de toutes
+  les sessions est refusée (`401`) et garde la clé.
+- **Supprimer la dernière clé est permis** : le code par mail reste (testé : la connexion par code ouvre une session `code` après la suppression). La
+  suppression d'une clé d'un compte qui n'a plus que le code ne demande pas d'avertissement serveur : c'est un écran (0.5).
+- **Fermer toutes les sessions ne retire pas les clés** : la liste montre `last_used_at` de chacune, on y revoit celles qui servent encore ; une clé qu'un
+  attaquant aurait enregistrée avec une session volée se retire d'ici (et l'enregistrement exige une preuve récente, § 4.16).
+- **Appareils** : `GET /me/sessions` rend `opened_with` ; la fonction est `mes_appareils` (0155, `authenticated` seul). Le texte de la route et le contrat ne
+  nomment pas la clé qui a ouvert une session.
+- **Limites dites.** (1) Une session ouverte par une clé qu'on retire en même temps qu'une connexion se croise par le même verrou : l'une des deux issues
+  seulement existe (testé dans un sens par `test_course_suppression_de_cle.py`, l'autre par la session posée sous le verrou). (2) **Course avec la
+  suppression de compte, non couverte avant S14** : `delete_my_account` (0145) ne prend pas le verrou de personne ; une suppression de clé qui attend
+  derrière elle relit des sessions effacées puis écrit son événement sur un compte disparu (clé étrangère, erreur et non refus). S14 prend le verrou en
+  premier dans `efface_mes_donnees` (amendement 28) et ajoute alors la course et le test « les sessions de la clé tombent avec le compte ». (3) Les
+  événements `session_fermee` d'une suppression portent la session fermée, `cle_supprimee` porte la session qui a supprimé, jamais l'identifiant de la clé.
+  (4) `now()` est l'heure de début de transaction : une suppression restée en attente du verrou juge la preuve de 300 s à l'heure d'avant l'attente (même
+  comportement que l'enregistrement). (5) Le `PATCH` garde l'`Idempotency-Key` de la spec § 3.5 (une réponse gardée 24 h) : un rejeu après la suppression de
+  la clé rend l'ancienne réponse ; une nouvelle clé d'idempotence rend `404`. (6) Le nom d'une clé refuse tout caractère de catégorie `C*` : les séquences
+  emoji à liaison (U+200D) et la jonction sans chasse du persan (U+200C) sont refusées, comme les autres noms d'appareil. (7) Le contrat OpenAPI du `PATCH`
+  ne déclare que `application/json` ; le serveur accepte aussi `application/merge-patch+json` (RFC 7396). (8) Le retour arrière de 0155 exige un rôle qui
+  contourne la RLS (le `delete` des événements) et que le code qui appelle `mes_cles` et `mes_appareils` soit retiré avant ; il n'est pas rejoué par un test.

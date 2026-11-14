@@ -69,6 +69,17 @@
             "title": "Last Seen At",
             "type": "string"
           },
+          "opened_with": {
+            "description": "Ouverte par : `code` (mail), `cle` (clé d'accès), `invitation` ou `autre`.",
+            "enum": [
+              "code",
+              "cle",
+              "invitation",
+              "autre"
+            ],
+            "title": "Opened With",
+            "type": "string"
+          },
           "os": {
             "description": "Famille de système (`autre` si non reconnue).",
             "enum": [
@@ -89,9 +100,32 @@
           "os",
           "created_at",
           "last_seen_at",
+          "opened_with",
           "current"
         ],
         "title": "Appareil",
+        "type": "object"
+      },
+      "ChangementDeCle": {
+        "additionalProperties": false,
+        "description": "Le corps d'un `PATCH` (RFC 7396) : seul le nom se change, et il ne se retire pas.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "description": "Le nom de la clé, de 1 à 40 caractères visibles.",
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Le nouveau nom, de 1 à 40 caractères visibles.",
+            "title": "Name"
+          }
+        },
+        "title": "ChangementDeCle",
         "type": "object"
       },
       "ChangementDeMotDePasse": {
@@ -134,6 +168,70 @@
           "created_at"
         ],
         "title": "CleAjoutee",
+        "type": "object"
+      },
+      "CleDeLaPersonne": {
+        "description": "Une clé d'accès, telle que la personne la reconnaît : jamais la clé publique ni son identifiant.",
+        "properties": {
+          "backed_up": {
+            "description": "Vrai si la clé est actuellement sauvegardée par son fournisseur.",
+            "title": "Backed Up",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "device_type": {
+            "description": "`multi_device` : synchronisable (iCloud, Google) ; `single_device` : un appareil.",
+            "enum": [
+              "multi_device",
+              "single_device"
+            ],
+            "title": "Device Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Dernière connexion par cette clé ; vide si elle n'a pas servi.",
+            "title": "Last Used At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "transports": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Transports",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "last_used_at",
+          "device_type",
+          "backed_up",
+          "transports"
+        ],
+        "title": "CleDeLaPersonne",
         "type": "object"
       },
       "CodeDemande": {
@@ -589,6 +687,34 @@
           "next_cursor"
         ],
         "title": "Page[Appareil]",
+        "type": "object"
+      },
+      "Page_CleDeLaPersonne_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CleDeLaPersonne"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "Page[CleDeLaPersonne]",
         "type": "object"
       },
       "Page_InvitationEnAttente_": {
@@ -3069,6 +3195,159 @@
       }
     },
     "/api/v1/me/passkeys": {
+      "get": {
+        "description": "Les clés de la personne, de la plus ancienne à la plus récente (dix au plus : `next_cursor` est toujours vide). Chaque clé montre son nom, sa création, sa dernière utilisation et si elle se synchronise ; jamais la clé publique, l'identifiant de clé ni l'AAGUID. Fermer toutes les sessions ne retire pas les clés : `last_used_at` dit lesquelles servent encore.",
+        "operationId": "list_my_passkeys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CleDeLaPersonne_"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Mes clés d'accès",
+        "tags": [
+          "cles"
+        ]
+      },
       "post": {
         "description": "Vérifie la réponse de `navigator.credentials.create()` contre le défi demandé (à usage unique, lié à la personne et à la session) et écrit la clé. Preuve de moins de 5 minutes exigée, de nouveau à l'écriture (`403 reauthentification_requise`). `422 cle_refusee` : réponse fausse, défi inconnu, échu ou déjà servi. Dix clés au plus (`409 trop_de_cles`) ; un identifiant de clé est unique pour tout le monde (`409 cle_deja_enregistree`). Sans nom : « Clé du JJ/MM/AAAA ».",
         "operationId": "register_my_passkey",
@@ -3350,6 +3629,507 @@
           }
         ],
         "summary": "Enregistrer une clé d'accès",
+        "tags": [
+          "cles"
+        ]
+      }
+    },
+    "/api/v1/me/passkeys/{id}": {
+      "delete": {
+        "description": "Supprime la clé et ferme les sessions qu'elle a ouvertes (les autres restent) : une clé compromise s'invalide aussitôt. Preuve de moins de 5 minutes exigée, de nouveau sous le verrou (`403 reauthentification_requise`). Supprimer la dernière clé est permis : le code reçu par mail reste. Une clé d'une autre personne ou inconnue est un `404` (la supprimer deux fois aussi). Si la session qui fait la requête avait été ouverte par cette clé, elle est fermée et le cookie est vidé. Pas d'`Idempotency-Key` : la suppression est naturellement idempotente.",
+        "operationId": "delete_my_passkey",
+        "parameters": [
+          {
+            "description": "UUID de la clé.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la clé.",
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "La clé est supprimée.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Si la session courante avait été ouverte par cette clé : le cookie vidé.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Supprimer une clé d'accès",
+        "tags": [
+          "cles"
+        ]
+      },
+      "patch": {
+        "description": "`application/merge-patch+json` : seul `name` (1 à 40 caractères visibles) se change ; un corps vide ne change rien ; `name: null` est un `422` (le nom ne se retire pas). Une clé d'une autre personne ou inconnue est un `404`. Pas d'`If-Match` : une personne édite ses clés.",
+        "operationId": "rename_my_passkey",
+        "parameters": [
+          {
+            "description": "UUID de la clé.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la clé.",
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Clé d'idempotence du `POST` : une chaîne entre guillemets (RFC 9651), ASCII imprimable, 1 à 255 caractères, unique par envoi voulu. Le même envoi rejoué rend la même réponse sans refaire l'effet ; la même clé avec un autre contenu rend `422`, pendant que le premier envoi tourne `409`.",
+            "example": "\"depense-2026-11-12-0001\"",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 512,
+              "minLength": 3,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangementDeCle"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleDeLaPersonne"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Requête mal formée",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Pas de session",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Le défi : `Cookie realm=\"popote\"`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Interdit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Introuvable",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conflit",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Corps trop gros",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Type de contenu non supporté",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Données invalides",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Trop de requêtes",
+            "headers": {
+              "RateLimit": {
+                "description": "Ce qui reste de la fenêtre (IETF draft-ietf-httpapi-ratelimit-headers).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "RateLimit-Policy": {
+                "description": "Le quota et la fenêtre de la politique (même brouillon IETF).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Erreur interne",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Service indisponible",
+            "headers": {
+              "Retry-After": {
+                "description": "Secondes à attendre avant de réessayer (entier, RFC 9110 § 10.2.3).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Identifiant de la requête, repris dans le journal et dans `instance` d'une erreur.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Renommer une clé d'accès",
         "tags": [
           "cles"
         ]

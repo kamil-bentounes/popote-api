@@ -92,21 +92,61 @@ class Fabrique:
         echeance_dans: timedelta = timedelta(days=30),
         absolue_dans: timedelta = timedelta(days=90),
         revoquee: bool = False,
+        ouverte_par: str = "autre",
+        ouverte_avec_la_cle: UUID | None = None,
+        preuve_il_y_a: timedelta = timedelta(0),
     ) -> SessionDeTest:
         """Une session posée en direct (la connexion est l'étape 0.4) ; elle part avec sa personne."""
         jeton, empreinte = jeton_et_empreinte()
         ligne = self._admin.execute(
             """
             insert into public.login_session
-              (token_hash, person_id, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at)
+              (token_hash, person_id, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at,
+               opened_with, opened_with_credential, reauth_at)
             values (%s, %s, now() - %s, now() - %s, now() + %s, now() + %s,
-                    case when %s then now() end)
+                    case when %s then now() end, %s, %s, now() - %s)
             returning id
             """,
-            (empreinte, personne_id, vue_il_y_a, vue_il_y_a, echeance_dans, absolue_dans, revoquee),
+            (
+                empreinte,
+                personne_id,
+                vue_il_y_a,
+                vue_il_y_a,
+                echeance_dans,
+                absolue_dans,
+                revoquee,
+                ouverte_par,
+                ouverte_avec_la_cle,
+                preuve_il_y_a,
+            ),
         ).fetchone()
         assert ligne is not None
         return SessionDeTest(ligne[0], jeton, empreinte)
+
+    def cle(self, personne_id: UUID, *, nom: str = "Clé de test", multi_appareil: bool = False) -> UUID:
+        """Une clé d'accès posée en direct (clé publique factice : elle ne sert à aucune signature)."""
+        self._admin.execute(
+            "insert into public.webauthn_user (person_id, user_handle) values (%s, %s)"
+            " on conflict (person_id) do nothing",
+            (personne_id, secrets.token_bytes(64)),
+        )
+        ligne = self._admin.execute(
+            "insert into public.webauthn_credential"
+            " (person_id, credential_id, public_key, transports, backup_eligible, backup_state,"
+            "  uv_initialized, aaguid, name) values (%s, %s, %s, '{internal}', %s, %s, true, %s, %s)"
+            " returning id",
+            (
+                personne_id,
+                secrets.token_bytes(32),
+                b"\x01" * 77,
+                multi_appareil,
+                multi_appareil,
+                uuid4(),
+                nom,
+            ),
+        ).fetchone()
+        assert ligne is not None
+        return ligne[0]  # type: ignore[no-any-return]
 
     def nettoie(self) -> None:
         # Pas de clé étrangère de la recette vers le foyer : la suppression du foyer ne l'emporte pas.

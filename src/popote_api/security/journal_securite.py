@@ -41,6 +41,7 @@ class Evenement(StrEnum):
     cle_ajoutee = "cle_ajoutee"
     connexion_par_cle = "connexion_par_cle"
     cle_suspecte = "cle_suspecte"
+    cle_supprimee = "cle_supprimee"
 
 
 async def journalise(

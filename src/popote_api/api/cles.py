@@ -1,4 +1,4 @@
-"""Les clés d'accès de la personne connectée : demander un défi, puis enregistrer la clé (0.4bis S8b).
+"""Les clés d'accès de la personne connectée : demander un défi, enregistrer la clé (S8b), les gérer (S10).
 
 `POST /api/v1/me/passkey-challenges` rend les options de `navigator.credentials.create()`.
 `POST /api/v1/me/passkeys` vérifie la réponse du navigateur et écrit la clé. L'une et l'autre exigent une
@@ -11,12 +11,18 @@ réponse en Python (sans réseau, quelques millisecondes), écriture. Un refus l
 s'annule, le défi redevient valable jusqu'à son échéance (10 minutes) ; seule une clé écrite le consomme.
 Les journaux n'écrivent jamais la réponse, l'identifiant de clé ni le défi : seul le type de la cause
 d'un refus.
+
+La gestion (migration 0155) : `GET /me/passkeys` (une carte par clé, dix au plus, jamais la clé publique),
+`PATCH /me/passkeys/{id}` (le nom, `application/merge-patch+json`), `DELETE /me/passkeys/{id}` (preuve de
+moins de 5 minutes ; ferme les sessions que la clé a ouvertes). Ni `If-Match` ni `ETag` : une personne édite
+ses clés, deux onglets qui renomment la même clé se départagent par le dernier écrit, sans perte qui compte.
 """
 
 import logging
-from typing import Final, assert_never
+from typing import Annotated, Final, assert_never
+from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Path, Request, Response
 
 from popote_api.errors import (
     DEFI_D_AUTHENTIFICATION,
@@ -32,15 +38,27 @@ from popote_api.infra.webauthn import (
     defi_de_la_reponse,
     verifie_l_enregistrement,
 )
+from popote_api.pagination import Page
+from popote_api.schemas.cles import (
+    ChangementDeCle,
+    CleDeLaPersonne,
+    DefiDeCle,
+    EnregistrementDeCle,
+    OptionsDeCle,
+)
 from popote_api.schemas.cles import CleAjoutee as CleAjouteeSortie
-from popote_api.schemas.cles import DefiDeCle, EnregistrementDeCle, OptionsDeCle
 from popote_api.security.cles_d_acces import (
     CleAjoutee,
+    CleSupprimee,
     Refus,
     consomme_le_defi,
     demande_un_defi_d_enregistrement,
     enregistre_la_cle,
+    liste_les_cles,
+    renomme_la_cle,
+    supprime_la_cle,
 )
+from popote_api.security.cookie import efface_le_cookie_de_session
 from popote_api.security.idempotence import RouteIdempotente
 from popote_api.security.reauth import EXIGE_UNE_REAUTHENTIFICATION, exige_reauth
 from popote_api.security.session import PersonneDeLaSession
@@ -51,6 +69,12 @@ journal = logging.getLogger(__name__)
 # l'enregistrement en a une (effet durable).
 routeur_des_defis = APIRouter(prefix="/me/passkey-challenges", tags=["cles"])
 routeur_des_cles = APIRouter(prefix="/me/passkeys", tags=["cles"], route_class=RouteIdempotente)
+# La lecture et la suppression : naturellement idempotentes, sans `Idempotency-Key` (comme les appareils).
+routeur_de_gestion = APIRouter(prefix="/me/passkeys", tags=["cles"])
+
+CLE_INTROUVABLE: Final = "Cette clé n'existe pas."
+# Un UUID : autre chose est un `422`, avant tout accès à la base.
+IdentifiantDeCle = Annotated[UUID, Path(description="UUID de la clé.")]
 
 ORIGINE_NON_ADMISE: Final = (
     "Les clés d'accès ne sont pas disponibles à cette adresse : utilise le code reçu par mail."
@@ -77,6 +101,8 @@ def _probleme_d_un_refus(refus: Refus) -> Probleme:
             return Probleme(409, "trop_de_cles", TROP_DE_CLES)
         case Refus.cle_deja_enregistree:
             return Probleme(409, "cle_deja_enregistree", CLE_DEJA_ENREGISTREE)
+        case Refus.inconnue:
+            return Probleme(404, "cle_introuvable", CLE_INTROUVABLE)
 
 
 @routeur_des_defis.post(
@@ -176,3 +202,90 @@ def _cle_refusee(erreur: ReponseDeCleRefusee) -> Probleme:
     # réponse du navigateur (origine, identifiants).
     journal.info("Clé refusée : %s (%s)", erreur, erreur.type_de_la_cause)
     return Probleme(422, "cle_refusee", CLE_REFUSEE)
+
+
+@routeur_de_gestion.get(
+    "",
+    operation_id="list_my_passkeys",
+    summary="Mes clés d'accès",
+    description=(
+        "Les clés de la personne, de la plus ancienne à la plus récente (dix au plus : `next_cursor` est "
+        "toujours vide). Chaque clé montre son nom, sa création, sa dernière utilisation et si elle se "
+        "synchronise ; jamais la clé publique, l'identifiant de clé ni l'AAGUID. Fermer toutes les sessions "
+        "ne retire pas les clés : `last_used_at` dit lesquelles servent encore."
+    ),
+    response_model=Page[CleDeLaPersonne],
+)
+async def liste_mes_cles(personne: PersonneDeLaSession) -> Page[CleDeLaPersonne]:
+    cles = [CleDeLaPersonne.model_validate(ligne) for ligne in await liste_les_cles(personne.curseur)]
+    return Page(items=cles, next_cursor=None)
+
+
+@routeur_des_cles.patch(
+    "/{id}",
+    operation_id="rename_my_passkey",
+    summary="Renommer une clé d'accès",
+    description=(
+        "`application/merge-patch+json` : seul `name` (1 à 40 caractères visibles) se change ; un corps vide "
+        "ne change rien ; `name: null` est un `422` (le nom ne se retire pas). Une clé d'une autre personne "
+        "ou inconnue est un `404`. Pas d'`If-Match` : une personne édite ses clés."
+    ),
+    response_model=CleDeLaPersonne,
+    responses=reponses_erreur(404, 422),
+)
+async def renomme_une_cle(
+    id: IdentifiantDeCle, corps: ChangementDeCle, personne: PersonneDeLaSession
+) -> CleDeLaPersonne:
+    if corps.name is not None and not await renomme_la_cle(personne.curseur, identifiant=id, nom=corps.name):
+        raise Probleme(404, "cle_introuvable", CLE_INTROUVABLE)
+    cles = {cle["id"]: cle for cle in await liste_les_cles(personne.curseur)}
+    if id not in cles:
+        raise Probleme(404, "cle_introuvable", CLE_INTROUVABLE)
+    return CleDeLaPersonne.model_validate(cles[id])
+
+
+@routeur_de_gestion.delete(
+    "/{id}",
+    operation_id="delete_my_passkey",
+    summary="Supprimer une clé d'accès",
+    description=(
+        "Supprime la clé et ferme les sessions qu'elle a ouvertes (les autres restent) : une clé compromise "
+        "s'invalide aussitôt. Preuve de moins de 5 minutes exigée, de nouveau sous le verrou "
+        "(`403 reauthentification_requise`). Supprimer la dernière clé est permis : le code reçu par mail "
+        "reste. Une clé d'une autre personne ou inconnue est un `404` (la supprimer deux fois aussi). Si la "
+        "session qui fait la requête avait été ouverte par cette clé, elle est fermée et le cookie est vidé. "
+        "Pas d'`Idempotency-Key` : la suppression est naturellement idempotente."
+    ),
+    status_code=204,
+    response_class=Response,
+    responses={
+        204: {
+            "description": "La clé est supprimée.",
+            "headers": {
+                "Set-Cookie": {
+                    "description": "Si la session courante avait été ouverte par cette clé : le cookie vidé.",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        **reponses_erreur(403, 404, 422),
+    },
+    dependencies=[EXIGE_UNE_REAUTHENTIFICATION],
+)
+async def supprime_une_cle(id: IdentifiantDeCle, request: Request, personne: PersonneDeLaSession) -> Response:
+    resultat = await supprime_la_cle(
+        personne.curseur,
+        empreinte_de_session=personne.empreinte_de_session,
+        identifiant=id,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    match resultat:
+        case Refus():
+            raise _probleme_d_un_refus(resultat)
+        case CleSupprimee():
+            reponse = Response(status_code=204)
+            if resultat.session_courante_fermee:
+                efface_le_cookie_de_session(reponse, request.app.state.settings)
+            return reponse
+        case _:
+            assert_never(resultat)

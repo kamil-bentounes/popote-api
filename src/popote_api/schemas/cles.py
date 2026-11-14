@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, Field, model_validator
 
 from popote_api.errors import ValeurRefusee
 from popote_api.schemas.base import Entree, Sortie
@@ -75,3 +75,31 @@ class CleAjoutee(Sortie):
     id: UUID
     name: str
     created_at: datetime
+
+
+class CleDeLaPersonne(Sortie):
+    """Une clé d'accès, telle que la personne la reconnaît : jamais la clé publique ni son identifiant."""
+
+    id: UUID
+    name: str
+    created_at: datetime
+    last_used_at: datetime | None = Field(
+        description="Dernière connexion par cette clé ; vide si elle n'a pas servi."
+    )
+    device_type: Literal["multi_device", "single_device"] = Field(
+        description="`multi_device` : synchronisable (iCloud, Google) ; `single_device` : un appareil."
+    )
+    backed_up: bool = Field(description="Vrai si la clé est actuellement sauvegardée par son fournisseur.")
+    transports: list[str]
+
+
+class ChangementDeCle(Entree):
+    """Le corps d'un `PATCH` (RFC 7396) : seul le nom se change, et il ne se retire pas."""
+
+    name: NomDeCle | None = Field(None, description="Le nouveau nom, de 1 à 40 caractères visibles.")
+
+    @model_validator(mode="after")
+    def _le_nom_ne_se_retire_pas(self) -> "ChangementDeCle":
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValeurRefusee("Le nom d'une clé ne se retire pas.")
+        return self

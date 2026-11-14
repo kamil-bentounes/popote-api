@@ -34,7 +34,7 @@ FORME_DE_L_ID: Final = (
 )
 
 LISTE: Final[LiteralString] = (
-    "select id, browser, os, created_at, last_seen_at from public.mes_sessions(%s, %s, %s)"
+    "select id, browser, os, created_at, last_seen_at, opened_with from public.mes_appareils(%s, %s, %s)"
 )
 FERME_UN: Final[LiteralString] = "select public.ferme_un_appareil(%s, %s) as etat"
 FERME_LES_AUTRES: Final[LiteralString] = "select public.ferme_les_autres_appareils(%s) as nombre"
